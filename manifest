@@ -1,0 +1,2 @@
+f usr/sbin/pivy-tool 0555 root bin
+f usr/sbin/pivy-box 0555 root bin

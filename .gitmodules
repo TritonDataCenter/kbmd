@@ -1,3 +1,4 @@
 [submodule "pivy"]
 	path = pivy
 	url = https://github.com/arekinath/pivy.git
+	branch = master
