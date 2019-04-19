@@ -1,0 +1,63 @@
+#!/bin/bash
+
+#
+# Copyright 2019, Joyent, Inc.
+#
+
+# replace-pivtoken: Replace a PIV token with a newly initialized PIV token,
+# using the recovery token to authenticate the replacement.
+#
+# Args:
+#   $1 = GUID of the PIV token
+#   $2 = Recovery token (base64 encoded)
+#
+# Input:
+#   JSON blob similar in format to register-pivtoken
+#
+# Output:
+#   The new recovery token
+#
+# On success 0 is returned, otherwise a non-zero error is returned.
+# kbmd currently only cares about zero vs. non-zero, though any non-zero
+# value is logged by kbmd for troubleshooting purposes.  Currently any
+# stderr output is discarded (until a better way of dealing with it in kbmd
+# is devised).
+
+PIVYTOOL=/usr/sbin/pivy-tool
+CURL=/usr/bin/curl
+OPENSSL=/usr/bin/openssl
+OD=/usr/xpg4/bin/od
+SED=/usr/xpg4/bin/sed
+
+VERSION="1"
+
+while getopts "v" opt; do
+    case "$opt" in
+        v)
+            echo "$VERSION"
+            exit 0
+            ;;
+    esac
+done
+shift $((OPTIND - 1))
+
+path="pivtokens/$1/recover"
+url="http://kbmapi.$host/$path"
+
+date="$(date +"%a, %d %b %Y %T %Z")"
+
+rtoken="$2"
+# Somewhat roundabout, take base64 to raw to hex and strip whitespace from hex
+# as openssl requires the key to be in hex
+rtoken_hex=$(echo $rtoken | $OPENSSL enc -base64 -d | od -An -tx1 | \
+    $SED -e 'N;s/\n//' -e 's/ //g')
+
+sig="$(echo $date | $PIVYTOOL sign 9e | \
+    $OPENSSL dgst -sha512 -hmac -macopt hexkey:"$rtoken_hex")"
+
+new_rtoken=$(cat - | $CURL -sS \
+    -H "Date: $date" \
+    -H "Authorization: $sig" \
+    "$url") || exit 1
+
+echo "$new_rtoken"

@@ -33,7 +33,3 @@ However, since kbmd is 'cherry-picking' which files to use, not every file of
 the pivy source is utilized.  For example, the custr and bunyan files in the
 pivy repo are not utilized (while kbmd itself uses libcustr and libbunyan, the
 illumos-joyent versions of those libraries are used instead of the pivy ones).
-It also means we have our own Makefile for pivy -- don't assume that the pivy
-code will automatically build after updating.  While it hopefully shouldn't
-require large amounts of maintenance to track the pivy code, it is also
-likely that it will still require a minimal amount of work from time to time.

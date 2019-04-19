@@ -1,0 +1,44 @@
+#!/bin/bash
+
+#
+# Copyright 2019, Joyent, Inc.
+#
+
+# new-rtoken: Obtain a new recovery token for an existing PIV token
+#
+# Args:
+#   $1 = GUID of the PIV token
+#
+# Output:
+#   The new recovery token (base64 encoded)
+#
+# On success 0 is returned, otherwise a non-zero error is returned.
+# kbmd currently only cares about zero vs. non-zero, though any non-zero
+# value is logged by kbmd for troubleshooting purposes.  Currently any
+# stderr output is discarded (until a better way of dealing with it in kbmd
+# is devised).
+
+PIVYTOOL=/usr/sbin/pivy-tool
+CURL=/usr/bin/curl
+OPENSSL=/usr/bin/openssl
+
+VERSION="1"
+
+while getopts "v" opt; do
+    case "$opt" in
+        v)
+            echo "$VERSION"
+            exit 0
+            ;;
+    esac
+done
+shift $((OPTIND - 1))
+
+# XXX: This needs more work
+host=$(json -f /system/boot/networking.json datacenter_name dns_domain | \
+    sed 'N;s/\n/./')
+path="pivtokens/$1/recover"
+url="http://kbmapi.$host/$path"
+
+date="$(LC_TIME=C TZ=GMT date +"%a, %d %b %Y %T %Z")"
+sig="$(echo $date | $PIVYTOOL sign 9e | $OPENSSL enc -base64 -A)"

@@ -1,0 +1,245 @@
+.\"
+.\" This file and its contents are supplied under the terms of the
+.\" Common Development and Distribution License ("CDDL"), version 1.0.
+.\" You may only use this file in accordance with the terms of version
+.\" 1.0 of the CDDL.
+.\"
+.\" A full copy of the text of the CDDL should have accompanied this
+.\" source.  A copy of the CDDL is also available via the Internet at
+.\" http://www.illumos.org/license/CDDL.
+.\"
+.\"
+.\" Copyright 2019 Joyent, Inc.
+.\"
+.Dd November 25, 2019
+.Dt KBMADM 1M
+.Os
+.Sh NAME
+.Nm kbmadm
+.Nd Manage ebox-protected zfs dataset keys
+.Sh SYNOPSIS
+.Nm
+.Cm create-zpool
+.Op Fl g Ar guid
+.Op Fl t Ar template
+--
+.Ar zpool-create-args
+.Nm
+.Cm recover
+.Op Fl c Ar cfgnum
+.Ar dataset
+.Nm
+.Cm unlock
+.Op Fl r
+.Ar dataset
+.Nm
+.Cm recovery add
+.Op Fl f
+.Op Fl r Ar recovery_token
+.Fl t Ar template
+.Ar dataset
+.Nm
+.Cm recovery list
+.Op Fl p
+.Nm
+.Cm recovery activate
+.Ar dataset
+.Nm
+.Cm recovery cancel
+.Ar dataset
+.Sh DESCRIPTION
+.Nm
+is used to to manage
+.Xr kbmd 1M .
+.Sh SUBCOMMANDS
+.Bl -tag -width ""
+.\"
+.\" create-zpool
+.\"
+.It Xo
+.Nm
+.Cm create-zpool
+.Op Fl g Ar guid
+.Op Fl t Ar template
+.Ar dataset
+--
+.Ar zpool-create-args
+.Xc
+Create a new zpool with the root dataset encrypted.
+.Pp
+If
+.Ar guid
+is not specified, an uninitialized PIV token must be present on the system.
+.Pp
+The
+.Nm
+.Cm zpool-create
+subcommand will initialize the PIV token, call the
+.Sy register-pivtoken
+plugin method, and then create the zpool.
+.Bl -tag -width Fl
+.It Fl g Ar guid
+Do not initialize a PIV token.
+Instead, use the PIV token identified by
+.Ar guid
+to create the ebox.
+The PIV token must be inserted on the system at the time of the
+command invocation or it will fail.
+.It Fl t Ar template
+Read the recovery template from
+.Ar template .
+When initializing a PIV token, the
+.Sy register-pivtoken
+plugin method normally specifies the recovery configuration to use.
+Specifying this option will override any recovery configuration provided by the
+.Sy register-pivtoken
+plugin method.
+.Pp
+If the
+.Fl t Ar template
+option is not specified and either the
+.Fl g Ar guid
+option is also not specified, or the
+.Sy register-pivtoken
+plugin method does not specify a recovery configuration, the
+resulting ebox will not contain a recovery configuration.
+.It Ar zpool-create-args
+Arguments to pass through to the
+.Nm zpool
+.Cm create
+command.
+Arguments/options must be separated from the
+.Nm
+.Cm create-zpool
+options by two dashes
+.Pq Dq --
+\(em even if no
+.Nm
+.Cm zpool-create
+arguments are given.
+Any option listed in the
+.Nm zpool
+.Cm create
+subcommand in
+.Xr zpool
+may be passed along.
+.Pp
+Note that stdin of the
+.Nm zpool
+.Cm create
+command is not available.
+.El
+.\"
+.\" recover
+.\"
+.It Xo
+.Nm
+.Cm recover
+.Op Fl c Ar cfgnum
+.Ar dataset
+.Xc
+Start a recovery session for
+.Ar dataset
+using the active recovery configuration template.
+If the active reconfiguration template contains multiple recovery
+configuartions, the
+.Fl c Ar cfgnum
+option may be used to specifify which configuration to use.
+If the
+.Fl c Ar cfgnum
+option is not present, the recovery process will prompt the operator to
+first select a recovery configuration from the active recovery template
+before starting the challenge/response process.
+.\"
+.\" unlock
+.\"
+.It Xo
+.Nm
+.Cm unlock
+.Op Fl r
+.Ar dataset
+.Xc
+Unlock the ebox associated with the given dataset, load the key from the ebox,
+and mount the dataset (if appropriate).
+If the
+.Fl r
+option is given, a failed unlock attempt will immediately start a recovery
+session for
+.Ar dataset .
+.Pp
+The mounting that occurs is similar to that which occurs when
+.Nm zpool Cm import
+normally runs.
+.\"
+.\" recovery add
+.\"
+.It Xo
+.Nm
+.Cm recovery add
+.Op Fl f
+.Op Fl r Ar recovery_token
+.Fl t Ar template
+.Ar dataset
+.Xc
+Add a recovery template
+.Ar template
+with a recovery token
+.Ar recovery_token
+.Pq base 64 encoded
+to the dataset.
+.Pp
+If the
+.Fl f
+option is given, or no active recovery template is present, the given recovery
+template is immediately made the active recovery configuration.
+If the
+.Fl f
+option is not present, the given recovery template is added as the staged
+recovery configuration.
+.\"
+.\" recovery activate
+.\"
+.It Xo
+.Nm
+.Cm recovery activate
+.Ar dataset
+.Xc
+Activate the staged recovery configuration for
+.Ar dataset .
+If no recovery configuration has been staged using the
+.Nm Cm recovery add
+command, this command has no effect.
+.\"
+.\" recovery list
+.\"
+.It Xo
+.Nm
+.Cm recovery list
+.Op Fl p
+.Xc
+List the recovery template configuration (active and staged if present) on the
+system.
+If the
+.Fl p
+option is given, the output is presented in a machine parseable format.
+.\"
+.\" recovery cancel
+.\"
+.It Xo
+.Nm
+.Cm recovery cancel
+.Ar dataset
+.Xc
+Removes any staged recovery configuration templates present for
+.Ar dataset .
+.El
+.Sh EXIT STATUS
+.Ex -std
+.Sh INTERFACE STABILITY
+Uncommitted.
+The behavior and cmdline options of
+.Nm
+will almost certainly change in the future.
+.Sh SEE ALSO
+.Xr kbmd 1M
+.Xr zpool 1M

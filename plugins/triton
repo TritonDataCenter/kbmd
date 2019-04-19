@@ -1,0 +1,185 @@
+#!/bin/bash
+
+# This file and its contents are supplied under the terms of the
+# Common Development and Distribution License ("CDDL"), version 1.0.
+# You may only use this file in accordance with the terms of version
+# 1.0 of the CDDL.
+#
+# A full copy of the text of the CDDL should have accompanied this
+# source.  A copy of the CDDL is also available via the Internet at
+# http://www.illumos.org/license/CDDL.
+
+#
+# Copyright 2019, Joyent, Inc.
+#
+
+VERSION="1"
+
+PIVYTOOL=/usr/sbin/pivy-tool
+CURL=/usr/bin/curl
+# For base64 encoding/decoding in the GZ
+OPENSSL=/usr/bin/openssl
+SED=/usr/xpg4/bin/sed
+OD=/usr/xpg4/bin/od
+
+# The type of system we are on.  One of:
+#    headnode    Triton head node
+#    compute        Triton compute node
+#    smartos        Standalone SmartOS
+function sys_type {
+    local smartos=0
+    local headnode=0
+
+    /usr/bin/bootparams | while IFS="=" read var value; do
+        if [[ "$var" == "smartos" && "$value" == "true" ]]; then
+            smartos=1
+        elif [[ "$var" == "headnode" && "$value" == "true" ]]; then
+            headnode=1
+        fi
+    done
+
+    if (( smartos == 0 && headnode == 0 )); then
+        echo "compute"
+    elif (( smartos == 0 && headnode == 1 )); then
+        echo "headnode"
+    elif (( smartos == 1 && headnode == 0 )); then
+        echo "smartos"
+    else
+        echo "ERROR: both headnode and smartos set in bootparams" >&2
+        exit 1
+    fi
+}
+
+function get_kbmapi_host {
+    local suffix
+
+    # Grab the datacenter_name and dns_domain values from
+    # networking.json and join the two lines with a '.'
+    # using sed
+    suffix=$(/usr/bin/json -f /system/boot/networking.json \
+        datacenter_name dns_domain | \
+        $SED 'N;s/\n/./')
+    printf "kbmapi.%s" "$suffix"
+}
+
+function http_date {
+    LC_TIME=C TZ=GMT /usr/bin/date +"%a, %d %b %Y %T %Z"
+}
+
+function piv_sign {
+    local data="$1"
+    printf "%s" "$data" | $PIVYTOOL sign 9e | $OPENSSL enc -base64 -A
+}
+
+function hmac_sign {
+    local data="$1"
+    local key="$2"
+    local key_hex
+
+    key_hex=$(printf "%s" "$key" | $OPENSSL enc -base64 -d | $OD -An -tx1 | \
+        $SED -e 'N;s/\n//' -e 's/ //g')
+
+    printf "%s" "$data" | $OPENSSL dgst -sha512 -hmac -macopt hexkey:"$key_hex"
+}
+
+function auth_hdr {
+    local sig="$1"
+    local fingerprint=$(pivy-tool pubkey 9e | ssh-keygen -lf - -E md5 | \
+        awk '{ print $2 }' | cut -d":" -f 2-)
+    local fmt='Signature keyId="%s",algorithm="%s",headers="%s",signature="%s"\n'
+
+    printf "$fmt" "$fingerprint" "ecdsa-sha256" "date" "$sig"
+}
+
+function get_pin {
+    local guid="$1"
+    local host=$(get_kbmapi_host)
+    local url="http://$host/pivtokens/$guid/pin"
+    local date=$(http_date)
+    local sig=$(piv_sign "date: $date")
+    local auth=$(auth_hdr "$sig")
+
+    $CURL -sS \
+        -H "Date: $date" \
+        -H "Authorization: $auth" \
+        "$url" | \
+        json pin || exit 1
+}
+
+function register_pivtoken {
+    local host=$(get_kbmapi_host)
+    local url="http://$host/pivtokens"
+    local date=$(http_date)
+    local sig=$(piv_sign "date: $date")
+    local auth=$(auth_hdr "$sig")
+
+    /bin/cat - | $CURL -sS \
+        -H "Date: $date" \
+        -H "Authorization: $sig" \
+	-H "Content-Type: application/json" \
+        -H "Authorization: $auth" \
+	-d "@-" "$url" | \
+	json 'recovery_tokens[0].token' 'recovery_tokens[0].template' || exit 1
+}
+
+function replace_pivtoken {
+    local guid="$1"
+    local rtoken="$2"
+    local host=$(get_kbmapi_host)
+    local url="http://$host/pivtokens/$guid/recover"
+    local date=$(http_date)
+    local sig=$(hmac_sign "$rtoken" "date: $date")
+
+    # We'll want to remove the json call and have kbmd parse
+    # the JSON eventually
+    /bin/cat - | $CURL -sS \
+        -H "Date: $date" \
+        -H "Authorization: $sig" \
+	-H "Content-Type: application/json" \
+        "$url" | \
+        json 'recovery_tokens[0].token' 'recovery_tokens[0].template' || exit 1
+}
+
+function new_rtoken {
+    local guid="$1"
+    local host=$(get_kbmapi_host)
+    local url="http://$host/pivtokens/$guid/recover"
+    local date=$(http_date)
+    local sig=$(piv_sign "date: $date")
+    local auth=$(auth_hdr "$sig")
+
+    $CURL -sS \
+        -H "Date: $date" \
+        -H "Authorization: $auth" \
+	-H "Content-Type: application/json" \
+        "$url" || exit 1
+}
+
+function post_rcfg_update {
+    /usr/bin/sysinfo -u
+}
+
+[[ -z "$1" ]] && \
+    echo "No subcommand given." >&2 && \
+    exit 1
+
+case "$1" in
+    version)
+        echo "name=Triton KBMAPI"
+        echo "version=1"
+        exit 0;;
+    get-pin)
+        get_pin $2;;
+    register-pivtoken)
+        register_pivtoken;;
+    replace-pivtoken)
+        replace_pivtoken;;
+    new-rtoken)
+        new_rtoken $2;;
+    post-rcfg-update)
+        post_rcfg_update;;
+    *)
+        echo "Unknown subcommand $1" >&2
+        # XXX: Usage
+        exit 1;;
+esac
