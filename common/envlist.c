@@ -156,6 +156,20 @@ envlist_lookup_int32(nvlist_t *nvl, const char *name, int32_t *valp)
 }
 
 errf_t *
+envlist_lookup_string(nvlist_t *nvl, const char *name, char **valp)
+{
+	int ret = nvlist_lookup_string(nvl, name, valp);
+	return (NVERR(ret, "nvlist_lookup_string"));
+}
+
+errf_t *
+envlist_lookup_nvlist(nvlist_t *nvl, const char *name, nvlist_t **valp)
+{
+	int ret = nvlist_lookup_nvlist(nvl, name, valp);
+	return (NVERR(ret, "nvlist_lookup_nvlist"));
+}
+
+errf_t *
 envlist_lookup_string_array(nvlist_t *nvl, const char *name, char ***sarp,
     uint_t *lenp)
 {
