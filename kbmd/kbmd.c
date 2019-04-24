@@ -52,8 +52,6 @@
 #define	KBMD_RUNDIR	"/var/run/kbmd"
 #define	KBMD_DOOR	KBMD_RUNDIR "/door"
 
-#define	RFD77_CONFIG_PROP "rfd77:config"
-
 static struct kbmlog {
 	mutex_t	kbmlog_lock;
 	int	kbmlog_fd;
@@ -66,6 +64,9 @@ bunyan_logger_t *blog;
 
 mutex_t g_zfs_lock = ERRORCHECKMUTEX;
 libzfs_handle_t *g_zfs;
+
+mutex_t piv_lock = ERRORCHECKMUTEX;
+SCARDCONTEXT piv_ctx;
 
 uuid_t sys_uuid;
 static volatile boolean_t kbmd_quit = B_FALSE;
@@ -148,11 +149,14 @@ main(int argc, char *argv[])
 	 */
 	(void) kbmd_sys_uuid(sys_uuid);
 
-	/*
-	 * XXX: probably need to handle failure a bit better
-	 */
-	if (kbmd_scan_pools() != ERRF_OK)
-		kbmd_dfatal(dfd, "unable to load eboxes from zpools");
+	mutex_enter(&piv_lock);
+	errval = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL,
+	    &piv_ctx);
+	if (errval != 0) {
+		kbmd_dfatal(dfd, "ccould not initialize libpcsc: %s",
+		    pcsc_stringify_error(errval));
+	}
+	mutex_exit(&piv_lock);
 
 	errval = kbmd_door_setup(doorpath);
 	if (errval != 0)

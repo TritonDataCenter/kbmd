@@ -29,7 +29,7 @@ extern "C" {
 #define	KBM_NV_ERRMSG		"errmsg"	/* string */
 #define	KBM_NV_CREATE_ARGS	"args"		/* string array */
 #define	KBM_NV_ZPOOL_KEY	"zpool-key"	/* byte array */
-#define	KBM_NV_ZFS_DATASETS	"datasets"	/* string array */
+#define	KBM_NV_ZFS_DATASET	"dataset"	/* string */
 #define	KBM_NV_RECOVER_ID	"recover-id"	/* uint64_t */
 
 typedef enum kbm_cmd {

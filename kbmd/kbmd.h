@@ -21,7 +21,8 @@
 #include <thread.h>
 #include <synch.h>
 #include <sys/uuid.h>
-
+#include <wintypes.h>
+#include <winscard.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -48,6 +49,9 @@ extern uuid_t sys_uuid;
 extern mutex_t g_zfs_lock;
 extern struct libzfs_handle *g_zfs;
 
+extern mutex_t piv_lock;
+extern SCARDCONTEXT piv_ctx;
+
 const char *get_dc(void);
 const char *get_domain(void);
 
@@ -61,17 +65,14 @@ void kbmd_zpool_create(struct nvlist *);
 void kbmd_recover_start(struct nvlist *);
 void kbmd_recover_resp(struct nvlist *);
 
-/* from zfs_box.c */
-extern mutex_t kbmd_box_lock;
-extern struct ebox **kbmd_boxes;
-extern size_t kbmd_nboxes;
-
-struct ebox *kbmd_get_ebox(const char *);
+struct errf *kbmd_assert_pin(struct piv_token *);
+struct errf *kbmd_get_ebox(const char *restrict, struct ebox **restrict);
 struct errf *kbmd_put_ebox(struct ebox *);
-struct errf *kbmd_scan_pools(void);
-struct errf *kbmd_ebox_to_str(struct ebox *restrict, char **restrict);
+struct errf *kbmd_unlock_ebox(struct ebox *);
 
-struct errf *kbmd_get_pin(uint8_t [restrict], struct custr **restrict);
+struct errf *kbmd_scan_pools(void);
+
+struct errf *kbmd_get_pin(const uint8_t [restrict], struct custr **restrict);
 struct errf *kbmd_register_pivtoken(struct piv_token *restrict,
     const char *restrict, struct custr **restrict);
 struct errf *kbmd_replace_pivtoken(uint8_t [restrict],

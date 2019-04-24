@@ -30,12 +30,12 @@
 #include "common.h"
 #include "ecustr.h"
 #include "envlist.h"
-#include "errf.h"
+#include "pivy/errf.h"
 #include "kspawn.h"
-#include "piv.h"
-#include "libssh/sshbuf.h"
-#include "libssh/ssherr.h"
-#include "libssh/sshkey.h"
+#include "pivy/piv.h"
+#include "pivy/libssh/sshbuf.h"
+#include "pivy/libssh/ssherr.h"
+#include "pivy/libssh/sshkey.h"
 
 /*
  * Since there's nowhere else to put this yet, the plugins work like this:
@@ -89,7 +89,7 @@ extract_line(custr_t *cu)
 }
 
 errf_t *
-kbmd_get_pin(uint8_t guid[restrict], custr_t **restrict pinp)
+kbmd_get_pin(const uint8_t guid[restrict], custr_t **restrict pinp)
 {
 	errf_t *ret = ERRF_OK;
 	strarray_t args = STRARRAY_INIT;
@@ -112,16 +112,12 @@ kbmd_get_pin(uint8_t guid[restrict], custr_t **restrict pinp)
 	if (ret != ERRF_OK)
 		return (errf("PluginError", ret, ""));
 
-	custr_t *data[3] = { 0 };
+	custr_t *data[2] = { 0 };
 	int exitval;
 
-	/*
-	 * We don't need to pass any input to the get pin plugin on stdin,
-	 * so data[0] is left NULL.
-	 */
-	if ((ret = ecustr_alloc(&data[1])) != ERRF_OK ||
-	    (ret = ecustr_alloc(&data[2])) != ERRF_OK ||
-	    (ret = interact(pid, fds, data, &exitval)) != ERRF_OK) {
+	if ((ret = ecustr_alloc(&data[0])) != ERRF_OK ||
+	    (ret = ecustr_alloc(&data[1])) != ERRF_OK ||
+	    (ret = interact(pid, fds, NULL, 0, data, &exitval)) != ERRF_OK) {
 		custr_free(data[1]);
 		custr_free(data[2]);
 		return (errf("PluginError", ret, ""));
@@ -137,13 +133,13 @@ kbmd_get_pin(uint8_t guid[restrict], custr_t **restrict pinp)
 		ret = errf("PluginError", NULL, "Plugin returned %d (%s)",
 		    exitval, GET_PIN_CMD);
 	} else {
-		extract_line(data[1]);
-		if (custr_len(data[1]) == 0) {
+		extract_line(data[0]);
+		if (custr_len(data[0]) == 0) {
 			ret = errf("PluginError", NULL,
 			    "script did not return any data");
 		} else {
-			*pinp = data[1];
-			data[1] = NULL;
+			*pinp = data[0];
+			data[0] = NULL;
 		}
 	}
 
@@ -391,8 +387,10 @@ plugin_pivtoken_common(struct piv_token *restrict pt, const char *restrict pin,
 		goto done;
 
 	if ((ret = spawn(cmd, args, _environ, &pid, fds)) != ERRF_OK ||
-	    (ret = interact(pid, fds, data, &exitval)) != ERRF_OK)
+	    (ret = interact(pid, fds, custr_cstr(data[0]), custr_len(data[0]),
+	    &data[1], &exitval)) != ERRF_OK) {
 		goto done;
+	}
 
 	if (exitval != 0) {
 		/*

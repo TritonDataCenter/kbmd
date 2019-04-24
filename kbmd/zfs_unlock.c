@@ -18,174 +18,114 @@
 #include <sys/debug.h>
 #include <sys/list.h>
 #include <sys/types.h>
-#include <umem.h>
 #include "common.h"
 #include "ecustr.h"
-#include "ebox.h"
 #include "envlist.h"
-#include "errf.h"
 #include "kbm.h"
 #include "kbmd.h"
-#include "libssh/sshbuf.h"
+#include "kspawn.h"
+#include "pivy/ebox.h"
+#include "pivy/errf.h"
 
+#define	ZFS_CMD	"/sbin/zfs"
+
+/*
+ * For now at least, effectively do 'cat key | zfs load-key <dataset>'
+ * The current libzfs api doesn't lend itself well to using input methods
+ * beyond those available from invoking the command i.e. read from fd or tty,
+ * or open and file.  It also does some transformation on the key value prior
+ * to issuing the zfs ioctl, so just running the command is simpler for now.
+ */
 static errf_t *
-datasets_str(char **datasets, size_t n, custr_t **cup)
+load_key(const char *dataset, const uint8_t *key, size_t keylen)
 {
-	custr_t *cu = NULL;
 	errf_t *ret = ERRF_OK;
+	custr_t *data[2] = { 0 };
+	int fds[3] = { -1, -1, -1 };
+	int exitval = 0;
+	strarray_t args = STRARRAY_INIT;
+	pid_t pid;
 
-	if ((ret = ecustr_alloc(&cu)) != ERRF_OK)
-		return (ret);
+	if ((ret = ecustr_alloc(&data[0])) != ERRF_OK ||
+	    (ret = ecustr_alloc(&data[1])) != ERRF_OK)
+			return (ret);
 
-	if (datasets == NULL) {
-		ASSERT0(n);
-		if ((ret = ecustr_append(cu, "all")) != ERRF_OK)
-			goto fail;
-		*cup = cu;
-		return (ret);
-	}
+	if ((ret = strarray_append(&args, "%s", ZFS_CMD)) != ERRF_OK ||
+	    (ret = strarray_append(&args, "load-key")) != ERRF_OK ||
+	    (ret = strarray_append(&args, "%s", dataset)) != ERRF_OK)
+		goto done;
 
-	if ((ret = ecustr_appendc(cu, '[')) != ERRF_OK)
-		goto fail;
-
-	for (size_t i = 0; i < n; i++) {
-		if (i > 0 && ((ret = ecustr_append(cu, ", ")) != ERRF_OK))
-			goto fail;
-		if ((ret = ecustr_append(cu, datasets[i])) != ERRF_OK)
-			goto fail;
-	}
-	if ((ret = ecustr_appendc(cu, ']')) != ERRF_OK)
-		goto fail;
-
-	*cup = cu;
-	return (ret);
-
-fail:
-	custr_free(cu);
-	*cup = NULL;
-	return (ret);
-}
-
-static errf_t *
-extract_datasets(nvlist_t *req, char ***datasetsp, uint_t *np)
-{
-	char **datasets;
-	errf_t *ret = ERRF_OK;
-	custr_t *ds_str = NULL;
-	uint_t n;
-
-	*datasetsp = NULL;
-	*np = 0;
-
-	if ((ret = envlist_lookup_string_array(req, KBM_NV_ZFS_DATASETS,
-	    &datasets, &n)) != ERRF_OK)
-		return (ret);
-
-	if ((ret = datasets_str(datasets, n, &ds_str)) != ERRF_OK)
-		return (ret);
-
-	(void) bunyan_debug(tlog, "Received KBM_CMD_ZFS_UNLOCK request",
-	    BUNYAN_T_STRING, "datasets", custr_cstr(ds_str),
+	(void) bunyan_debug(tlog, "Attemping to run zfs load-key",
+	    BUNYAN_T_STRING, "dataset", dataset,
 	    BUNYAN_T_END);
 
-	custr_free(ds_str);
+	if ((ret = spawn(ZFS_CMD, args.sar_strs, _environ, &pid,
+	    fds)) != ERRF_OK)
+		goto done;
 
-	*datasetsp = datasets;
-	*np = n;
+	if ((ret = interact(pid, fds, key, keylen, data,
+	    &exitval)) != ERRF_OK)
+		goto done;
 
+	if (exitval != 0) {
+		(void) bunyan_warn(tlog, "zfs load-key command failed",
+		    BUNYAN_T_STRING, "stderr", custr_cstr(data[1]),
+		    BUNYAN_T_INT32, "exitval", (int32_t)exitval,
+		    BUNYAN_T_END);
+		ret = errf("CommandError", NULL, "zfs load-key");
+	}
+
+done:
+	strarray_fini(&args);
+	custr_free(data[0]);
+	custr_free(data[1]);
 	return (ret);
 }
-
-
-static errf_t *
-get_boxes(nvlist_t *restrict req, struct ebox ***restrict eboxp,
-    size_t *restrict nboxp)
-{
-	errf_t *ret = ERRF_OK;
-	struct ebox **eboxes = NULL;
-	char **datasets = NULL;
-	uint_t ndatasets = 0;
-	size_t nbox = 0;
-
-	if ((ret = extract_datasets(req, &datasets, &ndatasets)) != ERRF_OK) {
-		ret = errf("RequestError", ret,
-		    "Could not extract datasets from request");
-		goto fail;
-	}
-
-	mutex_enter(&kbmd_box_lock);
-
-	nbox = (ndatasets > 0) ? ndatasets : kbmd_nboxes;
-	if ((eboxes = calloc(nbox, sizeof (struct ebox *))) == NULL) {
-		mutex_exit(&kbmd_box_lock);
-		return (errfno("calloc", errno, ""));
-	}
-
-	if (ndatasets == 0) {
-		bcopy(kbmd_boxes, eboxes, nbox * sizeof (struct ebox *));
-	} else {
-		for (size_t i = 0; i < nbox; i++) {
-			eboxes[i] = kbmd_get_ebox(datasets[i]);
-			if (eboxes[i] == NULL) {
-				ret = errf("NotFoundError", NULL,
-				    "dataset %s does not contain an ebox",
-				    datasets[i]);
-				goto fail;
-			}
-		}
-	}
-	mutex_exit(&kbmd_box_lock);
-
-	*eboxp = eboxes;
-	*nboxp = nbox;
-	return (ret);
-
-fail:
-	mutex_exit(&kbmd_box_lock);
-	free(eboxes);
-	return (ret);
-}
-
-static uint8_t dummy_guid[16] = {
-	1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16
-};
 
 void
 kbmd_zfs_unlock(nvlist_t *req)
 {
 	errf_t *ret = ERRF_OK;
 	nvlist_t *resp = NULL;
-	char **datasets = NULL;
-	custr_t *pin = NULL;
-	uint_t ndatasets = 0;
+	char *dataset = NULL;
+	struct ebox *ebox = NULL;
+	const uint8_t *key = NULL;
+	size_t keylen = 0;
 
-	if ((ret = extract_datasets(req, &datasets, &ndatasets)) != ERRF_OK) {
-		ret = errf("RequestError", ret,
-		    "Could not extract datasets from request");
+	if ((ret = envlist_lookup_string(req, KBM_NV_ZFS_DATASET,
+	    &dataset)) != ERRF_OK) {
+		(void) bunyan_warn(tlog,
+		    "Could not extract dataset name for unlock request",
+		    BUNYAN_T_END);
 		goto fail;
 	}
 
-	if ((ret = kbmd_get_pin(dummy_guid, &pin)) != ERRF_OK) {
-		ret = errf("RequestError", ret, "Could not fetch pin");
-		goto fail;
-	}
-
-	/* XXX: Remove this before integration */
-	(void) bunyan_debug(tlog, "Pin",
-	    BUNYAN_T_STRING, "pin", custr_cstr(pin),
+	(void) bunyan_debug(tlog, "Request to unlock dataset",
+	    BUNYAN_T_STRING, "dataset", dataset,
 	    BUNYAN_T_END);
 
-	/* XXX: Unlock token */
+	if ((ret = kbmd_get_ebox(dataset, &ebox)) != ERRF_OK ||
+	    (ret = kbmd_unlock_ebox(ebox)) != ERRF_OK) {
+		goto fail;
+	}
+
+	key = ebox_key(ebox, &keylen);
+
+	if ((ret = load_key(dataset, key, keylen)) != ERRF_OK) {
+		goto fail;
+	}
 
 	if ((ret = envlist_alloc(&resp)) != ERRF_OK ||
 	    (ret = envlist_add_boolean_value(resp, KBM_NV_SUCCESS,
 	    B_TRUE)) != ERRF_OK)
 		goto fail;
 
+	ebox_free(ebox);
 	nvlist_free(req);
 	kbmd_ret_nvlist(resp);
 
 fail:
+	ebox_free(ebox);
 	nvlist_free(req);
 	nvlist_free(resp);
 	kbmd_ret_error(ret);
