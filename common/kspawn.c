@@ -329,18 +329,18 @@ read_fd(int fd, custr_t *restrict cu, size_t *restrict np)
 }
 
 static errf_t *
-write_fd(int fd, custr_t *restrict cu, size_t offset, size_t *restrict np)
+write_fd(int fd, const void *data, size_t datalen, size_t offset,
+    size_t *restrict np)
 {
-	const char *s = custr_cstr(cu);
-	size_t slen = custr_len(cu);
+	const uint8_t *p = data;
 	ssize_t n;
 
-	if (offset >= slen) {
+	if (offset >= datalen) {
 		*np = 0;
 		return (ERRF_OK);
 	}
 
-	n = write(fd, s + offset, slen - offset);
+	n = write(fd, p + offset, datalen - offset);
 	if (n < 0) {
 		int errsave = errno;
 		return (errf("WriteError", errfno("write", errsave, ""), ""));
@@ -351,18 +351,25 @@ write_fd(int fd, custr_t *restrict cu, size_t offset, size_t *restrict np)
 }
 
 errf_t *
-interact(pid_t pid, int fds[restrict], custr_t *data[restrict],
-    int *restrict exitvalp)
+interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
+    custr_t *output[restrict], int *restrict exitvalp)
 {
 	struct pollfd pfds[3]= { 0 };
 	nfds_t nfds = 3;
 	size_t written = 0;
 	int rc = 0;
 
-	for (size_t i = 0; i < 3; i++) {
-		if (data[i] != NULL) {
+	if (input != NULL) {
+		pfds[0].fd = fds[0];
+		pfds[0].events = POLLOUT;
+	} else {
+		pfds[0].fd = -1;
+	}
+
+	for (size_t i = 1; i < 3; i++) {
+		if (output[i - 1] != NULL) {
 			pfds[i].fd = fds[i];
-			pfds[i].events = (i == 0) ? POLLOUT : POLLIN;
+			pfds[i].events = POLLIN;
 		} else {
 			pfds[i].fd = -1;
 		}
@@ -384,11 +391,11 @@ interact(pid_t pid, int fds[restrict], custr_t *data[restrict],
 			continue;
 
 		if (pfds[0].revents & POLLOUT) {
-			ret = write_fd(pfds[0].fd, data[0], written, &n);
+			ret = write_fd(pfds[0].fd, input, inputlen,
+			    written, &n);
 			written += n;
 
-			if (n == 0 || written == custr_len(data[0]) ||
-			    ret != ERRF_OK) {
+			if (n == 0 || written == inputlen || ret != ERRF_OK) {
 				(void) close(pfds[0].fd);
 				pfds[0].fd = -1;
 				pfds[0].events = 0;
@@ -401,7 +408,7 @@ interact(pid_t pid, int fds[restrict], custr_t *data[restrict],
 			if (!(pfds[i].events & POLLIN))
 				continue;
 
-			ret = read_fd(pfds[i].fd, data[i], &n);
+			ret = read_fd(pfds[i].fd, output[i - 1], &n);
 
 			if (n == 0 || ret != ERRF_OK) {
 				(void) close(pfds[i].fd);

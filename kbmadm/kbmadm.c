@@ -61,6 +61,8 @@ static struct {
 	{ "unlock", do_unlock }
 };
 
+int exitval = 0;
+
 static void __NORETURN
 usage(void)
 {
@@ -98,7 +100,7 @@ main(int argc, char *argv[])
 	}
 
 	if (ret == ERRF_OK)
-		return (0);
+		return (exitval);
 
 	errfx(EXIT_FAILURE, ret, "%s command failed", cmd_tbl[i].name);
 }
@@ -220,18 +222,49 @@ add_datasets(nvlist_t *req, char **argv, int argc)
 }
 
 static errf_t *
+unlock_dataset(int fd, const char *dataset)
+{
+	errf_t *ret;
+	nvlist_t *req = NULL, *resp = NULL;
+
+	if ((ret = req_new(KBMD_CMD_ZFS_UNLOCK, &req)) != ERRF_OK ||
+	    (ret = envlist_add_string(req, KBMD_NV_ZFS_DATASET,
+	    dataset)) != ERRF_OK ||
+	    (ret = nv_door_call(fd, req, &resp)) != ERRF_OK)
+		return (ret);
+
+	if ((ret = check_error(resp)) != ERRF_OK) {
+		errf_t *e = NULL;
+
+		(void) fprintf(stderr, "Failed to unlock %s\n", dataset);
+		for (e = ret; e != NULL; e = errf_cause(e)) {
+			(void) fprintf(stderr, "  Caused by: %s: %s\n",
+			     errf_name(e), errf_message(e));
+			(void) fprintf(stderr, "    in %s() at %s:%d\n",
+			    errf_function(e), errf_file(e), errf_line(e));
+		}
+		erfree(ret);
+		exitval++;
+	}
+
+	return (ret);
+}
+
+static errf_t *
 do_unlock(int argc, char **argv)
 {
 	errf_t *ret;
 	nvlist_t *req = NULL, *resp = NULL;
 	int fd = -1;
 
-	if ((ret = req_new(KBM_CMD_ZFS_UNLOCK, &req)) != ERRF_OK ||
-	    (ret = add_datasets(req, argv, argc)) != ERRF_OK ||
-	    (ret = open_door(&fd)) != ERRF_OK ||
-	    (ret = nv_door_call(fd, req, &resp)) != ERRF_OK ||
-	    (ret = check_error(resp)) != ERRF_OK)
-		    goto done;
+	if ((ret = open_door(&fd)) != ERRF_OK)
+		goto done;
+
+	for (int i = 1; i <= argc; i++) {
+		ret = unlock_dataset(fd, argv[i]);
+		if (ret != ERRF_OK)
+			goto done;
+	}
 
 done:
 	if (fd >= 0)
