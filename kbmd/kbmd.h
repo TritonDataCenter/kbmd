@@ -34,6 +34,8 @@ extern "C" {
 #define	UID_KBMD	0
 #define	GID_KBMD	0
 
+#define	BOX_PROP	"rfd77:config"
+
 struct custr;
 struct ebox;
 struct errf;
@@ -69,6 +71,7 @@ struct errf *kbmd_assert_pin(struct piv_token *);
 struct errf *kbmd_get_ebox(const char *restrict, struct ebox **restrict);
 struct errf *kbmd_put_ebox(struct ebox *);
 struct errf *kbmd_unlock_ebox(struct ebox *);
+errf_t *ebox_to_str(struct ebox *restrct, char **restrict);
 
 struct errf *kbmd_scan_pools(void);
 
