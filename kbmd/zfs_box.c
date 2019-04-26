@@ -30,8 +30,6 @@
 
 #include <stdio.h>
 
-#define	BOX_PROP	"rfd77:config"
-
 static errf_t *
 ezfs_open(libzfs_handle_t *hdl, const char *path, int types,
     zfs_handle_t **zhpp)
@@ -89,7 +87,7 @@ done:
 	return (ret);
 }
 
-static errf_t *
+errf_t *
 ebox_to_str(struct ebox *restrict ebox, char **restrict strp)
 {
 	const char *dsname = ebox_private(ebox);
@@ -159,13 +157,27 @@ get_ebox_string(zfs_handle_t *restrict zhp, char **restrict sp)
 	return (envlist_lookup_string(val, "value", sp));
 }
 
+static errf_t *
+get_ebox_common(zfs_handle_t *restrict zhp, struct ebox **restrict eboxp)
+{
+	errf_t *ret = ERRF_OK;
+	char *str = NULL;
+	struct ebox *ebox = NULL;
+
+	if ((ret = get_ebox_string(zhp, &str)) != ERRF_OK ||
+	    (ret = str_to_ebox(dataset, str, &ebox)) != ERRF_OK ||
+	    (ret = set_box_dataset(ebox, zfs_get_name(zhp))) != ERRF_OK)
+		return (ret);
+
+	*eboxp = ebox;
+	return (ERRF_OK);
+}
+
 errf_t *
 kbmd_get_ebox(const char *dataset, struct ebox **eboxp)
 {
 	zfs_handle_t *zhp = NULL;
 	errf_t *ret = ERRF_OK;
-	char *str = NULL;
-	struct ebox *ebox = NULL;
 
 	mutex_enter(&g_zfs_lock);
 
@@ -176,12 +188,7 @@ kbmd_get_ebox(const char *dataset, struct ebox **eboxp)
 		goto done;
 	}
 
-	if ((ret = get_ebox_string(zhp, &str)) != ERRF_OK ||
-	    (ret = str_to_ebox(dataset, str, &ebox)) != ERRF_OK ||
-	    (ret = set_box_dataset(ebox, dataset)) != ERRF_OK)
-		goto done;
-
-	*eboxp = ebox;
+	ret = get_ebox_common(zhp, eboxp);
 
 done:
 	if (zhp != NULL)
@@ -190,26 +197,12 @@ done:
 	return (ret);
 }
 
-
-errf_t *
-kbmd_put_ebox(struct ebox *ebox)
+static errf_t *
+put_ebox_common(zfs_handle_t *restrict zhp, struct ebox *restrict ebox)
 {
-	const char *dsname = ebox_private(ebox);
 	errf_t *ret = ERRF_OK;
 	char *str = NULL;
 	nvlist_t *prop = NULL;
-	zfs_handle_t *zhp = NULL;
-
-	VERIFY3P(dsname, !=, NULL);
-
-	mutex_enter(&g_zfs_lock);
-
-	if ((ret = ezfs_open(g_zfs, dsname,
-	    ZFS_TYPE_FILESYSTEM|ZFS_TYPE_VOLUME, &zhp)) != ERRF_OK) {
-		ret = errf("EBoxError", ret,
-		    "unable to save ebox for %s", dsname);
-		goto done;
-	}
 
 	if ((ret = envlist_alloc(&prop)) != ERRF_OK ||
 	    (ret = ebox_to_str(ebox, &str)) != ERRF_OK ||
@@ -225,10 +218,35 @@ kbmd_put_ebox(struct ebox *ebox)
 	}
 
 done:
+	nvlist_free(prop);
+	free(str);
+	return (ret);
+}
+
+errf_t *
+kbmd_put_ebox(struct ebox *ebox)
+{
+	errf_t *ret = ERRF_OK;
+	const char *dsname = ebox_private(ebox);
+	zfs_handle_t *zhp = NULL;
+
+	VERIFY3P(dsname, !=, NULL);
+
+	mutex_enter(&g_zfs_lock);
+
+	if ((ret = ezfs_open(g_zfs, dsname,
+	    ZFS_TYPE_FILESYSTEM|ZFS_TYPE_VOLUME, &zhp)) != ERRF_OK) {
+		ret = errf("EBoxError", ret,
+		    "unable to save ebox for %s", dsname);
+		goto done;
+	}
+
+	ret = put_ebox_common(zhp, ebox);
+
+done:
 	if (zhp != NULL)
 		zfs_close(zhp);
 	mutex_exit(&g_zfs_lock);
-	nvlist_free(prop);
 	return (ret);
 }
 

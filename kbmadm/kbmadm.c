@@ -106,11 +106,48 @@ main(int argc, char *argv[])
 }
 
 static errf_t *
+add_create_arg(strarray_t *args, nvlist_t *arg)
+{
+	errf_t *ret;
+	char *option = NULL;
+	char *value = NULL;
+
+	if ((ret = envlist_lookup_string(arg, "option", &option)) != ERRF_OK ||
+	    (ret = envlist_lookup_string(arg, "value", &value)) != ERRF_OK)
+		return (ret);
+
+	if ((ret = strarray_append(args, "-O") != ERRF_OK) ||
+	    (ret = strarray_append(args, "%s=%s", option, value)) != ERRF_OK)
+		return (ret);
+
+	return (ERRF_OK);
+}
+
+static errf_t *
+add_create_args(strarray_t *args, nvlist_t *resp)
+{
+	errf_t *ret;
+	nvlist_t **nvlargs = { 0 };
+	uint_t nvlarglen = 0;
+
+	if ((ret = envlist_lookup_nvlist_array(resp, KBM_NV_CREATE_ARGS,
+	    &nvlargs, &nvlarglen)) != ERRF_OK)
+		return (ret);
+
+	for (size_t i = 0; i < nvlarglen; i++) {
+		if ((ret = add_create_arg(args, nvlargs[i])) != ERRF_OK)
+			return (ret);
+	}
+
+	return (ERRF_OK);
+}
+
+static errf_t *
 do_create_zpool(int argc, char **argv)
 {
+	errf_t *ret = ERRF_OK;
 	nvlist_t *req = NULL;
 	nvlist_t *resp = NULL;
-	errf_t *ret = ERRF_OK;
 	uint8_t *key = NULL;
 	char **params = NULL;
 	uint_t keylen = 0, nparams = 0;
@@ -123,23 +160,26 @@ do_create_zpool(int argc, char **argv)
 	    (ret = check_error(resp)) != ERRF_OK)
 		goto done;
 
-	VERIFY0(nvlist_lookup_uint8_array(resp, KBM_NV_ZPOOL_KEY, &key,
-	    &keylen));
-	VERIFY0(nvlist_lookup_string_array(resp, KBM_NV_CREATE_ARGS, &params,
-	    &nparams));
-
+	/*
+	 * Build zpool create command line:
+	 * 'zpool create <options from kbmd>'
+	 */
 	if ((ret = strarray_append(&args, "zpool")) != ERRF_OK ||
-	    (ret = strarray_append(&args, "create")) != ERRF_OK)
+	    (ret = strarray_append(&args, "create")) != ERRF_OK ||
+	    (ret = add_create_args(&args, resp)) != ERRF_OK)
 		goto done;
 
-	for (size_t i = 0; i < nparams; i++) {
-		if ((ret = strarray_append(&args, "%s", params[i])) != ERRF_OK)
-			goto done;
-	}
+	/*
+	 * Append arguments from kbmd command line
+	 */
 	for (size_t i = 0; i < argc; i++) {
 		if ((ret = strarray_append(&args, "%s", argv[i])) != ERRF_OK)
 			goto done;
 	}
+
+	if ((ret = envlist_lookup_uint8_array(resp, KBM_NV_ZPOOL_KEY, &key,
+	    &keylen)) != ERRF_OK)
+		goto done;
 
 	ret = run_zpool_cmd(args.sar_strs, key, keylen);
 
@@ -156,38 +196,23 @@ static errf_t *
 run_zpool_cmd(char **argv, const uint8_t *key, size_t keylen)
 {
 	errf_t *ret;
-	pid_t pid;
+	custr_t *out[2] = { 0 };
 	int fds[3] = { -1, STDOUT_FILENO, STDERR_FILENO };
 	int status;
+	pid_t pid;
 	size_t written = 0;
 
-	if ((ret = spawn(ZPOOL_CMD, argv, _environ, &pid, fds)) != ERRF_OK)
+	if ((ret = spawn(ZPOOL_CMD, argv, _environ, &pid, fds)) != ERRF_OK ||
+	    (ret = interact(pid, fds, key, keylen, out, &status)) != ERRF_OK)
 		return (ret);
 
-	/*
-	 * Since the key is a raw binary value, we cannot use interact()
-	 * to feed it into the spawned zpool create command and must
-	 * do it ourselves.
-	 */
-	do {
-		ssize_t n;
+	if (status != 0) {
+		exitval++;
+		return (errf("CommandError", NULL, "zpool create returned %d",
+		    status));
+	}
 
-		n = write(fds[0], key + written, keylen - written);
-		if (n > 0) {
-			written += n;
-		} else if (n < 0) {
-			if (errno == EINTR)
-				continue;
-			return (errfno("write", errno, ""));
-		} else {
-			break;
-		}
-
-	} while (written < keylen);
-
-	(void) close(fds[0]);
-
-	return (exitval(pid, &status));
+	return (ERRF_OK);
 }
 
 static errf_t *
@@ -209,16 +234,6 @@ done:
 	nvlist_free(req);
 	nvlist_free(resp);
 	return (ret);
-}
-
-static errf_t *
-add_datasets(nvlist_t *req, char **argv, int argc)
-{
-	if (argc == 0)
-		return (ERRF_OK);
-
-	uint_t n = argc;
-	return (envlist_add_string_array(req, KBM_NV_ZFS_DATASETS, argv, n));
 }
 
 static errf_t *
