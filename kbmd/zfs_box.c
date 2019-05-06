@@ -161,12 +161,13 @@ static errf_t *
 get_ebox_common(zfs_handle_t *restrict zhp, struct ebox **restrict eboxp)
 {
 	errf_t *ret = ERRF_OK;
+	const char *dataset = zfs_get_name(zhp);
 	char *str = NULL;
 	struct ebox *ebox = NULL;
 
 	if ((ret = get_ebox_string(zhp, &str)) != ERRF_OK ||
 	    (ret = str_to_ebox(dataset, str, &ebox)) != ERRF_OK ||
-	    (ret = set_box_dataset(ebox, zfs_get_name(zhp))) != ERRF_OK)
+	    (ret = set_box_dataset(ebox, dataset)) != ERRF_OK)
 		return (ret);
 
 	*eboxp = ebox;
@@ -208,13 +209,13 @@ put_ebox_common(zfs_handle_t *restrict zhp, struct ebox *restrict ebox)
 	    (ret = ebox_to_str(ebox, &str)) != ERRF_OK ||
 	    (ret = envlist_add_string(prop, BOX_PROP, str)) != ERRF_OK) {
 		ret = errf("EBoxError", ret, "unable serialize ebox for %s",
-		    dsname);
+		    zfs_get_name(zhp));
 	    goto done;
 	}
 
 	if ((ret = ezfs_prop_set_list(zhp, prop)) != ERRF_OK) {
 		ret = errf("EBoxError", ret, "unable to save ebox for %s",
-		    dsname);
+		    zfs_get_name(zhp));
 	}
 
 done:
@@ -346,41 +347,48 @@ local_unlock(struct piv_ecdh_box *box, struct sshkey *cak, const char *name)
 	 *
 	 * In the common case, we know the GUID of the token we need.  As
 	 * an optimization, we first try piv_find() which only loads the
-	 * information for the matching token (if found).  Only if we cannot
-	 * locate the needed token by GUID do we load all of the present
-	 * tokens.  piv_box_find_token() will then search the list of tokens
+	 * information for the matching token (if found).  If we cannot
+	 * locate the required token by its GUID, only then do we use
+	 * piv_enumerate() to load all of the present tokens.
+	 * piv_box_find_token() will then search the list of tokens
 	 * passed to it for a matching token.  In the common case the list
 	 * will  be a single entry list with the token we alraedy know has
 	 * a matching GUID.  In the fallback case, it will be a list of all
 	 * tokens present on the system.  When piv_box_find_token() cannot
-	 * find the token by GUID, it will then search the list it is
-	 * given for a matching 9D key.  If a matching token is found,
-	 * piv_box_find_token() then loads the correct slot needed to
+	 * find the token by GUID, it will then search the passed-in list of
+	 * piv tokens for one with a matching 9D key.  If a matching token is
+	 * found, piv_box_find_token() then loads the correct slot needed to
 	 * unlock the given box.
 	 */
 	if ((ret = piv_find(piv_ctx, piv_box_guid(box), GUID_LEN,
 	    &tokens)) != ERRF_OK) {
-		if (!errf_caused_by(ret, "NotFoundError"))
+		if (!errf_caused_by(ret, "NotFoundError")) {
+			ret = errf("LocalUnlockError", ret,
+			    "failed to find token for box %s", name);
 			goto done;
+		}
+		erfree(ret);
 		if ((ret = piv_enumerate(piv_ctx, &tokens)) != ERRF_OK) {
 			ret = errf("LocalUnlockError", ret,
-			   "Cannot find token for box %s", name);
+			    "failed to find token for box %s", name);
 			goto done;
 		}
 	}
 
 	if ((ret = piv_box_find_token(tokens, box, &token, &slot)) != ERRF_OK) {
 		ret = errf("LocalUnlockError", ret,
-		    "failed to find token with GUID %s and key for box",
-		    piv_box_guid_hex(box));
+		    "failed to find token for box %s", name);
 		goto done;
 	}
 
 	if ((ret = piv_txn_begin(token)) != ERRF_OK ||
 	    (ret = piv_select(token)) != ERRF_OK ||
 	    (ret = auth_card(token, cak)) != ERRF_OK ||
-	    (ret = kbmd_assert_pin(token)) != ERRF_OK)
+	    (ret = kbmd_assert_pin(token)) != ERRF_OK) {
+		ret = errf("LocalUnlockError", ret,
+		    "failed to unlock piv token for box %s", name);
 		goto done;
+	}
 
 	ret = piv_box_open(token, slot, box);
 
@@ -390,11 +398,7 @@ done:
 
 	piv_release(tokens);
 	mutex_exit(&piv_lock);
-
-	if (ret != ERRF_OK)
-		return (errf("LocalUnlockError", ret, "failed to unlock box"));
-
-	return (ERRF_OK);
+	return (ret);
 }
 
 errf_t *
@@ -414,8 +418,7 @@ kbmd_unlock_ebox(struct ebox *ebox)
 		part = ebox_config_next_part(config, NULL);
 		tpart = ebox_part_tpl(part);
 		ret = local_unlock(ebox_part_box(part),
-		    ebox_tpl_part_cak(tpart),
-		    ebox_tpl_part_name(tpart));
+		    ebox_tpl_part_cak(tpart), ebox_tpl_part_name(tpart));
 		if (ret != ERRF_OK && !errf_caused_by(ret, "NotFoundError"))
 			return (ret);
 		if (ret != ERRF_OK) {

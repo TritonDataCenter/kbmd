@@ -71,7 +71,7 @@ struct errf *kbmd_assert_pin(struct piv_token *);
 struct errf *kbmd_get_ebox(const char *restrict, struct ebox **restrict);
 struct errf *kbmd_put_ebox(struct ebox *);
 struct errf *kbmd_unlock_ebox(struct ebox *);
-errf_t *ebox_to_str(struct ebox *restrct, char **restrict);
+struct errf *ebox_to_str(struct ebox *restrct, char **restrict);
 
 struct errf *kbmd_scan_pools(void);
 
@@ -81,6 +81,7 @@ struct errf *kbmd_register_pivtoken(struct piv_token *restrict,
 struct errf *kbmd_replace_pivtoken(uint8_t [restrict],
     struct piv_token *restrict, const char *restrict, const char *restrict,
     struct custr **restrict);
+struct errf *kbmd_setup_token(struct piv_token **, uint8_t **, size_t *);
 
 #ifdef __cplusplus
 }

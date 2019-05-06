@@ -54,6 +54,7 @@ KBMADM_OBJS = $(KBMADM_SRCS:%.c=%.o)
 _KBMD_SRCS =		\
 	door.c		\
 	kbmd.c		\
+	piv.c		\
 	plugin.c	\
 	zfs_box.c	\
 	zfs_unlock.c	\
