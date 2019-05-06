@@ -141,6 +141,14 @@ envlist_add_nvlist(nvlist_t *nvl, const char *name, nvlist_t *toadd)
 }
 
 errf_t *
+envlist_add_nvlist_array(nvlist_t *nvl, const char *name, nvlist_t **val,
+    uint_t len)
+{
+	int ret = nvlist_add_nvlist_array(nvl, name, val, len);
+	return (NVERR(ret, "nvlist_add_uint8_array"));
+}
+
+errf_t *
 envlist_add_string_array(nvlist_t *nvl, const char *name, char **val,
     uint_t nelem)
 {

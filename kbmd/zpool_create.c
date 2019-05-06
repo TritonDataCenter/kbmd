@@ -18,6 +18,7 @@
 #include <strings.h>
 #include <sys/debug.h>
 #include <sys/list.h>
+#include <sys/sysmacros.h>
 #include <sys/types.h>
 #include "common.h"
 #include "envlist.h"
@@ -25,6 +26,7 @@
 #include "kbm.h"
 #include "kbmd.h"
 #include "kspawn.h"
+#include "pivy/ebox.h"
 
 static size_t zfs_key_len = 32; /* bytes */
 
@@ -64,7 +66,7 @@ add_create_options(nvlist_t *nvl, struct ebox *ebox)
 		goto done;
 
 	for (i = 0; i < ARRAY_SIZE(encrypt_opts); i++) {
-		if ((ret = add_opt(&args[i], encrypt_opts[i].options,
+		if ((ret = add_opt(&args[i], encrypt_opts[i].option,
 		    encrypt_opts[i].val)) != ERRF_OK) {
 			goto done;
 		}
@@ -86,7 +88,8 @@ done:
 static errf_t *
 add_key(nvlist_t *nvl, const uint8_t *key, size_t keylen)
 {
-	return (envlist_add_uint8_array(nvl, KBM_NV_ZPOOL_KEY, key, keylen));
+	return (envlist_add_uint8_array(nvl, KBM_NV_ZPOOL_KEY,
+	    (uint8_t *)key, keylen));
 }
 
 static errf_t *
@@ -100,23 +103,62 @@ add_create_data(nvlist_t *restrict resp, struct ebox *restrict ebox,
 	return (add_key(resp, key, keylen));
 }
 
-static errf_t *
-create_pin(char **pinp)
-{
-	return (ERRF_OK);
-}
-
-static errf_t *
-setup_token(struct piv_token *restrict pk, uint8_t **restrict recovery_token,
-    size_t *restrict recovery_token_len)
-{
-
-}
-
+/*
+ * XXX: Until we integrate the gossip protocol, create a template with
+ * just a primary config (from the given token).
+ */
 static errf_t *
 get_template(struct piv_token *restrict pk, struct ebox_tpl **restrict tplp)
 {
+	errf_t *ret = ERRF_OK;
+	struct piv_slot *slot = NULL;
+	struct ebox_tpl *tpl = NULL;
+	struct ebox_tpl_config *pri_cfg = NULL;
+	struct ebox_tpl_part *pri_part = NULL;
 
+	if ((tpl = ebox_tpl_alloc()) == NULL) {
+		ret = errfno("ebox_tpl_alloc", errno, "creating template");
+		goto done;
+	}
+
+	if ((pri_cfg = ebox_tpl_config_alloc(EBOX_PRIMARY)) == NULL) {
+		ret = errfno("ebox_tpl_config_alloc", errno,
+		    "creating template");
+		goto done;
+	}
+
+	if ((ret = piv_txn_begin(pk)) != ERRF_OK)
+		goto done;
+
+	if ((ret = piv_select(pk)) != ERRF_OK)
+		goto done;
+
+	if ((slot = piv_get_slot(pk, PIV_SLOT_PIV_AUTH)) == NULL) {
+		ret = errf("SlotError", NULL, "piv_get_slot(%02X) failed",
+		    PIV_SLOT_PIV_AUTH);
+		goto done;
+	}
+
+	if ((pri_part = ebox_tpl_part_alloc(piv_token_guid(pk), GUID_LEN,
+	    PIV_SLOT_PIV_AUTH, piv_slot_pubkey(slot))) == NULL) {
+		ret = errfno("ebox_tpl_part_alloc", errno, "creating template");
+		goto done;
+	}
+
+	ebox_tpl_config_add_part(pri_cfg, pri_part);
+	ebox_tpl_add_config(tpl, pri_cfg);
+	*tplp = tpl;
+
+done:
+	if (piv_token_in_txn(pk))
+		piv_txn_end(pk);
+
+	if (ret != ERRF_OK) {
+		ebox_tpl_part_free(pri_part);
+		ebox_tpl_config_free(pri_cfg);
+		ebox_tpl_free(tpl);
+	}
+	return (ret);
 }
 
 void
@@ -133,37 +175,47 @@ kbmd_zpool_create(nvlist_t *req)
 	(void) bunyan_debug(tlog, "Received KBM_CMD_ZPOOL_CREATE request",
 	    BUNYAN_T_END);
 
+	mutex_enter(&piv_lock);
+
 	if ((ret = envlist_alloc(&resp)) != ERRF_OK)
-		goto fail;
+		goto done;
 
-	/* XXX: Select token */
+	if ((key = calloc(1, zfs_key_len)) == NULL) {
+		ret = errfno("calloc", errno, "");
+		goto done;
+	}
+	keylen = zfs_key_len;
+	arc4random_buf(key, keylen);
 
-	if ((ret = setup_token(pk, &recovery_token,
+	if ((ret = kbmd_setup_token(&pk, &recovery_token,
 	    &recovery_token_len)) != ERRF_OK) {
-		goto fail;
+		goto done;
 	}
 
 	if ((ret = get_template(pk, &tpl)) != ERRF_OK) {
-		goto fail;
+		goto done;
 	}
 
 	if ((ret = ebox_create(tpl, key, keylen, recovery_token,
 	    recovery_token_len, &ebox)) != ERRF_OK)
-		goto fail;
+		goto done;
 
 	if ((ret = add_create_data(resp, ebox, key, keylen)) != ERRF_OK ||
 	    (ret = envlist_add_boolean_value(resp, KBM_NV_SUCCESS,
 	    B_TRUE)) != ERRF_OK)
-		goto fail;
+		goto done;
 
+done:
+	mutex_exit(&piv_lock);
 	freezero(key, keylen);
-	freezero(recovery_key, recovery_keylen);
+	freezero(recovery_token, recovery_token_len);
 	nvlist_free(req);
-	kbmd_ret_nvlist(resp);
+	ebox_tpl_free(tpl);
 
-fail:
-	freezero(key, keylen);
-	freezero(recovery_key, recovery_keylen);
-	nvlist_free(req);
-	kbmd_ret_error(ret);
+	if (ret == ERRF_OK) {
+		kbmd_ret_nvlist(resp);
+	} else {
+		nvlist_free(resp);
+		kbmd_ret_error(ret);
+	}
 }

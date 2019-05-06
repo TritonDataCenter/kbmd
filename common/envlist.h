@@ -38,6 +38,8 @@ struct errf *envlist_add_uint8_array(nvlist_t *, const char *, uint8_t *,
 struct errf *envlist_add_nvlist(nvlist_t *, const char *, nvlist_t *);
 struct errf *envlist_add_string_array(nvlist_t *, const char *, char **,
     uint_t);
+struct errf *envlist_add_nvlist_array(nvlist_t *, const char *, nvlist_t **,
+    uint_t);
 struct errf *envlist_dump_json(nvlist_t *, char **);
 
 struct errf *envlist_lookup_int32(nvlist_t *, const char *, int32_t *);
