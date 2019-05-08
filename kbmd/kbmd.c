@@ -30,6 +30,7 @@
 #include <libscf.h>
 #include <libzfs.h>
 #include <paths.h>
+#include <port.h>
 #include <priv.h>
 #include <signal.h>
 #include <smbios.h>
@@ -71,6 +72,9 @@ SCARDCONTEXT piv_ctx;
 uuid_t sys_uuid;
 static volatile boolean_t kbmd_quit = B_FALSE;
 
+int port = -1;
+
+static void *kbmd_event_loop(void *);
 static int kbmd_daemonize(int);
 static void kbmd_fd_setup(void);
 static int kbmd_dir_setup(void);
@@ -88,6 +92,7 @@ main(int argc, char *argv[])
 	int dirfd, dfd, errval;
 	sigset_t set;
 	struct sigaction act;
+	thread_t evt_tid;
 
 	alloc_init();
 	kbmd_fd_setup();
@@ -158,6 +163,13 @@ main(int argc, char *argv[])
 	}
 	mutex_exit(&piv_lock);
 
+	if ((port = port_create()) == -1)
+		kbmd_dfatal(dfd, "unable to create event port");
+
+	errval = thr_create(NULL, 0, kbmd_event_loop, NULL, 0, &evt_tid);
+	if (errval != 0)
+		kbmd_dfatal(dfd, "cannot start event loop");
+
 	errval = kbmd_door_setup(doorpath);
 	if (errval != 0)
 		kbmd_dfatal(dfd, "unable to create door");
@@ -174,7 +186,27 @@ main(int argc, char *argv[])
 			break;
 	}
 
+	errval = thr_join(evt_tid, NULL, NULL);
+	if (errval != 0)
+		errx(EXIT_FAILURE, "thr_join failed: %s", strerror(errval));
+
 	return (0);
+}
+
+static void *
+kbmd_event_loop(void *arg __unused)
+{
+	while (!kbmd_quit) {
+		port_event_t pe = { 0 };
+
+		if (port_get(port, &pe, NULL) < 0) {
+			if (errno == EINTR)
+				continue;
+			panic("port_get failed");
+		}
+	}
+
+	return (NULL);
 }
 
 /*

@@ -56,6 +56,7 @@ _KBMD_SRCS =		\
 	kbmd.c		\
 	piv.c		\
 	plugin.c	\
+	recovery.c	\
 	zfs_box.c	\
 	zfs_unlock.c	\
 	zpool_create.c

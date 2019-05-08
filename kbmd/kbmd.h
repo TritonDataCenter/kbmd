@@ -83,6 +83,9 @@ struct errf *kbmd_replace_pivtoken(uint8_t [restrict],
     struct custr **restrict);
 struct errf *kbmd_setup_token(struct piv_token **, uint8_t **, size_t *);
 
+struct errf *kbmd_watch_pid(pid_t, void (*)(pid_t, void *), void *);
+struct errf *kbmd_unwatch_pid(pid_t);
+
 #ifdef __cplusplus
 }
 #endif
