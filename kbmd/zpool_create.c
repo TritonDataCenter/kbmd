@@ -145,6 +145,18 @@ get_template(struct piv_token *restrict pk, struct ebox_tpl **restrict tplp)
 		goto done;
 	}
 
+	if ((slot = piv_get_slot(pk, PIV_SLOT_CARD_AUTH)) == NULL) {
+		ret = errf("SlotError", NULL, "piv_get_slot(%02X) failed",
+		    PIV_SLOT_CARD_AUTH);
+		goto done;
+	}
+	ebox_tpl_part_set_cak(pri_part, piv_slot_pubkey(slot));
+
+	/*
+	 * XXX: We can also set a name for this template part, is there any
+	 * useful/meaningful value that could be used?
+	 */
+
 	ebox_tpl_config_add_part(pri_cfg, pri_part);
 	ebox_tpl_add_config(tpl, pri_cfg);
 	*tplp = tpl;
