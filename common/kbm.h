@@ -30,7 +30,12 @@ extern "C" {
 #define	KBM_NV_CREATE_ARGS	"args"		/* string array */
 #define	KBM_NV_ZPOOL_KEY	"zpool-key"	/* byte array */
 #define	KBM_NV_ZFS_DATASET	"dataset"	/* string */
-#define	KBM_NV_RECOVER_ID	"recover-id"	/* uint64_t */
+#define	KBM_NV_RECOVER_ID	"recover-id"	/* uint32_t */
+#define	KBM_NV_CONV		"conversation"	/* nvlist array */
+#define	KBM_NV_QUESTION		"question"	/* string */
+#define	KBM_NV_OPTION		"option"	/* string */
+#define	KBM_NV_RESPONSE		"answer"	/* string */
+#define	KBM_NV_RESP_QUIT	"quit"		/* boolean */
 
 typedef enum kbm_cmd {
 	KBM_CMD_ZFS_UNLOCK,

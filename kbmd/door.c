@@ -282,12 +282,6 @@ kbmd_door_server(void *cookie, char *argp, size_t arg_size, door_desc_t *dp,
 }
 
 void
-kbmd_recover_start(nvlist_t *req)
-{
-
-}
-
-void
 kbmd_recover_resp(nvlist_t *req)
 {
 
