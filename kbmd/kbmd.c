@@ -63,6 +63,13 @@ static struct kbmlog {
 
 bunyan_logger_t *blog;
 
+/*
+ * XXX: I think bootparams can specify an alternate pool name for the
+ * main dataset.  If so, we'll need to include code to look for that
+ * and override the default.
+ */
+char *zones_dataset = "zones";
+
 mutex_t g_zfs_lock = ERRORCHECKMUTEX;
 libzfs_handle_t *g_zfs;
 
@@ -165,6 +172,8 @@ main(int argc, char *argv[])
 
 	if ((port = port_create()) == -1)
 		kbmd_dfatal(dfd, "unable to create event port");
+
+	kbmd_recover_init();
 
 	errval = thr_create(NULL, 0, kbmd_event_loop, NULL, 0, &evt_tid);
 	if (errval != 0)

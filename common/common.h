@@ -20,8 +20,22 @@
 extern "C" {
 #endif
 
+#ifndef GUID_LEN
+#define	GUID_LEN 16
+#endif
+
+#define	GUID_STR_LEN (GUID_LEN * 2 + 1)
+
 void panic(const char *, ...) __NORETURN;
 void alloc_init(void);
+void guidstr(const uint8_t *restrict, char *restrict);
+
+struct errf *ecalloc(size_t, size_t, void *);
+static inline struct errf *
+zalloc(size_t sz, void *p)
+{
+	return (ecalloc(1, sz, p));
+}
 
 #ifdef __cplusplus
 }

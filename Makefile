@@ -56,7 +56,7 @@ _KBMD_SRCS =		\
 	kbmd.c		\
 	piv.c		\
 	plugin.c	\
-	recovery.c	\
+	recover.c	\
 	zfs_box.c	\
 	zfs_unlock.c	\
 	zpool_create.c
@@ -65,12 +65,13 @@ KBMD_OBJS =	$(KBMD_SRCS:%.c=%.o)
 KBMD_LIBS =		\
 	out/pivy.a	\
 	$(LIBCRYPTO)	\
-	-lsmbios	\
-	-lzfs		\
 	-lbunyan	\
-	-luuid		\
+	-lcmdutils	\
 	-lscf		\
+	-lsmbios	\
+	-luuid		\
 	-lz		\
+	-lzfs		\
 	-lpcsclite
 out/kbmd:	LDLIBS += $(KBMD_LIBS)
 

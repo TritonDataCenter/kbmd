@@ -105,6 +105,13 @@ envlist_add_string(nvlist_t *nvl, const char *name, const char *val)
 }
 
 errf_t *
+envlist_add_boolean(nvlist_t *nvl, const char *name)
+{
+	int ret = nvlist_add_boolean(nvl, name);
+	return (NVERR(ret, "nvlist_add_boolean"));
+}
+
+errf_t *
 envlist_add_boolean_value(nvlist_t *nvl, const char *name, boolean_t val)
 {
 	int ret = nvlist_add_boolean_value(nvl, name, val);
@@ -126,30 +133,30 @@ envlist_add_uint32(nvlist_t *nvl, const char *name, uint32_t val)
 }
 
 errf_t *
-envlist_add_uint8_array(nvlist_t *nvl, const char *name, uint8_t *val,
+envlist_add_uint8_array(nvlist_t *nvl, const char *name, const uint8_t *val,
     uint_t len)
 {
-	int ret = nvlist_add_uint8_array(nvl, name, val, len);
+	int ret = nvlist_add_uint8_array(nvl, name, (uint8_t *)val, len);
 	return (NVERR(ret, "nvlist_add_uint8_array"));
 }
 
 errf_t *
-envlist_add_nvlist(nvlist_t *nvl, const char *name, nvlist_t *toadd)
+envlist_add_nvlist(nvlist_t *nvl, const char *name, const nvlist_t *toadd)
 {
-	int ret = nvlist_add_nvlist(nvl, name, toadd);
+	int ret = nvlist_add_nvlist(nvl, name, (nvlist_t *)toadd);
 	return (NVERR(ret, "nvlist_add_nvlist"));
 }
 
 errf_t *
-envlist_add_nvlist_array(nvlist_t *nvl, const char *name, nvlist_t **val,
+envlist_add_nvlist_array(nvlist_t *nvl, const char *name, nvlist_t * const *val,
     uint_t len)
 {
-	int ret = nvlist_add_nvlist_array(nvl, name, val, len);
+	int ret = nvlist_add_nvlist_array(nvl, name, (nvlist_t **)val, len);
 	return (NVERR(ret, "nvlist_add_uint8_array"));
 }
 
 errf_t *
-envlist_add_string_array(nvlist_t *nvl, const char *name, char **val,
+envlist_add_string_array(nvlist_t *nvl, const char *name, char * const *val,
     uint_t nelem)
 {
 	int ret = nvlist_add_string_array(nvl, name, val, nelem);
@@ -161,6 +168,13 @@ envlist_lookup_int32(nvlist_t *nvl, const char *name, int32_t *valp)
 {
 	int ret = nvlist_lookup_int32(nvl, name, valp);
 	return (NVERR(ret, "nvlist_lookup_int32"));
+}
+
+errf_t *
+envlist_lookup_uint32(nvlist_t *nvl, const char *name, uint32_t *valp)
+{
+	int ret = nvlist_lookup_uint32(nvl, name, valp);
+	return (NVERR(ret, "nvlist_lookup_uint32"));
 }
 
 errf_t *

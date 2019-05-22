@@ -14,224 +14,621 @@
  */
 
 #include <errno.h>
+#include <stddef.h>
+#include <string.h>
 #include <synch.h>
 #include <sys/list.h>
+#include "common.h"
 #include "envlist.h"
+#include "kbm.h"
 #include "kbmd.h"
 #include "pivy/ebox.h"
 #include "pivy/errf.h"
-
-typedef enum recovery_state {
-	RSTATE_SELECT_CONFIG,
-	RSTATE_UNLOCK_CONFIG
-} recovery_state_t;
+#include "pivy/libssh/sshbuf.h"
+#include "pivy/words.h"
 
 typedef struct recovery {
-	uint32_t		r_refcnt;
 	list_node_t		r_node;
 	uint32_t		r_id;
 	pid_t			r_pid;
-	recovery_state_t	r_state;
 	struct ebox		*r_ebox;
-	struct ebox_config	*r_config;
-	struct ebox_tpl_config	*r_tconfig;
-	struct ebox_tpl_part	*r_tpart;
-	uint_t			r_n;
-	uint_t			r_m;
+	struct ebox_config	*r_cfg;
+	uint_t			r_ncfg; /* # of _recovery_ configs */
+	uint_t			r_n;	/* # of parts needed */
+	uint_t			r_m;	/* total# of parts */
 } recovery_t;
 
-typedef enum conv_type {
-	CONV_QUESTION,
-	CONV_OPTION
-} conv_type_t;
+enum part_state {
+	PART_STATE_LOCKED,
+	PART_STATE_UNLOCKED
+};
 
-typedef struct conv_item {
-	list_node_t	ci_node;
-	conv_type_t	ci_type;
-	char		*ci_text;
-} conv_item_t;
+#define	CFG_FOREACH(_cfg, _box)				\
+	for ((_cfg) = ebox_next_config((_box), NULL);	\
+	(_cfg) != NULL;					\
+	(_cfg) = ebox_next_config((_box), (_cfg)))
 
-typedef struct conv {
-	list_t		conv_list;
-	size_t		conv_size;
-} conv_t;
+struct config_question {
+	struct ebox_config *cq_cfg;
+	char	cq_desc[128];
+	char	cq_answer[16];
+};
 
+/*
+ * Recovery instances use an very coarse locking strategy -- everything is
+ * protected by recovery_lock.  It should be rare that more than one
+ * recovery operation is happening at a given time.  When that happens, the
+ * number of operations should be low (i.e. 10 simultaneous recovery operations
+ * would be well beyond the expected use case).  A limit far above what should
+ * ever be needed is enforced to flag any potential bugs.
+ */
+
+#define	RECOVERY_MAX 16
 static mutex_t recovery_lock = ERRORCHECKMUTEX;
-static uint32_t recovery_last_id;
-static uint32_t recovery_count;
 static list_t recovery_list;
+static uint32_t recovery_count;
 
 static void
-conv_init(conv_t *conv)
+recovery_free(void *a)
 {
-	list_create(&conv->conv_list, sizeof (conv_item_t),
-	    offsetof(conv_item_t, ci_node));
-	conv->conv_size = 0;
+	recovery_t *r = a;
+
+	if (r == NULL)
+		return;
+
+	ebox_free(r->r_ebox);
+	free(r);
 }
 
-static void
-conv_fini(conv_t *conv)
+void
+kbmd_recover_init(void)
 {
-	conv_item_t *ci;
-
-	while ((ci = list_remove_head(&conv->conv_list)) != NULL) {
-		free(ci->ci_text);
-		free(ci);
-		conv->conv_size--;
-	}
-
-	ASSERT0(conv->conv_size);
+	mutex_enter(&recovery_lock);
+	list_create(&recovery_list, sizeof (recovery_t),
+	    offsetof (recovery_t, r_node));
+	mutex_exit(&recovery_lock);
 }
 
 static errf_t *
-conv_add(conv_t *conv, conv_type_t type, const char *txt, ...)
+make_config_question(struct ebox_config *cfg, size_t idx)
 {
-	conv_item_t *ci;
-	va_list ap;
-	int rc;
+	errf_t *ret;
+	struct ebox_tpl_config *tcfg = ebox_config_tpl(cfg);
+	struct config_question *cq;
 
-	if ((ci = malloc(sizeof (*ci))) == NULL) {
-		return (errfno("malloc", errno, "adding conversation item"));
-	}
-
-	ci->ci_type = type;
-	va_start(ap, txt);
-	rc = vasprintf(&ci->ci_text, txt, ap);
-	va_end(ap);
-
-	if (rc < 0) {
-		errf_t *ret =
-		    errfno("vasprintf", errno, "adding conversation text");
-		free(ci);
+	cq = ebox_tpl_config_alloc_private(tcfg, sizeof (*cq));
+	if (cq == NULL) {
+		ret = errfno("ebox_tpl_config_alloc_private", errno, "");
 		return (ret);
 	}
 
-	list_append_tail(&conv->conv_list, ci);
-	conv->conv_size++;
+	cq->cq_cfg = cfg;
+	(void) snprintf(cq->cq_answer, sizeof (cq->cq_answer), "%u", idx + 1);
+
+	/* TODO */
 	return (ERRF_OK);
 }
 
-static errf_t *
-add_resp_conv_item(nvlist_t **nvlp, conv_item_t *ci)
+static recovery_t *
+recovery_get(uint32_t id, pid_t pid)
 {
-	errf_t *ret;
-	const char *name = NULL;
+	recovery_t *r;
 
-	switch (ci->ci_type) {
-	case CONV_QUESTION:
-		name = KBM_NV_QUESTION;
-		break;
-	case CONV_OPTION:
-		name = KBM_NV_OPTION;
-		break;
-	default:
-		panic("invalid ci_type %d", ci->ci_type);
+	ASSERT(MUTEX_HELD(&recovery_lock));
+
+	for (r = list_head(&recovery_list); r != NULL;
+	    r = list_next(&recovery_list, r)) {
+		if (r->r_id == id && r->r_pid == pid)
+			return (r);
 	}
-
-	if ((ret = envlist_alloc(nvlp)) != ERRF_OK)
-		return (ret);
-
-	return (envlist_add_string(*nvlp, name, ci->ci_text));
+	return (NULL);
 }
 
-static errf_t *
-add_resp_conv(nvlist_t *resp, conv_t *conv)
+static void
+recovery_exit_cb(pid_t pid, void *arg)
 {
-	errf_t *ret;
-	nvlist_t **nvls;
-	conv_item_t *ci;
-	size_t i;
+	recovery_t *r = arg;
 
-	if ((nvls = calloc(conv->conv_size)) == NULL)
-		return (errfno("calloc", errno, ""));
+	mutex_enter(&recovery_lock);
+	list_remove(&recovery_list, r);
+	mutex_exit(&recovery_lock);
 
-	for (i = 0, ci = list_head(&conv->conv_list);
-	    i < conv->conv_size && ci != NULL;
-	    i++, ci = list_next(&conv->conv_list, ci)) {
-		if ((ret = add_resp_conv_item(nvls[i], ci)) != ERRF_OK)
-			goto done;
+	recovery_free(r);
+}
+
+/*
+ * Generate all the challenges for each part (each PIV token in the
+ * recovery configuration).
+ */
+static errf_t *
+start_recovery(recovery_t *restrict r, struct ebox_config *restrict cfg)
+{
+	struct ebox_tpl_config *tconfig = ebox_config_tpl(cfg);
+	struct ebox_part *part = NULL;
+
+	r->r_cfg = cfg;
+	r->r_n = ebox_tpl_config_n(tconfig);
+
+	while ((part = ebox_config_next_part(cfg, part)) != NULL) {
+		errf_t *ret;
+		enum part_state *pstate;
+
+		/*
+		 * XXX: We should add more context so that we can
+		 * say 'recovering <zpool name> part NNN' or
+		 * 'recovering soft token .....' or such
+		 */
+		if ((ret = ebox_gen_challenge(cfg, part,
+		    "Recovering box")) != ERRF_OK) {
+			return (ret);
+		}
+
+		if ((pstate = ebox_part_alloc_private(part,
+		    sizeof (*pstate))) == NULL) {
+			return (errfno("ebox_part_alloc_private", errno, ""));
+		}
+		*pstate = PART_STATE_LOCKED;
+
+		r->r_m++;
 	}
 
-	ret = envlist_add_nvlist_array(resp, KBM_NV_CONV, nvls,
-	    conv->conv_size);
-
-done:
-	for (i = 0; i < conv->conv_size; i++)
-		nvlist_free(nvls[i]);
-	free(nvls);
-	return (ret);
+	return (ERRF_OK);
 }
 
 static errf_t *
 recovery_alloc(pid_t pid, struct ebox *ebox, recovery_t **rp)
 {
+	errf_t *ret = ERRF_OK;
 	recovery_t *r;
+	struct ebox_tpl_config *tcfg = NULL;
+	struct ebox_config *cfg = NULL;
+	size_t n;
 
-	r = calloc(1, sizeof (*r));
-	if (r == NULL)
-		return (errfno("calloc", errno, ""));
+	ASSERT(MUTEX_HELD(&recovery_lock));
 
-	r->r_refcnt = 1;
-	r->r_state = RSTATE_SELECT_CONFIG;
+	if (recovery_count == RECOVERY_MAX) {
+		ret = errf("RecoveryFailure", NULL,
+		    "too many (%u) outstanding recovery attempts",
+		    recovery_count);
+		return (ret);
+	}
+
+	n = 0;
+	CFG_FOREACH(cfg, ebox) {
+		tcfg = ebox_config_tpl(cfg);
+		if (ebox_tpl_config_type(tcfg) == EBOX_RECOVERY)
+			n++;
+	}
+
+	if (n == 0) {
+		return (errf("RecoveryFailure", NULL,
+		    "ebox does not have any recovery configurations"));
+	}
+
+	if ((ret = zalloc(sizeof (*r), &r)) != ERRF_OK) {
+		return (errf("RecoveryFailure", ret,
+		    "no memory for recovery instance"));
+	}
+
 	r->r_pid = pid;
 	r->r_ebox = ebox;
+	r->r_ncfg = n;
 
-	mutex_enter(&recovery_lock);
-	if (recovery_count == UINT32_MAX - 1) {
-		mutex_exit(&recovery_lock);
-		free(r);
-		return (errf("ResourceError", NULL,
-		    "too many outstanding recovery attempts"));
+	/*
+	 * Pick a random id and make sure it's unique.  Zero is also explicitly
+	 * excluded as a valid id to help debugging.  In practice, we should
+	 * never need to do more than one pass through the loop, but no
+	 * reason to not be 100% correct here instead of relying on probability.
+	 */
+	do {
+		r->r_id = arc4random();
+		if (r->r_id == 0)
+			continue;
+	} while (recovery_get(r->r_id, pid) != NULL);
+
+	n = 0;
+	CFG_FOREACH(cfg, ebox) {
+		tcfg = ebox_config_tpl(cfg);
+
+		if (ebox_tpl_config_type(tcfg) != EBOX_RECOVERY)
+			continue;
+
+		/*
+		 * If there is only a single recovery configuration, we
+		 * always use that.  This should be the common case.
+		 */
+		if (r->r_ncfg == 1) {
+			r->r_cfg = cfg;
+			if ((ret = start_recovery(r, cfg)) != ERRF_OK) {
+				free(r);
+				return (errf("RecoveryFailure", ret,
+				    "failed to initialize recovery instance"));
+			}
+			break;
+		}
+
+		if ((ret = make_config_question(cfg, n)) != ERRF_OK) {
+			free(r);
+			return (errf("RecoveryFailure", ret,
+			    "failed to select a recovery instance"));
+		}
+
+		n++;
 	}
-	r->r_id = ++recovery_last_id;
-	++recovery_count;
+	VERIFY3U(n, ==, r->r_ncfg);
+
+	if ((ret = kbmd_watch_pid(pid, recovery_exit_cb, r)) != ERRF_OK) {
+		free(r);
+		return (ret);
+	}
+
 	list_insert_tail(&recovery_list, r);
-	mutex_exit(&recovery_lock);
+	recovery_count++;
 
 	*rp = r;
 	return (ERRF_OK);
 }
 
-static errf_t *
-recovery_lookup(pid_t pid, uint32_t id)
+static struct ebox_config *
+get_config_response(recovery_t *restrict r, nvlist_t *restrict resp)
 {
+	struct ebox_config *cfg;
+	char *answer;
 
+	if (nvlist_lookup_string(resp, KBM_NV_ANSWER, &answer) != 0)
+		return (NULL);
+
+	CFG_FOREACH(cfg, r->r_ebox) {
+		struct ebox_tpl_config *tcfg = ebox_config_tpl(cfg);
+		struct config_question *cq = ebox_tpl_config_private(tcfg);
+
+		if (cq == NULL) {
+			VERIFY3S(ebox_tpl_config_type(tcfg), !=, EBOX_RECOVERY);
+			continue;
+		}
+
+		if (strcmp(cq->cq_answer, answer) == 0)
+			return (cq->cq_cfg);
+	}
+
+	return (NULL);
 }
 
 static errf_t *
-add_configs(nvlist_t *restrict resp, struct ebox *restrict ebox)
+select_config(nvlist_t *restrict req, nvlist_t *restrict resp,
+    recovery_t *restrict r)
 {
 	errf_t *ret = ERRF_OK;
-	struct ebox_config *config;
+	nvlist_t **nvls = NULL;
+	struct ebox_config *cfg;
+	size_t i;
+
+	ASSERT(MUTEX_HELD(&r->r_lock));
+
+	if ((cfg = get_config_response(r, resp)) != NULL)
+		return (start_recovery(r, cfg));
+
+	if ((nvls = calloc(r->r_ncfg, sizeof (nvlist_t *))) == NULL) {
+		ret = errfno("calloc", errno, "");
+		return (ret);
+	}
+
+	i = 0;
+	CFG_FOREACH(cfg, r->r_ebox) {
+		struct ebox_tpl_config *tcfg = ebox_config_tpl(cfg);
+		struct config_question *cq = ebox_tpl_config_private(tcfg);
+
+		if ((ret = envlist_alloc(&nvls[i])) != ERRF_OK)
+			goto done;
+
+		if ((ret = envlist_add_string(nvls[i], KBM_NV_DESC,
+		    cq->cq_desc)) != ERRF_OK ||
+		    (ret = envlist_add_string(nvls[i], KBM_NV_ANSWER,
+		    cq->cq_answer)) != ERRF_OK)
+			goto done;
+		i++;
+	}
+
+	if ((ret = envlist_add_string(resp, KBM_NV_PROMPT,
+	    "Select recovery configuration")) != ERRF_OK)
+		goto done;
+
+	if ((ret = envlist_add_nvlist_array(resp, KBM_NV_CONFIGS, nvls,
+	    r->r_ncfg)) != ERRF_OK)
+		goto done;
+
+	ret = envlist_add_int32(resp, KBM_NV_ACTION, (int32_t)KBM_ACT_CONFIG);
+
+done:
+	if (nvls != NULL) {
+		for (i = 0; i < r->r_ncfg; i++)
+			nvlist_free(nvls[i]);
+		free(nvls);
+	}
+
+	return (ret);
+}
+
+static errf_t *
+add_challenge(nvlist_t **restrict nvlp, struct ebox_tpl_part *restrict tpart,
+    struct sshbuf *restrict chalbuf, char **restrict words, size_t wordlen)
+{
+	errf_t *ret;
+	nvlist_t *nvl = NULL;
+	char *chal = NULL;
+	const char *name = ebox_tpl_part_name(tpart);
+	const uint8_t *guid = ebox_tpl_part_guid(tpart);
+
+	if ((ret = envlist_alloc(&nvl)) != ERRF_OK)
+		return (ret);
+
+	if ((chal = sshbuf_dtob64(chalbuf)) == NULL) {
+		ret = errfno("sshbuf_dtob64", errno, "");
+		goto fail;
+	}
+
+	if ((ret = envlist_add_uint8_array(nvl, KBM_NV_GUID, guid,
+	    GUID_LEN)) != ERRF_OK)
+		goto fail;
+
+	if ((ret = envlist_add_string(nvl, KBM_NV_CHALLENGE, chal)) != ERRF_OK)
+		goto fail;
+
+	if ((ret = envlist_add_string_array(nvl, KBM_NV_WORDS, words,
+	    wordlen)) != ERRF_OK)
+		goto fail;
+
+	if (name != NULL &&
+	    (ret = envlist_add_string(nvl, KBM_NV_NAME, name)) != ERRF_OK)
+		goto fail;
+
+	*nvlp = nvl;
+	free(chal);
+	return (ERRF_OK);
+
+fail:
+	nvlist_free(nvl);
+	free(chal);
+	return (ret);
+}
+
+static errf_t *
+process_chal_response(recovery_t *restrict r, nvlist_t *restrict resp)
+{
+	errf_t *ret = ERRF_OK;
+	char *answer = NULL;
+	struct sshbuf *buf = NULL;
+	struct sshbuf *pbuf = NULL;
+	struct piv_ecdh_box *box = NULL;
+	enum part_state *pstate = NULL;
+	struct ebox_part *part = NULL;
+
+	if (nvlist_lookup_string(resp, KBM_NV_ANSWER, &answer) != 0)
+		return (ERRF_OK);
+
+	if ((buf = sshbuf_new()) == NULL)
+		return (errf("OutOfMemory", NULL, ""));
+
+	if (sshbuf_b64tod(buf, answer) != 0)
+		goto done;
+
+	pbuf = sshbuf_fromb(buf);
+	if (sshbuf_get_piv_box(pbuf, &box) != 0)
+		goto done;
+
+	/*
+	 * A failed response just means we keep asking, and not a fatal error.
+	 */
+	if ((ret = ebox_challenge_response(r->r_cfg, box, &part)) != ERRF_OK) {
+		/*  XXX: warn failed + maybe msg to user? */
+		erfree(ret);
+		ret = ERRF_OK;
+		goto done;
+	}
+
+	pstate = ebox_part_private(part);
+	if (*pstate != PART_STATE_UNLOCKED) {
+		*pstate = PART_STATE_UNLOCKED;
+		r->r_n--;
+	}
+
+done:
+	sshbuf_free(buf);
+	sshbuf_free(pbuf);
+	return (ERRF_OK);
+}
+
+static errf_t *
+challenge(nvlist_t *restrict req, nvlist_t *restrict resp,
+    recovery_t *restrict r)
+{
+	errf_t *ret = ERRF_OK;
+	struct ebox_config *cfg = r->r_cfg;
+	struct ebox_part *part = NULL;
+	struct sshbuf *buf = NULL;
+	nvlist_t **nvls = NULL;
+	const uint8_t *words = NULL;
+	char **wordstrs = NULL;
+	size_t wordlen = 0;
 	size_t n;
-	uint8_t *guids[GUID_LEN] = { 0 };
 
-	for (n = 0; config = ebox_next_config(ebox, NULL); config != NULL;
-	    config = ebox_next_config(ebox, config)) {
-		struct ebox_tpl_config *tconfig = ebox_config_tpl(config);
+	ASSERT(MUTEX_HELD(&r->r_lock));
 
-		if (ebox_tpl_config_type(tconfig) == EBOX_RECOVERY)
-			n++;
+	if ((ret = process_chal_response(r, resp)) != ERRF_OK)
+		return (ret);
+
+	if (r->r_n == 0) {
+		ret = envlist_add_boolean(resp, KBM_NV_RECOVERY_COMPLETE);
+		kbmd_unwatch_pid(r->r_pid);
+		list_remove(&recovery_list, r);
+		recovery_free(r);
+		return (ret);
 	}
 
-	if ((guids = calloc(n, GUID_LEN)) == NULL) {
-		return (errfno("calloc", errno, ""));
+	if ((nvls = calloc(r->r_n, sizeof (nvlist_t *))) == NULL) {
+		ret = errfno("calloc", errno, "");
+		goto done;
 	}
 
-	for (n = 0; config = ebox_next_config(ebox, NULL); config != NULL;
-	    config = ebox_next_config(ebox, config)) {
-		struct ebox_tpl_config *tconfig = ebox_config_tpl(config);
+	if ((buf = sshbuf_new()) == NULL) {
+		ret = errf("OutOfMemory", NULL, "");
+		goto done;
+	}
 
-		if (ebox_tpl_config_type(tconfig) != EBOX_RECOVERY)
+	n = 0;
+	while ((part = ebox_config_next_part(cfg, NULL)) != NULL) {
+		enum part_state *statep;
+		const struct ebox_challenge *chal;
+		char **tmp;
+
+		statep = ebox_part_private(part);
+		if (*statep == PART_STATE_UNLOCKED)
 			continue;
 
-		bcopy(ebox_tpl_part_guid())
+		VERIFY3U(n, <, r->r_n);
+
+		chal = ebox_part_challenge(part);
+		words = ebox_challenge_words(chal, &wordlen);
+
+		sshbuf_reset(buf);
+		if ((ret = sshbuf_put_ebox_challenge(buf, chal)) != ERRF_OK)
+			goto done;
+
+		tmp = reallocarray(wordstrs, wordlen, sizeof (char *));
+		if (tmp == NULL) {
+			ret = errfno("reallocarray", errno, "");
+			goto done;
+		}
+		for (size_t i = 0; i < wordlen; i++)
+			wordstrs[i] = wordlist[words[i]];
+
+		if ((ret = add_challenge(&nvls[n++], ebox_part_tpl(part), buf,
+		    wordstrs, wordlen)) != ERRF_OK)
+			goto done;
 	}
 
+	ret = envlist_add_nvlist_array(resp, KBM_NV_PARTS, nvls, r->r_n);
+
+done:
+	if (nvls != NULL) {
+		for (size_t i = 0; i < r->r_n; i++)
+			nvlist_free(nvls[i]);
+		free(nvls);
+	}
+	sshbuf_free(buf);
+	free(wordstrs);
+	return (ret);
+}
+
+static void
+recover_common(nvlist_t *restrict req, recovery_t *restrict r)
+{
+	errf_t *ret = ERRF_OK;
+	nvlist_t *resp = NULL;
+
+	ASSERT(MUTEX_HELD(&recovery_lock));
+
+	if ((ret = envlist_alloc(&resp)) != ERRF_OK)
+		goto fail;
+
+	if ((nvlist_lookup_boolean(req, KBM_NV_RESP_QUIT)) == 0) {
+		if ((ret = envlist_add_boolean(resp,
+		    KBM_NV_RESP_QUIT)) != ERRF_OK) {
+			goto fail;
+		}
+		goto done;
+	}
+
+	/*
+	 * The two NULL checks are intentional-if we haven't selected a
+	 * configuration, we attempt to do so.  The selection can
+	 * happen in two ways:
+	 *
+	 *	1. Only one configuration exists.  This is the usual case and
+	 *	the single configuration is selected and r->r_cfg is set.
+	 *
+	 *	2. Multiple configuration exist.  This typically happens when
+	 *	a recovery occurs during a transition between and older
+	 *	recovery configuration and the current configuration (since
+	 *	we always add the new, then remove the old config).  In this
+	 *	case, we must prompt to select the appropriate configuration
+	 *	to use.  r->r_cfg will not be set until the user selects
+	 *	the configuration (which might include multiple round trips
+	 *	of prompting).
+	 *
+	 * As a result, if r->r_cfg is still NULL after a successful return of
+	 * select_config(), it means we're prompting the user to select a
+	 * configuration, and shouldn't attempt to start the challenge yet.
+	 */
+	if (r->r_cfg == NULL &&
+	   (ret = select_config(req, resp, r)) != ERRF_OK ||
+	   r->r_cfg == NULL)
+		goto done;
+
+	ret = challenge(req, resp, r);
+
+done:
+	if ((ret = envlist_add_boolean_value(resp, KBM_NV_SUCCESS,
+	    B_TRUE)) != ERRF_OK) {
+		goto fail;
+	}
+
+	nvlist_free(req);
+	mutex_exit(&recovery_lock);
+	kbmd_ret_nvlist(resp);
+
+fail:
+	nvlist_free(req);
+	mutex_exit(&recovery_lock);
+	kbmd_ret_error(ret);
 }
 
 void
-kbmd_recover_start(nvlist_t *req)
+kbmd_recover_start(nvlist_t *req, pid_t pid)
 {
+	errf_t *ret = ERRF_OK;
+	struct ebox *ebox = NULL;
+	recovery_t *r = NULL;
 
+	if ((ret = kbmd_get_ebox(zones_dataset, &ebox)) != ERRF_OK)
+		goto fail;
+
+	mutex_enter(&recovery_lock);
+
+	if ((ret = recovery_alloc(pid, ebox, &r)) != ERRF_OK) {
+		ASSERT3P(r, ==, NULL);
+		mutex_exit(&recovery_lock);
+		goto fail;
+	}
+	ebox = NULL;
+
+	return (recover_common(req, r));
+
+fail:
+	if (ebox != NULL)
+		ebox_free(ebox);
+	nvlist_free(req);
+	kbmd_ret_error(ret);
+}
+
+void
+kbmd_recover_resp(nvlist_t *req, pid_t pid)
+{
+	errf_t *ret = NULL;
+	recovery_t *r = NULL;
+	uint32_t id;
+
+	if ((ret = envlist_lookup_uint32(req, KBM_NV_RECOVER_ID,
+	    &id)) != ERRF_OK)
+		kbmd_ret_error(ret);
+
+	mutex_enter(&recovery_lock);
+	if ((r = recovery_get(id, pid)) == NULL) {
+		mutex_exit(&recovery_lock);
+		ret = errf("NotFoundError", NULL,
+		   "no matching recovery session found");
+		kbmd_ret_error(ret);
+	}
+
+	recover_common(req, r);
 }
