@@ -85,14 +85,9 @@ strarray_append(strarray_t *restrict sar, const char *restrict fmt, ...)
 errf_t *
 strarray_append_guid(strarray_t *restrict sar, const uint8_t guid[restrict])
 {
-	static const char hexdigits[] = "0123456789ABCDEF";
-	char guidstr[GUID_LEN * 2 + 1] = { 0 };
-	size_t i, j;
+	char str[GUID_LEN * 2 + 1] = { 0 };
 
-	for (i = j = 0; i < GUID_LEN; i++) {
-		guidstr[j++] = hexdigits[(guid[i] >> 4) & 0x0f];
-		guidstr[j++] = hexdigits[guid[i] & 0x0f];
-	}
+	guidstr(guid, str);
 	return (strarray_append(sar, "%s", guidstr));
 }
 

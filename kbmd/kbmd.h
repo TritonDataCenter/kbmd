@@ -47,6 +47,7 @@ extern int door_fd;
 extern struct bunyan_logger *blog;
 extern __thread struct bunyan_logger *tlog;
 extern uuid_t sys_uuid;
+extern char *zones_dataset;
 
 extern mutex_t g_zfs_lock;
 extern struct libzfs_handle *g_zfs;
@@ -64,8 +65,9 @@ void kbmd_ret_error(struct errf *) __NORETURN;
 
 void kbmd_zfs_unlock(struct nvlist *);
 void kbmd_zpool_create(struct nvlist *);
-void kbmd_recover_start(struct nvlist *);
-void kbmd_recover_resp(struct nvlist *);
+void kbmd_recover_init(void);
+void kbmd_recover_start(struct nvlist *, pid_t);
+void kbmd_recover_resp(struct nvlist *, pid_t);
 
 struct errf *kbmd_assert_pin(struct piv_token *);
 struct errf *kbmd_get_ebox(const char *restrict, struct ebox **restrict);

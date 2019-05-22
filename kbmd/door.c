@@ -264,10 +264,10 @@ kbmd_door_server(void *cookie, char *argp, size_t arg_size, door_desc_t *dp,
 		kbmd_zpool_create(req);
 		break;
 	case KBM_CMD_RECOVER_START:
-		kbmd_recover_start(req);
+		kbmd_recover_start(req, dcred.dc_pid);
 		break;
 	case KBM_CMD_RECOVER_RESP:
-		kbmd_recover_resp(req);
+		kbmd_recover_resp(req, dcred.dc_pid);
 		break;
 	default:
 		(void) bunyan_info(tlog, "Unrecognized command",
@@ -279,12 +279,6 @@ kbmd_door_server(void *cookie, char *argp, size_t arg_size, door_desc_t *dp,
 		    "Invalid command value %d", cmdval));
 		break;
 	}
-}
-
-void
-kbmd_recover_resp(nvlist_t *req)
-{
-
 }
 
 static void

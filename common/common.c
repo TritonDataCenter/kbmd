@@ -85,3 +85,27 @@ alloc_init(void)
 	envlist_init();
 	umem_nofail_callback(nomem);
 }
+
+void
+guidstr(const uint8_t *restrict guid, char *restrict str)
+{
+	static const char hexdigits[] = "0123456789ABCDEF";
+	size_t i, j;
+
+	for (i = j = 0; i < GUID_LEN; i++) {
+		uint8_t v = guid[i];
+		str[j++] = hexdigits[v >> 4];
+		str[j++] = hexdigits[v & 0x0f];
+	}
+	str[j] = '\0';
+}
+
+errf_t *
+ecalloc(size_t n, size_t sz, void *p)
+{
+	void **pp = p;
+
+	if ((*pp = calloc(n, sz)) == NULL)
+		return (errfno("calloc", NULL, ""));
+	return (ERRF_OK);
+}
