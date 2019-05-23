@@ -49,7 +49,7 @@ static errf_t *check_error(nvlist_t *);
 static errf_t *run_zpool_cmd(char **, const uint8_t *, size_t);
 
 static errf_t *do_create_zpool(int, char **);
-static errf_t *do_recover(int, char **);
+errf_t *do_recover(int, char **);
 static errf_t *do_unlock(int, char **);
 
 static struct {
@@ -216,27 +216,6 @@ run_zpool_cmd(char **argv, const uint8_t *key, size_t keylen)
 }
 
 static errf_t *
-do_recover(int argc, char **argv)
-{
-	errf_t *ret = ERRF_OK;
-	nvlist_t *req = NULL, *resp = NULL;
-	int fd = -1;
-
-	if ((ret = req_new(KBM_CMD_RECOVER_START, &req)) != ERRF_OK ||
-	    (ret = open_door(&fd)) != ERRF_OK ||
-	    (ret = nv_door_call(fd, req, &resp)) != ERRF_OK ||
-	    (ret = check_error(resp)) != ERRF_OK)
-		goto done;
-
-done:
-	if (fd >= 0)
-		(void) close(fd);
-	nvlist_free(req);
-	nvlist_free(resp);
-	return (ret);
-}
-
-static errf_t *
 unlock_dataset(int fd, const char *dataset)
 {
 	errf_t *ret;
@@ -289,7 +268,7 @@ done:
 	return (ret);
 }
 
-static errf_t *
+errf_t *
 open_door(int *fdp)
 {
 	int fd;
@@ -311,7 +290,7 @@ fail:
 	return (errfno("open", errno, "Error opening kbmd door"));
 }
 
-static errf_t *
+errf_t *
 check_error(nvlist_t *resp)
 {
 	if (fnvlist_lookup_boolean_value(resp, KBM_NV_SUCCESS))
@@ -322,7 +301,7 @@ check_error(nvlist_t *resp)
 	    msg));
 }
 
-static errf_t *
+errf_t *
 req_new(kbm_cmd_t cmd, nvlist_t **nvlp)
 {
 	errf_t *ret;
@@ -343,7 +322,7 @@ edoor_call(int fd, door_arg_t *da)
 	return (ERRF_OK);
 }
 
-static errf_t *
+errf_t *
 nv_door_call(int fd, nvlist_t *in, nvlist_t **out)
 {
 	door_arg_t da = { 0 };

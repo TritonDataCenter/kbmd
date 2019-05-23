@@ -351,7 +351,8 @@ done:
 
 static errf_t *
 add_challenge(nvlist_t **restrict nvlp, struct ebox_tpl_part *restrict tpart,
-    struct sshbuf *restrict chalbuf, char **restrict words, size_t wordlen)
+    struct sshbuf *restrict chalbuf, const char **restrict words,
+    size_t wordlen)
 {
 	errf_t *ret;
 	nvlist_t *nvl = NULL;
@@ -374,8 +375,8 @@ add_challenge(nvlist_t **restrict nvlp, struct ebox_tpl_part *restrict tpart,
 	if ((ret = envlist_add_string(nvl, KBM_NV_CHALLENGE, chal)) != ERRF_OK)
 		goto fail;
 
-	if ((ret = envlist_add_string_array(nvl, KBM_NV_WORDS, words,
-	    wordlen)) != ERRF_OK)
+	if ((ret = envlist_add_string_array(nvl, KBM_NV_WORDS,
+	    (char * const *)words, wordlen)) != ERRF_OK)
 		goto fail;
 
 	if (name != NULL &&
@@ -430,6 +431,7 @@ process_chal_response(recovery_t *restrict r, nvlist_t *restrict resp)
 	if (*pstate != PART_STATE_UNLOCKED) {
 		*pstate = PART_STATE_UNLOCKED;
 		r->r_n--;
+		r->r_m--;
 	}
 
 done:
@@ -448,9 +450,9 @@ challenge(nvlist_t *restrict req, nvlist_t *restrict resp,
 	struct sshbuf *buf = NULL;
 	nvlist_t **nvls = NULL;
 	const uint8_t *words = NULL;
-	char **wordstrs = NULL;
+	const char **wordstrs = NULL;
 	size_t wordlen = 0;
-	size_t n;
+	size_t m;
 
 	ASSERT(MUTEX_HELD(&r->r_lock));
 
@@ -465,7 +467,7 @@ challenge(nvlist_t *restrict req, nvlist_t *restrict resp,
 		return (ret);
 	}
 
-	if ((nvls = calloc(r->r_n, sizeof (nvlist_t *))) == NULL) {
+	if ((nvls = calloc(r->r_m, sizeof (nvlist_t *))) == NULL) {
 		ret = errfno("calloc", errno, "");
 		goto done;
 	}
@@ -475,8 +477,12 @@ challenge(nvlist_t *restrict req, nvlist_t *restrict resp,
 		goto done;
 	}
 
-	n = 0;
-	while ((part = ebox_config_next_part(cfg, NULL)) != NULL) {
+	if ((ret = envlist_add_uint32(resp, KBM_NV_REMAINING,
+	    r->r_m)) != ERRF_OK)
+		goto done;
+
+	m = 0;
+	while ((part = ebox_config_next_part(cfg, part)) != NULL) {
 		enum part_state *statep;
 		const struct ebox_challenge *chal;
 		char **tmp;
@@ -484,8 +490,6 @@ challenge(nvlist_t *restrict req, nvlist_t *restrict resp,
 		statep = ebox_part_private(part);
 		if (*statep == PART_STATE_UNLOCKED)
 			continue;
-
-		VERIFY3U(n, <, r->r_n);
 
 		chal = ebox_part_challenge(part);
 		words = ebox_challenge_words(chal, &wordlen);
@@ -502,16 +506,19 @@ challenge(nvlist_t *restrict req, nvlist_t *restrict resp,
 		for (size_t i = 0; i < wordlen; i++)
 			wordstrs[i] = wordlist[words[i]];
 
-		if ((ret = add_challenge(&nvls[n++], ebox_part_tpl(part), buf,
+		if ((ret = add_challenge(&nvls[m], ebox_part_tpl(part), buf,
 		    wordstrs, wordlen)) != ERRF_OK)
 			goto done;
-	}
 
-	ret = envlist_add_nvlist_array(resp, KBM_NV_PARTS, nvls, r->r_n);
+		m++;
+	}
+	ASSERT3U(m, ==, r->r_m);
+
+	ret = envlist_add_nvlist_array(resp, KBM_NV_PARTS, nvls, r->r_m);
 
 done:
 	if (nvls != NULL) {
-		for (size_t i = 0; i < r->r_n; i++)
+		for (size_t i = 0; i < r->r_m; i++)
 			nvlist_free(nvls[i]);
 		free(nvls);
 	}

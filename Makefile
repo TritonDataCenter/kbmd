@@ -45,10 +45,10 @@ _COMMON_SRCS =		\
 COMMON_SRCS = $(_COMMON_SRCS:%=common/%) pivy/errf.c
 COMMON_OBJS = $(COMMON_SRCS:%.c=%.o)
 
-_KBMADM_SRCS = \
-	kbmadm.c
+_KBMADM_SRCS =		\
+	kbmadm.c	\
+	recover.c
 KBMADM_SRCS = $(_KBMADM_SRCS:%=kbmadm/%)
-
 KBMADM_OBJS = $(KBMADM_SRCS:%.c=%.o)
 
 _KBMD_SRCS =		\
