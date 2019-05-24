@@ -53,8 +53,10 @@ KBMADM_OBJS = $(KBMADM_SRCS:%.c=%.o)
 
 _KBMD_SRCS =		\
 	door.c		\
+	event.c		\
 	kbmd.c		\
 	piv.c		\
+	piv-bunyan.c	\
 	plugin.c	\
 	recover.c	\
 	zfs_box.c	\
