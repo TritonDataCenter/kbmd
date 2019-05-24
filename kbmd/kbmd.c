@@ -77,9 +77,7 @@ mutex_t piv_lock = ERRORCHECKMUTEX;
 SCARDCONTEXT piv_ctx;
 
 uuid_t sys_uuid;
-static volatile boolean_t kbmd_quit = B_FALSE;
-
-int port = -1;
+volatile boolean_t kbmd_quit = B_FALSE;
 
 static void *kbmd_event_loop(void *);
 static int kbmd_daemonize(int);
@@ -88,7 +86,6 @@ static int kbmd_dir_setup(void);
 static void kbmd_log_setup(int, bunyan_level_t);
 static int kbmd_stream_log(nvlist_t *, const char *, void *);
 static void kbmd_cleanup(void);
-static void kbmd_dfatal(int, const char *, ...) __NORETURN;
 static void kbmd_load_smf(int);
 static int kbmd_sys_uuid(uuid_t);
 
@@ -99,7 +96,6 @@ main(int argc, char *argv[])
 	int dirfd, dfd, errval;
 	sigset_t set;
 	struct sigaction act;
-	thread_t evt_tid;
 
 	alloc_init();
 	kbmd_fd_setup();
@@ -170,14 +166,9 @@ main(int argc, char *argv[])
 	}
 	mutex_exit(&piv_lock);
 
-	if ((port = port_create()) == -1)
-		kbmd_dfatal(dfd, "unable to create event port");
+	kbmd_event_init(dfd);
 
 	kbmd_recover_init();
-
-	errval = thr_create(NULL, 0, kbmd_event_loop, NULL, 0, &evt_tid);
-	if (errval != 0)
-		kbmd_dfatal(dfd, "cannot start event loop");
 
 	errval = kbmd_door_setup(doorpath);
 	if (errval != 0)
@@ -195,27 +186,8 @@ main(int argc, char *argv[])
 			break;
 	}
 
-	errval = thr_join(evt_tid, NULL, NULL);
-	if (errval != 0)
-		errx(EXIT_FAILURE, "thr_join failed: %s", strerror(errval));
-
+	kbmd_event_fini();
 	return (0);
-}
-
-static void *
-kbmd_event_loop(void *arg __unused)
-{
-	while (!kbmd_quit) {
-		port_event_t pe = { 0 };
-
-		if (port_get(port, &pe, NULL) < 0) {
-			if (errno == EINTR)
-				continue;
-			panic("port_get failed");
-		}
-	}
-
-	return (NULL);
 }
 
 /*
@@ -439,7 +411,7 @@ kbmd_log_setup(int dfd, bunyan_level_t level)
 	tlog = blog;
 }
 
-static void
+void
 kbmd_dfatal(int dfd, const char *fmt, ...)
 {
 	int status = EXIT_FAILURE;

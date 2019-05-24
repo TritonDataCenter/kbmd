@@ -58,6 +58,7 @@ extern SCARDCONTEXT piv_ctx;
 const char *get_dc(void);
 const char *get_domain(void);
 
+void kbmd_dfatal(int, const char *, ...) __NORETURN;
 int kbmd_door_setup(const char *);
 
 void kbmd_ret_nvlist(struct nvlist *) __NORETURN;
@@ -85,6 +86,8 @@ struct errf *kbmd_replace_pivtoken(uint8_t [restrict],
     struct custr **restrict);
 struct errf *kbmd_setup_token(struct piv_token **, uint8_t **, size_t *);
 
+void kbmd_event_init(int);
+void kbmd_event_fini(void);
 struct errf *kbmd_watch_pid(pid_t, void (*)(pid_t, void *), void *);
 struct errf *kbmd_unwatch_pid(pid_t);
 
