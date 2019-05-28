@@ -45,6 +45,9 @@
 #define	PIN_LENGTH 8
 #define	ADMIN_KEY_LENGTH 24
 
+struct piv_token *piv;
+char *piv_pin;
+
 /*
  * The default values of an piv token that hasn't been setup.
  */

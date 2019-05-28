@@ -278,6 +278,18 @@ kbmd_assert_pin(struct piv_token *pk)
 		return (ERRF_OK);
 
 	/*
+	 * If it's the system pin, and we already have the cached pin,
+	 * try that.
+	 */
+	if (pk == piv && piv_pin != NULL) {
+		ASSERT(MUTEX_HELD(&piv_lock));
+
+		if ((ret = piv_verify_pin(pk, pin_auth, piv_pin, NULL,
+		    B_TRUE)) == ERRF_OK)
+			return (ret);
+	}
+
+	/*
 	 * Otherwise, retrieve the pin and unlock.
 	 */
 	if ((ret = kbmd_get_pin(piv_token_guid(pk), &pin)) != ERRF_OK)
@@ -288,6 +300,22 @@ kbmd_assert_pin(struct piv_token *pk)
 	 * don't need to retrieve it again for error reporting.
 	 */
 	ret = piv_verify_pin(pk, pin_auth, custr_cstr(pin), NULL, B_TRUE);
+
+	if (pk == piv && ret == ERRF_OK) {
+		/*
+		 * If we get here, we're updating the system PIV token and
+		 * we either didn't cache the pin, or the cached value was
+		 * wrong.  Either way update the pin.
+		 */
+		if (piv_pin != NULL) {
+			size_t len = strlen(piv_pin);
+
+			freezero(piv_pin, len + 1);
+		}
+
+		piv_pin = strdup(custr_cstr(pin));
+	}
+
 	custr_free(pin);
 	return (ret);
 }
@@ -328,6 +356,10 @@ local_unlock(struct piv_ecdh_box *box, struct sshkey *cak, const char *name)
 	struct piv_token *tokens = NULL, *token = NULL;
 	struct piv_slot *slot;
 	errf_t *ret = ERRF_OK;
+
+	(void) bunyan_debug(tlog, "Trying part",
+	    BUNYAN_T_STRING, "partname", name,
+	    BUNYAN_T_END);
 
 	if (!piv_box_has_guidslot(box)) {
 		return (errf("NoGUIDSlot", NULL, "box does not have GUID "
@@ -381,6 +413,10 @@ local_unlock(struct piv_ecdh_box *box, struct sshkey *cak, const char *name)
 		goto done;
 	}
 
+	(void) bunyan_debug(tlog, "Found token",
+	    BUNYAN_T_STRING, "guid", piv_token_guid_hex(token),
+	    BUNYAN_T_END);
+
 	if ((ret = piv_txn_begin(token)) != ERRF_OK ||
 	    (ret = piv_select(token)) != ERRF_OK ||
 	    (ret = auth_card(token, cak)) != ERRF_OK ||
@@ -390,7 +426,12 @@ local_unlock(struct piv_ecdh_box *box, struct sshkey *cak, const char *name)
 		goto done;
 	}
 
-	ret = piv_box_open(token, slot, box);
+	/*
+	 * On failure, we'll end up printing out the errf_t chain
+	 * when we return, so don't worry about that here.
+	 */
+	if ((ret = piv_box_open(token, slot, box)) == ERRF_OK)
+		(void) bunyan_debug(tlog, "Unlock successful", BUNYAN_T_END);
 
 done:
 	if (token != NULL && piv_token_in_txn(token))
