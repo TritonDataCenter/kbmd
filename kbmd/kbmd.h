@@ -54,6 +54,8 @@ extern struct libzfs_handle *g_zfs;
 
 extern mutex_t piv_lock;
 extern SCARDCONTEXT piv_ctx;
+extern struct piv_token *piv;
+extern char *piv_pin;
 
 const char *get_dc(void);
 const char *get_domain(void);
