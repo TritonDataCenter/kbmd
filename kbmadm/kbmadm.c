@@ -30,9 +30,11 @@
 #include <unistd.h>
 #include <umem.h>
 #include "common.h"
+#include "ecustr.h"
 #include "envlist.h"
 #include "errf.h"
 #include "kbm.h"
+#include "kbmadm.h"
 #include "kspawn.h"
 
 #if 0
@@ -40,11 +42,6 @@
 #else
 #define	ZPOOL_CMD	"/root/bin/dummy-zpool"
 #endif
-
-static errf_t *req_new(kbm_cmd_t, nvlist_t **);
-static errf_t *open_door(int *);
-static errf_t *nv_door_call(int, nvlist_t *, nvlist_t **);
-static errf_t *check_error(nvlist_t *);
 
 static errf_t *run_zpool_cmd(char **, const uint8_t *, size_t);
 
@@ -61,7 +58,7 @@ static struct {
 	{ "unlock", do_unlock }
 };
 
-int exitval = 0;
+int exitcode = 0;
 
 static void __NORETURN
 usage(void)
@@ -100,7 +97,7 @@ main(int argc, char *argv[])
 	}
 
 	if (ret == ERRF_OK)
-		return (exitval);
+		return (exitcode);
 
 	errfx(EXIT_FAILURE, ret, "%s command failed", cmd_tbl[i].name);
 }
@@ -116,7 +113,7 @@ add_create_arg(strarray_t *args, nvlist_t *arg)
 	    (ret = envlist_lookup_string(arg, "value", &value)) != ERRF_OK)
 		return (ret);
 
-	if ((ret = strarray_append(args, "-O") != ERRF_OK) ||
+	if ((ret = strarray_append(args, "-O")) != ERRF_OK ||
 	    (ret = strarray_append(args, "%s=%s", option, value)) != ERRF_OK)
 		return (ret);
 
@@ -207,7 +204,7 @@ run_zpool_cmd(char **argv, const uint8_t *key, size_t keylen)
 		return (ret);
 
 	if (status != 0) {
-		exitval++;
+		exitcode++;
 		return (errf("CommandError", NULL, "zpool create returned %d",
 		    status));
 	}
@@ -221,8 +218,8 @@ unlock_dataset(int fd, const char *dataset)
 	errf_t *ret;
 	nvlist_t *req = NULL, *resp = NULL;
 
-	if ((ret = req_new(KBMD_CMD_ZFS_UNLOCK, &req)) != ERRF_OK ||
-	    (ret = envlist_add_string(req, KBMD_NV_ZFS_DATASET,
+	if ((ret = req_new(KBM_CMD_ZFS_UNLOCK, &req)) != ERRF_OK ||
+	    (ret = envlist_add_string(req, KBM_NV_ZFS_DATASET,
 	    dataset)) != ERRF_OK ||
 	    (ret = nv_door_call(fd, req, &resp)) != ERRF_OK)
 		return (ret);
@@ -238,7 +235,7 @@ unlock_dataset(int fd, const char *dataset)
 			    errf_function(e), errf_file(e), errf_line(e));
 		}
 		erfree(ret);
-		exitval++;
+		exitcode++;
 	}
 
 	return (ret);
