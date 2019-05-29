@@ -192,6 +192,22 @@ envlist_lookup_nvlist(nvlist_t *nvl, const char *name, nvlist_t **valp)
 }
 
 errf_t *
+envlist_lookup_nvlist_array(nvlist_t *nvl, const char *name, nvlist_t ***valp,
+    uint_t *lenp)
+{
+	int ret = nvlist_lookup_nvlist_array(nvl, name, valp, lenp);
+	return (NVERR(ret, "nvlist_lookup_nvlist_array"));
+}
+
+errf_t *
+envlist_lookup_uint8_array(nvlist_t *nvl, const char *name, uint8_t **valp,
+    uint_t *lenp)
+{
+	int ret = nvlist_lookup_uint8_array(nvl, name, valp, lenp);
+	return (NVERR(ret, "nvlist_lookup_uint8_array"));
+}
+
+errf_t *
 envlist_lookup_string_array(nvlist_t *nvl, const char *name, char ***sarp,
     uint_t *lenp)
 {

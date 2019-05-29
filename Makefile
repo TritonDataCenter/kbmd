@@ -50,6 +50,8 @@ _KBMADM_SRCS =		\
 	recover.c
 KBMADM_SRCS = $(_KBMADM_SRCS:%=kbmadm/%)
 KBMADM_OBJS = $(KBMADM_SRCS:%.c=%.o)
+KBMADM_LIBS = -ltecla
+out/kbmadm:	LDLIBS += $(KBMADM_LIBS)
 
 _KBMD_SRCS =		\
 	door.c		\
@@ -178,9 +180,11 @@ out/kbmadm: $(KBMADM_OBJS) out/common.a
 	$(CC) -o $@ $(CFLAGS) $(KBMADM_OBJS) $(LDFLAGS) $(LDLIBS)
 	$(CTFCONVERT) $@
 
+#
+# The openssl bits don't have CTF info, so -m is needed
 out/kbmd: $(KBMD_OBJS) $(STATIC_LIBS)
 	$(CC) -o $@ $(CFLAGS) $(KBMD_OBJS) $(LDFLAGS) $(LDLIBS)
-	$(CTFCONVERT) $@
+	$(CTFCONVERT) -m $@
 
 #
 # Install Targets

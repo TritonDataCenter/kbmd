@@ -25,8 +25,8 @@ extern "C" {
 struct errf;
 struct nvlist;
 
-struct errf *req_new(kbm_cmd_t, struct nvlist *);
-struct errf *open_door(int);
+struct errf *req_new(kbm_cmd_t, struct nvlist **);
+struct errf *open_door(int *);
 struct errf *nv_door_call(int, struct nvlist *, struct nvlist **);
 struct errf *check_error(struct nvlist *);
 

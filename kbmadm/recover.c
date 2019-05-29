@@ -13,11 +13,18 @@
  * Copyright 2019 Joyent, Inc.
  */
 
+#include <errno.h>
 #include <libtecla.h>
+#include <limits.h>
+#include <string.h>
 #include <sys/types.h>
+#include <unistd.h>
+#include "common.h"
+#include "ecustr.h"
 #include "envlist.h"
 #include "kbmadm.h"
 #include "kbm.h"
+#include "pivy/errf.h"
 
 /*
  * To avoid copy/paste issues with the challenge value, we conservatively
@@ -69,7 +76,7 @@ do_recover(int argc, char **argv)
 		if ((ret = get_action(resp, &action)) != ERRF_OK)
 			goto done;
 
-		if ((ret = req_new(KBM_NV_RECOVER_RESP, &req)) != ERRF_OK ||
+		if ((ret = req_new(KBM_CMD_RECOVER_RESP, &req)) != ERRF_OK ||
 		    (ret = envlist_add_int32(req, KBM_NV_RECOVER_ID,
 		    id)) != ERRF_OK)
 			goto done;
@@ -87,8 +94,6 @@ do_recover(int argc, char **argv)
 			goto done;
 
 		nvlist_free(resp);
-		nvlist_free(q);
-		q = NULL;
 		resp = NULL;
 
 		if ((ret = nv_door_call(fd, req, &resp)) != ERRF_OK ||
@@ -99,7 +104,6 @@ do_recover(int argc, char **argv)
 done:
 	if (fd >= 0)
 		(void) close(fd);
-	nvlist_free(q);
 	nvlist_free(req);
 	nvlist_free(resp);
 	/*  XXX: cleanup gl */
@@ -112,7 +116,7 @@ select_config(GetLine *restrict gl, nvlist_t *restrict q,
     nvlist_t *restrict req)
 {
 	errf_t *ret;
-	char *prompt = NULL;
+	const char *prompt = NULL;
 	char *response = NULL;
 	nvlist_t **cfg = NULL;
 	uint_t ncfg = 0;
@@ -124,7 +128,7 @@ select_config(GetLine *restrict gl, nvlist_t *restrict q,
 		    "response is missing '%s' value", KBM_NV_CONFIGS));
 	}
 
-	(void) nvlist_lookup_string(q, KBM_NV_PROMPT, &prompt);
+	(void) nvlist_lookup_string(q, KBM_NV_PROMPT, (char **)&prompt);
 
 	(void) printf("Select recovery configuration:\n");
 
@@ -146,7 +150,7 @@ select_config(GetLine *restrict gl, nvlist_t *restrict q,
 	if ((ret = readline(gl, prompt, &response)) != ERRF_OK)
 		return (ret);
 
-	ret = envlist_add_string(req, KBM_NV_RESPONSE, response);
+	ret = envlist_add_string(req, KBM_NV_ANSWER, response);
 	free(response);
 
 	return (ret);
@@ -160,6 +164,7 @@ challenge(GetLine *restrict gl, nvlist_t *restrict q,
 	const char *prompt;
 	nvlist_t **parts;
 	custr_t *desc;
+	char *answer = NULL;
 	uint_t nparts;
 	uint32_t remain;
 
@@ -182,22 +187,22 @@ challenge(GetLine *restrict gl, nvlist_t *restrict q,
 		uint_t nwords = 0, guidlen = 0;
 		char gstr[GUID_STR_LEN] = { 0 };
 
-		if ((ret = nvlist_lookup_uint8_array(parts[i], KBM_NV_GUID,
-		    &guid, &guidlen)) != ERRF_OK) {
+		if (nvlist_lookup_uint8_array(parts[i], KBM_NV_GUID,
+		    &guid, &guidlen) != 0) {
 			(void) printf("WARNING: part %u missing GUID\n\n", i);
 			continue;
 		}
 		guidstr(guid, gstr);
 
-		if ((ret = nvlist_lookup_string_array(parts[i], KBM_NV_WORDS,
-		    &words, &nwords)) != ERRF_OK) {
+		if (nvlist_lookup_string_array(parts[i], KBM_NV_WORDS,
+		    &words, &nwords) != 0) {
 			(void) printf("WARNING: part %u missing verification "
 			    "words\n\n", i);
 			continue;
 		}
 
-		if ((ret = nvlist_lookup_string(parts[i], KBM_NV_CHALLENGE,
-		    &challenge)) != ERRF_OK) {
+		if (nvlist_lookup_string(parts[i], KBM_NV_CHALLENGE,
+		    &challenge) != 0) {
 			(void) printf("WARNING: part %u missing challenge\n\n");
 			continue;
 		}
@@ -206,10 +211,12 @@ challenge(GetLine *restrict gl, nvlist_t *restrict q,
 		(void) nvlist_lookup_string(parts[i], KBM_NV_NAME, &name);
 
 		custr_reset(desc);
-		if ((ret = custr_append_printf("GUID: %s", str)) != ERRF_OK)
+		if ((ret = ecustr_append_printf(desc, "GUID: %s",
+		    gstr)) != ERRF_OK)
 			return (ret);
 		if (name != NULL &&
-		    (ret = custr_append_printf(" (Name: %s)", name) != ERRF_OK))
+		    (ret = ecustr_append_printf(desc, " (Name: %s)",
+		    name) != ERRF_OK))
 			return (ret);
 
 		(void) printf("--- BEGIN CHALLENGE for %s ---\n",
@@ -231,7 +238,7 @@ challenge(GetLine *restrict gl, nvlist_t *restrict q,
 		return (ret);
 	}
 
-	ret = envlist_add_string(req, KBM_NV_RESPONSE, answer);
+	ret = envlist_add_string(req, KBM_NV_ANSWER, answer);
 	freezero(answer, strlen(answer) + 1);
 
 	return (ret);
@@ -255,7 +262,7 @@ printwrap(FILE *f, const char *buf, size_t col)
 	while (len > 0) {
 		int amt = (len > col) ? col : len;
 
-		(void) fprintf("%.*s\n", amt, buf);
+		(void) fprintf(f, "%.*s\n", amt, buf);
 		buf += amt;
 		len -= amt;
 	}
@@ -265,12 +272,12 @@ static errf_t *
 get_action(nvlist_t *restrict resp, kbm_act_t *restrict actp)
 {
 	errf_t *ret;
-	kbm_act_t act;
+	int32_t act;
 
 	if ((ret = envlist_lookup_int32(resp, KBM_NV_ACTION, &act)) != ERRF_OK)
 		return (ret);
 
-	switch (act) {
+	switch ((kbm_act_t)act) {
 	case KBM_ACT_CONFIG:
 	case KBM_ACT_CHALLENGE:
 		*actp = act;
@@ -301,7 +308,7 @@ readline(GetLine *restrict gl, const char *prompt, char **restrict linep)
 		return (ERRF_OK);
 	}
 
-	GLReturnStatus status = gl_return_status(gl);
+	GlReturnStatus status = gl_return_status(gl);
 
 #define GLERROR(_err, _cause) \
     errf("GetLineError", _cause, "gl_get_line returned %s", #_err)
