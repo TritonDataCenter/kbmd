@@ -49,7 +49,7 @@ _KBMADM_SRCS =		\
 	kbmadm.c	\
 	recover.c
 KBMADM_SRCS = $(_KBMADM_SRCS:%=kbmadm/%)
-KBMADM_OBJS = $(KBMADM_SRCS:%.c=%.o)
+KBMADM_OBJS = $(KBMADM_SRCS:%.c=%.o) pivy/libssh/base64.o
 KBMADM_LIBS = -ltecla
 out/kbmadm:	LDLIBS += $(KBMADM_LIBS)
 

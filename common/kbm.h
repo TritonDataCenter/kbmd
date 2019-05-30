@@ -48,6 +48,8 @@ extern "C" {
 #define	KBM_NV_RESP_QUIT	"quit"		/* boolean */
 #define	KBM_NV_RECOVERY_COMPLETE	"recovery-complete"	/* boolean */
 
+#define	KBM_NV_TEMPLATE		"template"	/* uint8_t array */
+
 /*
  * A request looks similar to the following:
  *	command=nnn
