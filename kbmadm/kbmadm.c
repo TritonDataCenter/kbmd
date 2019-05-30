@@ -36,6 +36,7 @@
 #include "kbm.h"
 #include "kbmadm.h"
 #include "kspawn.h"
+#include "pivy/libssh/sshbuf.h"
 
 #if 0
 #define	ZPOOL_CMD	"zpool"
@@ -140,6 +141,121 @@ add_create_args(strarray_t *args, nvlist_t *resp)
 }
 
 static errf_t *
+parse_guid(const char *str, uint8_t guid[GUID_LEN])
+{
+	const char *p = str;
+	size_t n = 0;
+	size_t shift = 4;
+
+	while (*p != '\0') {
+		const char c = *p++;
+
+		if (n == GUID_LEN) {
+			return (errf("LengthError", NULL,
+			    "'%s' is not a valid GUID", str));
+		}
+
+		switch (c) {
+		case '0': case '1': case '2': case '3': case '4':
+		case '5': case '6': case '7': case '8': case '9':
+			guid[n] |= (c - '0') << shift;
+			break;
+		case 'A': case 'B': case 'C': case 'D': case 'E': case 'F':
+			guid[n] |= (c - 'A' + 10) << shift;
+			break;
+		case 'a': case 'b': case 'c': case 'd': case 'e': case 'f':
+			guid[n] |= (c - 'a' + 10) << shift;
+			break;
+		case ' ': case ':': case '\t':
+			continue;
+		default:
+			return (errf("InvalidCharacter", NULL,
+			    "%c is not a valid hex digit", c));
+		}
+
+		if (shift == 4) {
+			shift = 0;
+		} else {
+			shift = 4;
+			n++;
+		}
+	}
+
+	return (ERRF_OK);
+}
+
+static errf_t *
+add_b64(nvlist_t *restrict nvl, const char *name, const char *b64)
+{
+	errf_t *ret = ERRF_OK;
+	uint8_t *buf = NULL;
+	size_t b64len = strlen(b64);
+	int buflen;
+
+	if ((buf = malloc(b64len)) == NULL)
+		return (errfno("malloc", errno, ""));
+
+	if ((buflen = b64_pton(b64, (unsigned char *)buf, b64len)) < 0) {
+		ret = errf("DecodeError", NULL, "cannot decode base64 data");
+		goto done;
+	}
+
+	ret = envlist_add_uint8_array(nvl, name, buf, (uint_t)buflen);
+
+done:
+	freezero(buf, b64len);
+	return (ret);
+}
+
+static errf_t *
+parse_create_args(int argc, char **argv, nvlist_t *req)
+{
+	errf_t *ret = ERRF_OK;
+	char *guid = NULL, *recovery = NULL, *template = NULL;
+	int c;
+
+	while ((c = getopt(argc, argv, "g:t:r:")) != -1) {
+		switch (c) {
+		case 'g':
+			guid = optarg;
+			break;
+		case 't':
+			template = optarg;
+			break;
+		case 'r':
+			recovery = optarg;
+			break;
+		default:
+			errx(EXIT_FAILURE, "Unknown option -%c\n", c);
+		}
+	}
+
+	if ((guid != NULL && recovery == NULL) ||
+	    (guid == NULL && recovery != NULL)) {
+		errx(EXIT_FAILURE, "both -g and -r are required");
+	}
+
+	if (guid != NULL) {
+		uint8_t bytes[GUID_LEN] = { 0 };
+
+		if ((ret = parse_guid(guid, bytes)) != ERRF_OK ||
+		    (ret = envlist_add_uint8_array(req, KBM_NV_GUID, bytes,
+		    GUID_LEN)) != ERRF_OK)
+			return (ret);
+	}
+
+	if (recovery != NULL &&
+	    (ret = add_b64(req, "recovery_token", recovery)) != ERRF_OK)
+		return (ret);
+
+	if (template != NULL &&
+	    (ret = add_b64(req, KBM_NV_TEMPLATE, template)) != ERRF_OK)
+		return (ret);
+
+	return (ERRF_OK);
+}
+
+static errf_t *
 do_create_zpool(int argc, char **argv)
 {
 	errf_t *ret = ERRF_OK;
@@ -152,6 +268,7 @@ do_create_zpool(int argc, char **argv)
 	strarray_t args = STRARRAY_INIT;
 
 	if ((ret = req_new(KBM_CMD_ZPOOL_CREATE, &req)) != ERRF_OK ||
+	    (ret = parse_create_args(argc, argv, req)) != ERRF_OK ||
 	    (ret = open_door(&fd)) != ERRF_OK ||
 	    (ret = nv_door_call(fd, req, &resp)) ||
 	    (ret = check_error(resp)) != ERRF_OK)
