@@ -65,17 +65,17 @@ static bunyan_log_f
 getlog(enum bunyan_log_level lvl)
 {
 	switch (lvl) {
-	case TRACE:
+	case BNY_L_TRACE:
 		return (bunyan_trace);
-	case DEBUG:
+	case BNY_L_DEBUG:
 		return (bunyan_debug);
-	case INFO:
+	case BNY_L_INFO:
 		return (bunyan_info);
-	case WARN:
+	case BNY_L_WARN:
 		return (bunyan_warn);
-	case ERROR:
+	case BNY_L_ERROR:
 		return (bunyan_error);
-	case FATAL:
+	case BNY_L_FATAL:
 		return (bunyan_fatal);
 	default:
 		panic("Invalid log level %d", lvl);
