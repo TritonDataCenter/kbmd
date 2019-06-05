@@ -303,7 +303,7 @@ select_config(nvlist_t *restrict req, nvlist_t *restrict resp,
 	struct ebox_config *cfg;
 	size_t i;
 
-	ASSERT(MUTEX_HELD(&r->r_lock));
+	ASSERT(MUTEX_HELD(&recovery_lock));
 
 	if ((cfg = get_config_response(r, resp)) != NULL)
 		return (start_recovery(r, cfg));
@@ -454,7 +454,7 @@ challenge(nvlist_t *restrict req, nvlist_t *restrict resp,
 	size_t wordlen = 0;
 	size_t m;
 
-	ASSERT(MUTEX_HELD(&r->r_lock));
+	ASSERT(MUTEX_HELD(&recovery_lock));
 
 	if ((ret = process_chal_response(r, resp)) != ERRF_OK)
 		return (ret);

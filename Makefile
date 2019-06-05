@@ -35,6 +35,14 @@ CFLAGS =	-g -msave-args -m64 -std=gnu99 -fstack-protector-all
 LDFLAGS =	-L$(DESTDIR)/lib/amd64 -L$(DESTDIR)/usr/lib/amd64
 LDLIBS =	out/common.a -lumem -lssp -lcustr -lnvpair -lsocket
 
+ifeq ($(ILLUMOS_ENABLE_DEBUG), yes)
+    CPPFLAGS += -DDEBUG
+endif
+
+ifeq ($(ILLUMOS_ENABLE_DEBUG), exclusive)
+    CPPFLAGS += -DDEBUG
+endif
+
 _COMMON_SRCS =		\
 	common.c	\
 	ecustr.c	\
@@ -50,7 +58,7 @@ _KBMADM_SRCS =		\
 	recover.c
 KBMADM_SRCS = $(_KBMADM_SRCS:%=kbmadm/%)
 KBMADM_OBJS = $(KBMADM_SRCS:%.c=%.o) pivy/libssh/base64.o
-KBMADM_LIBS = -ltecla
+KBMADM_LIBS = -lbunyan -ltecla
 out/kbmadm:	LDLIBS += $(KBMADM_LIBS)
 
 _KBMD_SRCS =		\

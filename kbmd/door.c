@@ -43,7 +43,6 @@ struct retbuf {
 
 int door_fd = -1;
 static thread_key_t retkey = THR_ONCE_KEY;
-__thread bunyan_logger_t *tlog;
 
 /*
  * A packed nvlist suitable for use with door_return(3C).  Created during
@@ -184,7 +183,7 @@ kbmd_ret_error(errf_t *ef)
 	if (ret != ERRF_OK)
 		goto fail;
 
-	for (errf_t *cause = errf_cause(ret); cause != NULL;
+	for (errf_t *cause = errf_cause(ef); cause != NULL;
 	    cause = errf_cause(cause)) {
 		ret = ecustr_append_printf(cu,
 		    "    Caused by %s: %s in %s() at %s:%d\n",
@@ -244,6 +243,12 @@ kbmd_door_server(void *cookie, char *argp, size_t arg_size, door_desc_t *dp,
 		erfree(ret);
 		door_return(generr, generr_sz, NULL, 0);
 	}
+
+	flockfile(stderr);
+	fprintf(stderr, "Request:\n");
+	nvlist_print(stderr, req);
+	fputc('\n', stderr);
+	funlockfile(stderr);
 
 	ret = envlist_lookup_int32(req, KBM_NV_CMD, &cmdval);
 	if (ret != ERRF_OK) {

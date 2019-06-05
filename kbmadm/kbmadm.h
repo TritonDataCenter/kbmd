@@ -16,6 +16,7 @@
 #ifndef _KBMADM_H
 #define	_KBMADM_H
 
+#include <inttypes.h>
 #include "../common/kbm.h"
 
 #ifdef __cplusplus
@@ -24,6 +25,14 @@ extern "C" {
 
 struct errf;
 struct nvlist;
+
+/*
+ * XXX: These 3 symbols are for testing only
+ */
+extern char *guidstr;
+extern char *recovery;
+extern char *template_f;
+extern uint8_t guid[];
 
 struct errf *req_new(kbm_cmd_t, struct nvlist **);
 struct errf *open_door(int *);

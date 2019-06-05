@@ -13,6 +13,7 @@
  * Copyright 2019, Joyent, Inc.
  */
 
+#include <bunyan.h>
 #include <door.h>
 #include <err.h>
 #include <errno.h>
@@ -44,11 +45,16 @@
 #define	ZPOOL_CMD	"/root/bin/dummy-zpool"
 #endif
 
-static errf_t *run_zpool_cmd(char **, const uint8_t *, size_t);
+char *guidstr;
+char *recovery;
+char *template_f;
+uint8_t guid[GUID_LEN];
 
+static errf_t *parse_guid(const char *, uint8_t guid[GUID_LEN]);
+static errf_t *run_zpool_cmd(char **, const uint8_t *, size_t);
 static errf_t *do_create_zpool(int, char **);
-errf_t *do_recover(int, char **);
 static errf_t *do_unlock(int, char **);
+errf_t *do_recover(int, char **);
 
 static struct {
 	const char *name;
@@ -79,15 +85,65 @@ main(int argc, char *argv[])
 {
 	errf_t *ret = ERRF_OK;
 	size_t i;
+	int c;
 
 	alloc_init();
 
-	if (argc < 2)
+	/*
+	 * TODO: Add a flag that will control the log level output.  For
+	 * most normal operation, we shouldn't expect to see much if any
+	 * bunyan logging in kbmadm.  For development, testing, we'll be
+	 * more verbose.
+	 */
+	if ((ret = init_log(BUNYAN_L_DEBUG)) != ERRF_OK) {
+		errx(EXIT_FAILURE, "%s: %s in %s() at %s:%d",
+		    errf_name(ret), errf_message(ret), errf_function(ret),
+		    errf_file(ret), errf_line(ret));
+	}
+
+	/*
+	 * We only have one thread, but some things (e.g. the spawning code)
+	 * wants the per-thread logger.
+	 */
+	tlog = blog;
+
+	/* XXX: For testing */
+	while ((c = getopt(argc, argv, "g:t:r:")) != -1) {
+		switch (c) {
+		case 'g':
+			guidstr = optarg;
+			break;
+		case 't':
+			template_f = optarg;
+			break;
+		case 'r':
+			recovery = optarg;
+			break;
+		default:
+			errx(EXIT_FAILURE, "Unknown option -%c\n", c);
+		}
+	}
+
+	if ((guidstr != NULL && recovery == NULL) ||
+	    (guidstr == NULL && recovery != NULL)) {
+		errx(EXIT_FAILURE, "both -g and -r are required, or neither");
+	}
+
+	if (guidstr != NULL) {
+		if ((ret = parse_guid(guidstr, guid)) != ERRF_OK)
+			errfx(EXIT_FAILURE, ret, "invalid GUID");
+	}
+
+	argc -= optind - 1;
+	argv += optind - 1;
+	/* XXX: End testing */
+
+	if (argc < 1)
 		usage();
 
 	for (i = 0; i < ARRAY_SIZE(cmd_tbl); i++) {
 		if (strcmp(argv[1], cmd_tbl[i].name) == 0) {
-			ret = cmd_tbl[i].cmd(argc - 2, argv + 2);
+			ret = cmd_tbl[i].cmd(argc - 1, argv + 1);
 			break;
 		}
 	}
@@ -208,51 +264,58 @@ done:
 }
 
 static errf_t *
-parse_create_args(int argc, char **argv, nvlist_t *req)
+add_debug_args(nvlist_t *req)
 {
 	errf_t *ret = ERRF_OK;
-	char *guid = NULL, *recovery = NULL, *template = NULL;
-	int c;
+	char *buf = NULL;
+	FILE *f;
+	struct stat st = { 0 };
+	ssize_t n;
 
-	while ((c = getopt(argc, argv, "g:t:r:")) != -1) {
-		switch (c) {
-		case 'g':
-			guid = optarg;
-			break;
-		case 't':
-			template = optarg;
-			break;
-		case 'r':
-			recovery = optarg;
-			break;
-		default:
-			errx(EXIT_FAILURE, "Unknown option -%c\n", c);
-		}
-	}
-
-	if ((guid != NULL && recovery == NULL) ||
-	    (guid == NULL && recovery != NULL)) {
-		errx(EXIT_FAILURE, "both -g and -r are required");
-	}
-
-	if (guid != NULL) {
-		uint8_t bytes[GUID_LEN] = { 0 };
-
-		if ((ret = parse_guid(guid, bytes)) != ERRF_OK ||
-		    (ret = envlist_add_uint8_array(req, KBM_NV_GUID, bytes,
-		    GUID_LEN)) != ERRF_OK)
-			return (ret);
-	}
+	if (guidstr != NULL &&
+	    (ret = envlist_add_uint8_array(req, KBM_NV_GUID, guid,
+	    GUID_LEN)) != ERRF_OK)
+		return (ret);
 
 	if (recovery != NULL &&
 	    (ret = add_b64(req, "recovery_token", recovery)) != ERRF_OK)
 		return (ret);
 
-	if (template != NULL &&
-	    (ret = add_b64(req, KBM_NV_TEMPLATE, template)) != ERRF_OK)
-		return (ret);
+	if (template_f == NULL)
+		return (ERRF_OK);
 
-	return (ERRF_OK);
+	if ((f = fopen(template_f, "rR")) == NULL)
+		return (errfno("fopen", errno, "cannot open %s", template_f));
+
+	if (fstat(fileno(f), &st) < 0)
+		return (errfno("fstat", errno, "cannot stat %s", template_f));
+
+	if ((ret = zalloc(st.st_size + 1, &buf)) != ERRF_OK)
+		goto done;
+
+	n = fread(buf, 1, st.st_size, f);
+	if (n < st.st_size && feof(f)) {
+		ret = errf("IOError", NULL,
+		    "short read while reading template %s", template_f);
+		goto done;
+	}
+	if (ferror(f)) {
+		ret = errf("IOError", NULL, "error reading template %s",
+		    template_f);
+		goto done;
+	}
+	buf[n] = '\0';
+
+	ret = add_b64(req, KBM_NV_TEMPLATE, buf);
+
+done:
+	/*
+	 * A recovery template is essentially public information, so
+	 * freezero() is not needed here
+	 */
+	free(buf);
+	(void) fclose(f);
+	return (ret);
 }
 
 static errf_t *
@@ -263,12 +326,51 @@ do_create_zpool(int argc, char **argv)
 	nvlist_t *resp = NULL;
 	uint8_t *key = NULL;
 	char **params = NULL;
+	const char *dataset = NULL;
 	uint_t keylen = 0, nparams = 0;
 	int fd = -1;
+	int c;
 	strarray_t args = STRARRAY_INIT;
 
+	/*
+	 * When 'kbmadm create-zpool args...' is invoked, due to the
+	 * complexity of interpreting the zpool creation arguments, we
+	 * ideally want to just pass them through, with the necessary
+	 * options for creating the ebox as a dataset property prepended
+	 * to the argument list (i.e. -O rfd77:config=... -O encryption=on ...).
+	 * However, we want to be able to link the ebox with the dataset at
+	 * creation time.  As the intention is that most of the kbmd
+	 * functionality will hopefully eventually be usable outside of Triton,
+	 * we don't want to assume that mkzpool will be the only program that
+	 * ever invokes 'kbmadm create-zpool' and as such we cannot assume the
+	 * pool name will always be 'zones'.  This unfortnately means we must
+	 * do a small amount of interpretation of the create-zpool arguments.
+	 *
+	 * Fortunately, in all 'zpool create' invocations, the pool name is
+	 * always the first non-option argument, so the amount of argument
+	 * processing is fairly minimal.  The getopt(3C) option string for
+	 * the 'zpool create' command has been copied here only to allow us
+	 * to correctly skip past any options and option arguments.  It does
+	 * mean that any new options added to 'zpool create' should also
+	 * be reflected here for full compatability.
+	 */
+
+	/*
+	 * A getopt(3C) call in main might have altered optind.  Reset to
+	 * the initial value (1 in order to skip argv[0]).
+	 */
+	optind = 1; /* This might have been changed by a getopt(3C) main() */
+	while ((c = getopt(argc, argv, ":fndBR:m:o:O:t:")) != -1)
+		;
+
+	if ((dataset = argv[optind]) == NULL) {
+		return (errf("ArgumentError", NULL, "zpool name is missing"));
+	}
+
 	if ((ret = req_new(KBM_CMD_ZPOOL_CREATE, &req)) != ERRF_OK ||
-	    (ret = parse_create_args(argc, argv, req)) != ERRF_OK ||
+	    (ret = add_debug_args(req)) != ERRF_OK ||
+	    (ret = envlist_add_string(req, KBM_NV_DATASET,
+	    dataset)) != ERRF_OK ||
 	    (ret = open_door(&fd)) != ERRF_OK ||
 	    (ret = nv_door_call(fd, req, &resp)) ||
 	    (ret = check_error(resp)) != ERRF_OK)
@@ -284,9 +386,15 @@ do_create_zpool(int argc, char **argv)
 		goto done;
 
 	/*
-	 * Append arguments from kbmd command line
+	 * Append arguments from kbmadm create-zpool command line.
+	 * argv[] looks similar to:
+	 *	create-zpool
+	 *	arg1
+	 *	arg2
+	 *	...
+	 * So we start at arg[1].
 	 */
-	for (size_t i = 0; i < argc; i++) {
+	for (size_t i = 1; i < argc; i++) {
 		if ((ret = strarray_append(&args, "%s", argv[i])) != ERRF_OK)
 			goto done;
 	}
@@ -450,16 +558,20 @@ nv_door_call(int fd, nvlist_t *in, nvlist_t **out)
 	da.data_ptr = buf;
 	da.data_size = buflen;
 
-	if ((ret = edoor_call(fd, &da)) != ERRF_OK ||
-	    (ret = envlist_unpack(da.rbuf, da.rsize, out)) != ERRF_OK)
+	if ((ret = edoor_call(fd, &da)) != ERRF_OK)
 		goto done;
 
+	ret = envlist_unpack(da.rbuf, da.rsize, out);
+
 done:
-	/*
-	 * This might contain key data, zero it out just to be safe.
-	 */
-	explicit_bzero(da.rbuf, da.rsize);
-	VERIFY0(munmap(da.rbuf, da.rsize));
+	if (da.rbuf != NULL) {
+		/*
+		 * This could contain key data, so zero it out just to be
+		 * safe.
+		 */
+		explicit_bzero(da.rbuf, da.rsize);
+		VERIFY0(munmap(da.rbuf, da.rsize));
+	}
 	umem_free(buf, buflen);
 	return (ret);
 }

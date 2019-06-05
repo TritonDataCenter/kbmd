@@ -16,11 +16,11 @@
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdlib.h>
-#include "common.h"
 #include "ecustr.h"
-#include "kbmd.h"
 #include "pivy/bunyan.h"
 #include "pivy/errf.h"
+
+void panic(const char *, ...) __NORETURN;
 
 /*
  * This is a temporary shim to allow the pivy code to use the illumos
@@ -45,6 +45,8 @@ typedef enum bunyan_type {
 } bunyan_type_t;
 
 typedef struct bunyan_logger bunyan_logger_t;
+
+extern __thread bunyan_logger_t *tlog;
 
 extern int bunyan_trace(bunyan_logger_t *, const char *msg, ...);
 extern int bunyan_debug(bunyan_logger_t *, const char *msg, ...);

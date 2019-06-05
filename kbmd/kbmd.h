@@ -35,6 +35,7 @@ extern "C" {
 #define	GID_KBMD	0
 
 #define	BOX_PROP	"rfd77:config"
+#define	PIN_LENGTH	8
 
 struct custr;
 struct ebox;
@@ -43,19 +44,30 @@ struct nvlist;
 struct piv_token;
 struct zfs_handle;
 
+/*
+ * The only field of kbmd_token_t that is guaranteed to be non-NULL is
+ * kt_piv.  The remaining fields may be NULL depending on the context.
+ */
+typedef struct kbmd_token {
+	struct piv_token	*kt_piv;
+	char			kt_pin[PIN_LENGTH + 1];
+	uint8_t			*kt_rtoken;	/* The recovery token */
+	size_t			kt_rtoklen;	/* Recovery token len */
+} kbmd_token_t;
+
 extern int door_fd;
-extern struct bunyan_logger *blog;
-extern __thread struct bunyan_logger *tlog;
 extern uuid_t sys_uuid;
 extern char *zones_dataset;
 
 extern mutex_t g_zfs_lock;
 extern struct libzfs_handle *g_zfs;
 
+/*
+ * piv_lock protects piv_ctx and kpiv
+ */
 extern mutex_t piv_lock;
 extern SCARDCONTEXT piv_ctx;
-extern struct piv_token *piv;
-extern char *piv_pin;
+extern kbmd_token_t *kpiv;
 
 const char *get_dc(void);
 const char *get_domain(void);
@@ -86,7 +98,9 @@ struct errf *kbmd_register_pivtoken(struct piv_token *restrict,
 struct errf *kbmd_replace_pivtoken(uint8_t [restrict],
     struct piv_token *restrict, const char *restrict, const char *restrict,
     struct custr **restrict);
-struct errf *kbmd_setup_token(struct piv_token **, uint8_t **, size_t *);
+struct errf *kbmd_setup_token(kbmd_token_t **);
+void kbmd_set_token(kbmd_token_t *);
+void kbmd_token_free(kbmd_token_t *);
 
 void kbmd_event_init(int);
 void kbmd_event_fini(void);

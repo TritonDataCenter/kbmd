@@ -53,10 +53,7 @@
 #define	KBMD_RUNDIR	"/var/run/kbmd"
 #define	KBMD_DOOR	KBMD_RUNDIR "/door"
 
-static struct kbmlog {
-	mutex_t	kbmlog_lock;
-	int	kbmlog_fd;
-} kbmlog = {
+static kbmlog_t kbmlog = {
 	.kbmlog_lock = ERRORCHECKMUTEX,
 	.kbmlog_fd = STDOUT_FILENO
 };
@@ -93,17 +90,32 @@ int
 main(int argc, char *argv[])
 {
 	const char *doorpath = KBM_DOOR_PATH;
-	int dirfd, dfd, errval;
+	int dirfd, dfd, errval, c;
 	sigset_t set;
 	struct sigaction act;
+	boolean_t opt_d = B_FALSE;
+
+	while ((c = getopt(argc, argv, "d")) != -1) {
+		switch (c) {
+		case 'd':
+			opt_d = B_TRUE;
+			break;
+		}
+	}
 
 	alloc_init();
 	kbmd_fd_setup();
 	dirfd = kbmd_dir_setup();
-	dfd = kbmd_daemonize(dirfd);
+	if (opt_d) {
+		dfd = open("/dev/null", O_RDONLY);
+		if (dfd == -1)
+			err(EXIT_FAILURE, "/dev/null");
+	} else {
+		dfd = kbmd_daemonize(dirfd);
+	}
 
 	/*
-	 * Now in the child
+	 * Now in the child (non -d)
 	 */
 
 	kbmd_load_smf(dfd);
@@ -380,33 +392,19 @@ kbmd_load_smf(int dfd)
 	scf_simple_prop_free(prop);
 }
 
-static int
-kbmd_stream_log(nvlist_t *nvl, const char *js, void *arg)
-{
-	struct kbmlog *klog = arg;
-	int ret;
-
-	mutex_enter(&klog->kbmlog_lock);
-	ret = bunyan_stream_fd(nvl, js, (void *)(uintptr_t)klog->kbmlog_fd);
-	mutex_exit(&klog->kbmlog_lock);
-
-	return (ret);
-}
-
 static void
 kbmd_log_setup(int dfd, bunyan_level_t level)
 {
-	int ret;
+	errf_t *ret;
 
-	ret = bunyan_init(getprogname(), &blog);
-	if (ret != 0)
-		kbmd_dfatal(dfd, "Cannot initialize logger: %s", strerror(ret));
+	if ((ret = init_log(level)) == ERRF_OK) {
+		tlog = blog;
+		return;
+	}
 
-	ret = bunyan_stream_add(blog, "stdout", level, kbmd_stream_log,
-	    &kbmlog);
-
-	if (ret != 0)
-		kbmd_dfatal(dfd, "Cannot add stdout stream: %s", strerror(ret));
+	kbmd_dfatal(dfd, "%s: %s in %s() at %s:%d",
+	    errf_name(ret), errf_message(ret), errf_function(ret),
+	    errf_file(ret), errf_line(ret));
 
 	tlog = blog;
 }

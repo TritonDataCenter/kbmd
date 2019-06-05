@@ -192,7 +192,7 @@ challenge(GetLine *restrict gl, nvlist_t *restrict q,
 			(void) printf("WARNING: part %u missing GUID\n\n", i);
 			continue;
 		}
-		guidstr(guid, gstr);
+		guidtohex(guid, gstr);
 
 		if (nvlist_lookup_string_array(parts[i], KBM_NV_WORDS,
 		    &words, &nwords) != 0) {
