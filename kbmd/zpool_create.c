@@ -136,14 +136,14 @@ get_template(struct piv_token *restrict pk,
 
 	ASSERT(piv_token_in_txn(pk));
 
-	if ((ret = get_slot(pk, PIV_SLOT_PIV_AUTH, &slot)) != ERRF_OK) {
+	if ((ret = get_slot(pk, PIV_SLOT_KEY_MGMT, &slot)) != ERRF_OK) {
 		ret = errf("TemplateError", ret,
 		    "cannot get current ebox template");
 		goto done;
 	}
 
 	if ((pri_part = ebox_tpl_part_alloc(piv_token_guid(pk), GUID_LEN,
-	    PIV_SLOT_PIV_AUTH, piv_slot_pubkey(slot))) == NULL) {
+	    PIV_SLOT_KEY_MGMT, piv_slot_pubkey(slot))) == NULL) {
 		ret = errfno("ebox_tpl_part_alloc", errno,
 		    "cannot get current ebox template");
 		goto done;
