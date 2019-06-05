@@ -16,6 +16,9 @@
 #ifndef _COMMON_H
 #define	_COMMON_H
 
+#include <bunyan.h>
+#include <synch.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -26,16 +29,28 @@ extern "C" {
 
 #define	GUID_STR_LEN (GUID_LEN * 2 + 1)
 
+typedef struct kbmlog {
+	mutex_t	kbmlog_lock;
+	int	kbmlog_fd;
+} kbmlog_t;
+
+extern bunyan_logger_t *blog;
+extern __thread bunyan_logger_t *tlog;
+
+struct errf *init_log(bunyan_level_t);
+
 void panic(const char *, ...) __NORETURN;
 void alloc_init(void);
-void guidstr(const uint8_t *restrict, char *restrict);
+void guidtohex(const uint8_t *restrict, char *restrict);
 
 struct errf *ecalloc(size_t, size_t, void *);
+
 static inline struct errf *
 zalloc(size_t sz, void *p)
 {
 	return (ecalloc(1, sz, p));
 }
+
 
 #ifdef __cplusplus
 }

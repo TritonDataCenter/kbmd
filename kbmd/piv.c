@@ -42,14 +42,12 @@
 #define funcerrf(cause, fmt, ...)       \
     errf(__func__, cause, fmt , ##__VA_ARGS__)
 
-#define	PIN_LENGTH 8
 #define	ADMIN_KEY_LENGTH 24
 
-struct piv_token *piv;
-char *piv_pin;
+kbmd_token_t *kpiv;
 
 /*
- * The default values of an piv token that hasn't been setup.
+ * The default values of a piv token that hasn't been setup.
  */
 static const uint8_t DEFAULT_ADMIN_KEY[ADMIN_KEY_LENGTH] = {
 	0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
@@ -59,14 +57,46 @@ static const uint8_t DEFAULT_ADMIN_KEY[ADMIN_KEY_LENGTH] = {
 static const char DEFAULT_PIN[] = "123456";
 static const char DEFAULT_PUK[] = "12345678";
 
+/*
+ * XXX: It might make more sense to have the pin_type->string
+ * code in pivy instead of here
+ */
+const char *
+piv_pin_str(enum piv_pin pin_type)
+{
+	switch (pin_type) {
+	case PIV_PIN:
+		return("PIN");
+	case PIV_GLOBAL_PIN:
+		return("global PIN");
+	case PIV_PUK:
+		return("PUK");
+	case PIV_OCC:
+		return("OCC");
+	case PIV_OCC2:
+		return("OCC2");
+	case PIV_PAIRING:
+		return("pairing PIN");
+	default:
+		return("unknown PIN");
+	}
+}
+
+/*
+ * Set the given PIN type to a new random pin pin_len characters long and
+ * set pin to the new value.
+ *
+ * NOTE: 'pin' should be sized at least 'pin_len' + 1 bytes in length (to
+ * hold the terminating NUL).
+ */
 static errf_t *
-set_pins(struct piv_token *restrict pk, char pin[restrict PIN_LENGTH + 1])
+set_pin(struct piv_token *restrict pk, char pin[restrict], size_t pin_len,
+    enum piv_pin pin_type, const char *old_pin)
 {
 	errf_t *ret = ERRF_OK;
-	char puk[PIN_LENGTH + 1];
 	size_t i;
 
-	ASSERT(piv_token_in_txn(pk));
+	VERIFY(piv_token_in_txn(pk));
 
 	/*
 	 * For reasons described in arc4random_uniform(3C), we use it to
@@ -75,22 +105,34 @@ set_pins(struct piv_token *restrict pk, char pin[restrict PIN_LENGTH + 1])
 	 * XXX: Yubikeys can support non-numeric pins -- should we use more
 	 * than digits when creating a yk pin?
 	 */
-	for (i = 0; i < PIN_LENGTH; i++)
+	for (i = 0; i < pin_len; i++)
 		pin[i] = arc4random_uniform(10) + '0';
-	pin[PIN_LENGTH] = '\0';
+	pin[i] = '\0';
 
-	if ((ret = piv_change_pin(pk, PIV_PIN, DEFAULT_PIN, pin)) != ERRF_OK) {
-		ret = funcerrf(ret, "failure to set PIN");
+	if ((ret = piv_change_pin(pk, pin_type, old_pin, pin)) != ERRF_OK) {
+		ret = funcerrf(ret, "failure to set %s", piv_pin_str(pin_type));
 		return (ret);
 	}
 
-	for (i = 0; i < PIN_LENGTH; i++)
-		puk[i] = arc4random_uniform(10) + '0';
-	puk[PIN_LENGTH] = '\0';
+	return (ERRF_OK);
+}
 
-	if ((ret = piv_change_pin(pk, PIV_PUK, DEFAULT_PUK, puk)) != ERRF_OK)
-		ret = funcerrf(ret, "failure to set PUK");
+static errf_t *
+set_pins(struct piv_token *restrict pk, char pin[restrict PIN_LENGTH + 1])
+{
+	errf_t *ret = ERRF_OK;
+	char puk[PIN_LENGTH + 1] = { 0 };
 
+	if ((ret = set_pin(pk, pin, PIN_LENGTH, PIV_PIN,
+	    DEFAULT_PIN)) != ERRF_OK)
+		return (ret);
+
+	/*
+	 * We discard the PUK value to seal the PIV token (i.e. prevent
+	 * modification or replacement of any of the generated keys without
+	 * doing a re-initialization of the token).
+	 */
+	ret = set_pin(pk, puk, PIN_LENGTH, PIV_PUK, DEFAULT_PUK);
 	explicit_bzero(puk, sizeof (puk));
 	return (ret);
 }
@@ -561,7 +603,7 @@ kbmd_init_token(uint8_t guid[restrict])
 		0x00
 	};
 
-	ASSERT(MUTEX_HELD(&piv_lcok));
+	ASSERT(MUTEX_HELD(&piv_lock));
 
 	/*
 	 * Find a non-initialized piv token.  We assume a piv token with
@@ -587,6 +629,11 @@ kbmd_init_token(uint8_t guid[restrict])
 			    "multiple uninitialzied tokens are present"));
 		}
 		pk = tok;
+	}
+
+	if (pk == NULL) {
+		return (errf("SetupError", NULL,
+		    "no uninitialized tokens are present"));
 	}
 
 	arc4random_buf(nguid, sizeof (nguid));
@@ -698,28 +745,31 @@ done:
 }
 
 errf_t *
-kbmd_setup_token(struct piv_token **restrict pkp,
-    uint8_t **restrict recovery_token, size_t *restrict recovery_token_len)
+kbmd_setup_token(kbmd_token_t **ktp)
 {
 	errf_t *ret = ERRF_OK;
-	struct piv_token *pk;
+	struct piv_token *pk = NULL;
+	kbmd_token_t *kt = NULL;
 	custr_t *recovery = NULL;
 	char pin[PIN_LENGTH + 1] = { 0 };
 	uint8_t guid[GUID_LEN] = { 0 };
 
 	ASSERT(MUTEX_HELD(&piv_lock));
 
-	if ((ret = kbmd_init_token(guid)) != ERRF_OK)
+	if ((ret = zalloc(sizeof (kbmd_token_t), ktp)) != ERRF_OK)
 		return (ret);
+
+	if ((ret = kbmd_init_token(guid)) != ERRF_OK)
+		goto fail;
 
 	/*
 	 * Once the token has been initalized, re-read all the info with
 	 * the new GUID, etc.
 	 */
 	if ((ret = piv_find(piv_ctx, guid, sizeof (guid), &pk)) != ERRF_OK) {
-		*pkp = NULL;
-		return (errf("SetupError", ret,
-		    "could not find token after initialization"));
+		ret = errf("SetupError", ret,
+		    "could not find token after initialization");
+		goto fail;
 	}
 
 	if ((ret = piv_txn_begin(pk)) != ERRF_OK ||
@@ -747,20 +797,72 @@ kbmd_setup_token(struct piv_token **restrict pkp,
 	if ((ret = kbmd_register_pivtoken(pk, pin, &recovery)) != ERRF_OK)
 		goto fail;
 
-	if ((ret = convert_recovery_token(recovery, recovery_token,
-	    recovery_token_len)) != ERRF_OK)
+	ret = convert_recovery_token(recovery, &(*ktp)->kt_rtoken,
+	    &(*ktp)->kt_rtoklen);
+	custr_free(recovery);
+	if (ret != ERRF_OK)
 		goto fail;
 
-	custr_free(recovery);
-	*pkp = pk;
+	(*ktp)->kt_piv = pk;
+	bcopy(pin, (*ktp)->kt_pin, PIN_LENGTH + 1);
+	explicit_bzero(pin, sizeof (pin));
 	return (ERRF_OK);
 
 fail:
-	custr_free(recovery);
-	piv_txn_end(pk);
-	piv_release(pk);
+	if (pk != NULL) {
+		if (piv_token_in_txn(pk))
+			piv_txn_end(pk);
+		piv_release(pk);
+	}
 	explicit_bzero(pin, sizeof (pin));
-	*pkp = NULL;
+	kbmd_token_free(*ktp);
+	*ktp = NULL;
 	return (ret);
+}
 
+void
+kbmd_token_free(kbmd_token_t *kt)
+{
+	if (kt == NULL)
+		return;
+
+	if (kt->kt_pin != NULL) {
+		size_t len = strlen(kt->kt_pin) + 1;
+		freezero(kt->kt_pin, len);
+	}
+
+	freezero(kt->kt_rtoken, kt->kt_rtoklen);
+	free(kt);
+}
+
+void
+kbmd_set_token(kbmd_token_t *kt)
+{
+	VERIFY(MUTEX_HELD(&piv_lock));
+
+	if (kt == kpiv)
+		return;
+
+	kbmd_token_free(kpiv);
+	kpiv = kt;
+}
+
+errf_t *
+get_slot(struct piv_token *restrict pk, enum piv_slotid slotid,
+    struct piv_slot **restrict slotp)
+{
+	errf_t *ret;
+
+	if ((*slotp = piv_get_slot(pk, slotid)) != NULL) {
+		return (ERRF_OK);
+	}
+
+	if ((ret = piv_read_cert(pk, slotid)) != ERRF_OK) {
+		return (errf("SlotError", ret, "cannot read slot %02X",
+		    slotid));
+	}
+
+	*slotp = piv_get_slot(pk, slotid);
+	VERIFY3P(*slotp, !=, NULL);
+	return (ERRF_OK);
 }

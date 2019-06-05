@@ -104,6 +104,15 @@ kbmd_get_pin(const uint8_t guid[restrict], custr_t **restrict pinp)
 	}
 
 	/*
+	 * NOTE: this depends on the GUID being the most recently appended
+	 * string to args
+	 */
+	(void) bunyan_debug(tlog, "Running get-pin plugin",
+	    BUNYAN_T_STRING, "path", GET_PIN_CMD,
+	    BUNYAN_T_STRING, "guid", args.sar_strs[args.sar_n - 1],
+	    BUNYAN_T_END);
+
+	/*
 	 * Let the command inherit our environment.
 	 * XXX: Maybe set the environment to a fixed known value?
 	 */
@@ -130,6 +139,11 @@ kbmd_get_pin(const uint8_t guid[restrict], custr_t **restrict pinp)
 	 * truncated.
 	 */
 	if (exitval != 0) {
+		(void) bunyan_warn(tlog, "Get pin plugin returned an error",
+		    BUNYAN_T_STRING, "plugin", GET_PIN_CMD,
+		    BUNYAN_T_INT32, "retval", (int32_t)exitval,
+		    BUNYAN_T_END);
+
 		ret = errf("PluginError", NULL, "Plugin returned %d (%s)",
 		    exitval, GET_PIN_CMD);
 	} else {

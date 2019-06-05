@@ -19,6 +19,7 @@
 #include <strings.h>
 #include <sys/list.h>
 #include <libzfs.h>
+#include "common.h"
 #include "ecustr.h"
 #include "envlist.h"
 #include "kbmd.h"
@@ -271,20 +272,32 @@ kbmd_assert_pin(struct piv_token *pk)
 
 	pin_auth = piv_token_default_auth(pk);
 
+	(void) bunyan_debug(tlog, "Checking pin status of PIV",
+	    BUNYAN_T_STRING, "token", piv_token_guid_hex(pk),
+	    BUNYAN_T_STRING, "default_auth", piv_pin_str(pin_auth),
+	    BUNYAN_T_END);
+
 	/*
 	 * Determine if we're already authed, if so just return ok.
 	 */
-	if ((ret = piv_verify_pin(pk, pin_auth, NULL, NULL, B_TRUE)) == ERRF_OK)
+	if ((ret = piv_verify_pin(pk, pin_auth, NULL, NULL,
+	    B_TRUE)) == ERRF_OK) {
+		(void) bunyan_debug(tlog,
+		    "PIV already authenticated, pin re-entry not needed",
+		    BUNYAN_T_STRING, "token", piv_token_guid_hex(pk),
+		    BUNYAN_T_STRING, "default_auth", piv_pin_str(pin_auth),
+		    BUNYAN_T_END);
 		return (ERRF_OK);
+	}
 
 	/*
 	 * If it's the system pin, and we already have the cached pin,
 	 * try that.
 	 */
-	if (pk == piv && piv_pin != NULL) {
+	if (pk == kpiv->kt_piv && kpiv->kt_pin != NULL) {
 		ASSERT(MUTEX_HELD(&piv_lock));
 
-		if ((ret = piv_verify_pin(pk, pin_auth, piv_pin, NULL,
+		if ((ret = piv_verify_pin(pk, pin_auth, kpiv->kt_pin, NULL,
 		    B_TRUE)) == ERRF_OK)
 			return (ret);
 	}
@@ -301,19 +314,15 @@ kbmd_assert_pin(struct piv_token *pk)
 	 */
 	ret = piv_verify_pin(pk, pin_auth, custr_cstr(pin), NULL, B_TRUE);
 
-	if (pk == piv && ret == ERRF_OK) {
+	if (pk == kpiv->kt_piv && ret == ERRF_OK) {
 		/*
 		 * If we get here, we're updating the system PIV token and
 		 * we either didn't cache the pin, or the cached value was
 		 * wrong.  Either way update the pin.
 		 */
-		if (piv_pin != NULL) {
-			size_t len = strlen(piv_pin);
-
-			freezero(piv_pin, len + 1);
-		}
-
-		piv_pin = strdup(custr_cstr(pin));
+		VERIFY3U(custr_len(pin), <, sizeof (kpiv->kt_pin));
+		explicit_bzero(kpiv->kt_pin, sizeof (kpiv->kt_pin));
+		bcopy(custr_cstr(pin), kpiv->kt_pin, custr_len(pin));
 	}
 
 	custr_free(pin);
@@ -326,7 +335,7 @@ auth_card(struct piv_token *restrict token, struct sshkey *restrict cak)
 	struct piv_slot *cakslot;
 	errf_t *ret = ERRF_OK;
 
-	ASSERT(piv_token_in_txn(pk));
+	ASSERT(piv_token_in_txn(token));
 
 	if (cak == NULL)
 		return (ERRF_OK);

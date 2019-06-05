@@ -16,6 +16,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
+#include <string.h>
 #include <strings.h>
 #include <sys/types.h>
 #include <umem.h>
@@ -26,6 +27,14 @@
 #include "errf.h"
 
 char panicstr[256];
+
+static kbmlog_t kbmlog = {
+	.kbmlog_lock = ERRORCHECKMUTEX,
+	.kbmlog_fd = STDERR_FILENO
+};
+
+bunyan_logger_t *blog;
+__thread bunyan_logger_t *tlog;
 
 /*
  * Debug builds are automatically wired up for umem debugging.
@@ -87,7 +96,7 @@ alloc_init(void)
 }
 
 void
-guidstr(const uint8_t *restrict guid, char *restrict str)
+guidtohex(const uint8_t *restrict guid, char *restrict str)
 {
 	static const char hexdigits[] = "0123456789ABCDEF";
 	size_t i, j;
@@ -107,5 +116,37 @@ ecalloc(size_t n, size_t sz, void *p)
 
 	if ((*pp = calloc(n, sz)) == NULL)
 		return (errfno("calloc", NULL, ""));
+	return (ERRF_OK);
+}
+
+static int
+kbm_stream_log(nvlist_t *nvl, const char *js, void *arg)
+{
+	struct kbmlog *klog = arg;
+	int ret;
+
+	mutex_enter(&klog->kbmlog_lock);
+	ret = bunyan_stream_fd(nvl, js, (void *)(uintptr_t)klog->kbmlog_fd);
+	mutex_exit(&klog->kbmlog_lock);
+
+	return (ret);
+}
+
+errf_t *
+init_log(bunyan_level_t level)
+{
+	errf_t *ret = ERRF_OK;
+	int rc;
+
+	rc = bunyan_init(getprogname(), &blog);
+	if (rc != 0)
+		return (errfno("bunyan_init", rc, "cannot initialize logger"));
+
+	rc = bunyan_stream_add(blog, "stderr", level, kbm_stream_log, &kbmlog);
+	if (rc != 0) {
+		return (errfno("bunyan_stream_add", rc,
+		    "cannot add stderr stream to logger"));
+	}
+
 	return (ERRF_OK);
 }

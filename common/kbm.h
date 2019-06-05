@@ -28,6 +28,7 @@ extern "C" {
 #define	KBM_NV_SUCCESS		"success"	/* boolean value */
 #define	KBM_NV_ERRMSG		"errmsg"	/* string */
 #define	KBM_NV_CREATE_ARGS	"args"		/* string array */
+#define	KBM_NV_DATASET		"dataset"	/* string */
 #define	KBM_NV_ZPOOL_KEY	"zpool-key"	/* byte array */
 #define	KBM_NV_ZFS_DATASET	"dataset"	/* string */
 #define	KBM_NV_RECOVER_ID	"recover-id"	/* uint32_t */

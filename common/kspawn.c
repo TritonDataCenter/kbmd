@@ -15,6 +15,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <bunyan.h>
 #include <libcustr.h>
 #include <poll.h>
 #include <spawn.h>
@@ -87,8 +88,8 @@ strarray_append_guid(strarray_t *restrict sar, const uint8_t guid[restrict])
 {
 	char str[GUID_LEN * 2 + 1] = { 0 };
 
-	guidstr(guid, str);
-	return (strarray_append(sar, "%s", guidstr));
+	guidtohex(guid, str);
+	return (strarray_append(sar, "%s", str));
 }
 
 void
@@ -239,9 +240,16 @@ spawn(const char *restrict cmd, char *const argv[restrict],
 	}
 
 	if ((ret = kspawn_fact_closefrom(&fact,
-	    STDERR_FILENO + 1)) != ERRF_OK ||
-	    (ret = kspawnp(&pid, cmd, &fact, &attr, argv, env)) != ERRF_OK)
+	    STDERR_FILENO + 1)) != ERRF_OK)
 		goto fail;
+
+	if ((ret = kspawnp(&pid, cmd, &fact, &attr, argv, env)) != ERRF_OK)
+		goto fail;
+
+	(void) bunyan_debug(tlog, "Spawned process",
+	    BUNYAN_T_STRING, "command", cmd,
+	    BUNYAN_T_INT32, "pid", (int32_t)pid,
+	    BUNYAN_T_END);
 
 	VERIFY0(posix_spawn_file_actions_destroy(&fact));
 	VERIFY0(posix_spawnattr_destroy(&attr));
@@ -282,6 +290,12 @@ exitval(pid_t pid, int *valp)
 
 		if (ret == pid) {
 			*valp = WEXITSTATUS(status);
+
+			(void) bunyan_debug(tlog, "Process exited",
+			    BUNYAN_T_INT32, "pid", (int32_t)pid,
+			    BUNYAN_T_INT32, "exitval", (int32_t)*valp,
+			    BUNYAN_T_END);
+
 			return (ERRF_OK);
 		}
 
@@ -349,6 +363,7 @@ errf_t *
 interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
     custr_t *output[restrict], int *restrict exitvalp)
 {
+	bunyan_logger_t *ilog = NULL;
 	struct pollfd pfds[3]= { 0 };
 	nfds_t nfds = 3;
 	size_t written = 0;
@@ -369,6 +384,14 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
 			pfds[i].fd = -1;
 		}
 	}
+
+	if (bunyan_child(tlog, &ilog,
+	    BUNYAN_T_INT32, "pid", (int32_t)pid, BUNYAN_T_END) != 0) {
+		return (errfno("bunyan_child", errno,
+		    "creating interact() logger"));
+	}
+
+	(void) bunyan_trace(ilog, "Interacting with process", BUNYAN_T_END);
 
 	while (pfds[0].fd >= 0 || pfds[1].fd >= 0 || pfds[2].fd >= 0) {
 		errf_t *ret;
@@ -396,7 +419,16 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
 				pfds[0].events = 0;
 				if (ret != ERRF_OK)
 					return (errf("IOError", ret, ""));
+				(void) bunyan_trace(ilog,
+				    "finished writing output",
+				    BUNYAN_T_INT32, "fd", (int32_t)pfds[0].fd,
+				    BUNYAN_T_END);
 			}
+
+			(void) bunyan_trace(ilog, "wrote data",
+			    BUNYAN_T_INT32, "fd", (int32_t)pfds[0].fd,
+			    BUNYAN_T_UINT64, "amt_written", (uint64_t)n,
+			    BUNYAN_T_END);
 		}
 
 		for (size_t i = 1; i < 3; i++) {
@@ -411,9 +443,20 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
 				pfds[i].events = 0;
 				if (ret != ERRF_OK)
 					return (errf("IOError", ret, ""));
+				(void) bunyan_trace(ilog,
+				    "finished reading data on fd",
+				    BUNYAN_T_INT32, "fd", (int32_t)pfds[i].fd,
+				    BUNYAN_T_END);
 			}
+
+			(void) bunyan_trace(ilog, "read data",
+			    BUNYAN_T_INT32, "fd", (int32_t)pfds[i].fd,
+			    BUNYAN_T_UINT64, "amt_read", (uint64_t)n,
+			    BUNYAN_T_END);
 		}
 	}
+
+	bunyan_fini(ilog);
 
 	return (exitval(pid, exitvalp));
 }
