@@ -127,8 +127,8 @@ kbmd_get_pin(const uint8_t guid[restrict], custr_t **restrict pinp)
 	if ((ret = ecustr_alloc(&data[0])) != ERRF_OK ||
 	    (ret = ecustr_alloc(&data[1])) != ERRF_OK ||
 	    (ret = interact(pid, fds, NULL, 0, data, &exitval)) != ERRF_OK) {
+		custr_free(data[0]);
 		custr_free(data[1]);
-		custr_free(data[2]);
 		return (errf("PluginError", ret, ""));
 	}
 
@@ -157,8 +157,8 @@ kbmd_get_pin(const uint8_t guid[restrict], custr_t **restrict pinp)
 		}
 	}
 
+	custr_free(data[0]);
 	custr_free(data[1]);
-	custr_free(data[2]);
 	return (ret);
 }
 

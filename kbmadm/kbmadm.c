@@ -65,8 +65,6 @@ static struct {
 	{ "unlock", do_unlock }
 };
 
-int exitcode = 0;
-
 static void __NORETURN
 usage(void)
 {
@@ -153,10 +151,10 @@ main(int argc, char *argv[])
 		usage();
 	}
 
-	if (ret == ERRF_OK)
-		return (exitcode);
+	if (ret != ERRF_OK)
+		errfx(EXIT_FAILURE, ret, "%s command failed", cmd_tbl[i].name);
 
-	errfx(EXIT_FAILURE, ret, "%s command failed", cmd_tbl[i].name);
+	return (0);
 }
 
 static errf_t *
@@ -417,7 +415,7 @@ done:
 static errf_t *
 run_zpool_cmd(char **argv, const uint8_t *key, size_t keylen)
 {
-	errf_t *ret;
+	errf_t *ret = ERRF_OK;
 	custr_t *out[2] = { 0 };
 	int fds[3] = { -1, STDOUT_FILENO, STDERR_FILENO };
 	int status;
@@ -429,7 +427,6 @@ run_zpool_cmd(char **argv, const uint8_t *key, size_t keylen)
 		return (ret);
 
 	if (status != 0) {
-		exitcode++;
 		return (errf("CommandError", NULL, "zpool create returned %d",
 		    status));
 	}
@@ -440,7 +437,7 @@ run_zpool_cmd(char **argv, const uint8_t *key, size_t keylen)
 static errf_t *
 unlock_dataset(int fd, const char *dataset)
 {
-	errf_t *ret;
+	errf_t *ret = ERRF_OK;
 	nvlist_t *req = NULL, *resp = NULL;
 
 	if ((ret = req_new(KBM_CMD_ZFS_UNLOCK, &req)) != ERRF_OK ||
@@ -449,20 +446,7 @@ unlock_dataset(int fd, const char *dataset)
 	    (ret = nv_door_call(fd, req, &resp)) != ERRF_OK)
 		return (ret);
 
-	if ((ret = check_error(resp)) != ERRF_OK) {
-		errf_t *e = NULL;
-
-		(void) fprintf(stderr, "Failed to unlock %s\n", dataset);
-		for (e = ret; e != NULL; e = errf_cause(e)) {
-			(void) fprintf(stderr, "  Caused by: %s: %s\n",
-			     errf_name(e), errf_message(e));
-			(void) fprintf(stderr, "    in %s() at %s:%d\n",
-			    errf_function(e), errf_file(e), errf_line(e));
-		}
-		erfree(ret);
-		exitcode++;
-	}
-
+	ret = check_error(resp);
 	return (ret);
 }
 
@@ -476,7 +460,7 @@ do_unlock(int argc, char **argv)
 	if ((ret = open_door(&fd)) != ERRF_OK)
 		goto done;
 
-	for (int i = 1; i <= argc; i++) {
+	for (int i = 1; i < argc; i++) {
 		ret = unlock_dataset(fd, argv[i]);
 		if (ret != ERRF_OK)
 			goto done;

@@ -68,6 +68,7 @@ extern struct libzfs_handle *g_zfs;
 extern mutex_t piv_lock;
 extern SCARDCONTEXT piv_ctx;
 extern kbmd_token_t *kpiv;
+#define	IS_SYSTEM_TOKEN(_tok) ((kpiv != NULL) && ((_tok) == kpiv->kt_piv))
 
 const char *get_dc(void);
 const char *get_domain(void);

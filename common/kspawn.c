@@ -414,21 +414,26 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
 			written += n;
 
 			if (n == 0 || written == inputlen || ret != ERRF_OK) {
+				if (ret == ERRF_OK) {
+					(void) bunyan_trace(ilog,
+					    "finished writing output",
+					    BUNYAN_T_INT32, "fd", pfds[0].fd,
+					    BUNYAN_T_END);
+				}
+
 				(void) close(pfds[0].fd);
 				pfds[0].fd = -1;
 				pfds[0].events = 0;
 				if (ret != ERRF_OK)
 					return (errf("IOError", ret, ""));
-				(void) bunyan_trace(ilog,
-				    "finished writing output",
-				    BUNYAN_T_INT32, "fd", (int32_t)pfds[0].fd,
-				    BUNYAN_T_END);
 			}
 
-			(void) bunyan_trace(ilog, "wrote data",
-			    BUNYAN_T_INT32, "fd", (int32_t)pfds[0].fd,
-			    BUNYAN_T_UINT64, "amt_written", (uint64_t)n,
-			    BUNYAN_T_END);
+			if (n > 0) {
+				(void) bunyan_trace(ilog, "wrote data",
+				    BUNYAN_T_INT32, "fd", pfds[0].fd,
+				    BUNYAN_T_UINT64, "amt_written", (uint64_t)n,
+				    BUNYAN_T_END);
+			}
 		}
 
 		for (size_t i = 1; i < 3; i++) {
@@ -438,21 +443,26 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
 			ret = read_fd(pfds[i].fd, output[i - 1], &n);
 
 			if (n == 0 || ret != ERRF_OK) {
+				if (ret == ERRF_OK) {
+					(void) bunyan_trace(ilog,
+					    "finished reading data on fd",
+					    BUNYAN_T_INT32, "fd", pfds[i].fd,
+					    BUNYAN_T_END);
+				}
+
 				(void) close(pfds[i].fd);
 				pfds[i].fd = -1;
 				pfds[i].events = 0;
 				if (ret != ERRF_OK)
 					return (errf("IOError", ret, ""));
-				(void) bunyan_trace(ilog,
-				    "finished reading data on fd",
-				    BUNYAN_T_INT32, "fd", (int32_t)pfds[i].fd,
-				    BUNYAN_T_END);
 			}
 
-			(void) bunyan_trace(ilog, "read data",
-			    BUNYAN_T_INT32, "fd", (int32_t)pfds[i].fd,
-			    BUNYAN_T_UINT64, "amt_read", (uint64_t)n,
-			    BUNYAN_T_END);
+			if (n > 0) {
+				(void) bunyan_trace(ilog, "read data",
+				    BUNYAN_T_INT32, "fd", pfds[i].fd,
+				    BUNYAN_T_UINT64, "amt_read", (uint64_t)n,
+				    BUNYAN_T_END);
+			}
 		}
 	}
 

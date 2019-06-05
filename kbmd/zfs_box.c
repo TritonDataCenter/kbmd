@@ -277,6 +277,7 @@ kbmd_assert_pin(struct piv_token *pk)
 	    BUNYAN_T_STRING, "default_auth", piv_pin_str(pin_auth),
 	    BUNYAN_T_END);
 
+#if 0
 	/*
 	 * Determine if we're already authed, if so just return ok.
 	 */
@@ -289,12 +290,13 @@ kbmd_assert_pin(struct piv_token *pk)
 		    BUNYAN_T_END);
 		return (ERRF_OK);
 	}
+#endif
 
 	/*
 	 * If it's the system pin, and we already have the cached pin,
 	 * try that.
 	 */
-	if (pk == kpiv->kt_piv && kpiv->kt_pin != NULL) {
+	if (IS_SYSTEM_TOKEN(pk) && kpiv->kt_pin != NULL) {
 		ASSERT(MUTEX_HELD(&piv_lock));
 
 		if ((ret = piv_verify_pin(pk, pin_auth, kpiv->kt_pin, NULL,
@@ -314,7 +316,7 @@ kbmd_assert_pin(struct piv_token *pk)
 	 */
 	ret = piv_verify_pin(pk, pin_auth, custr_cstr(pin), NULL, B_TRUE);
 
-	if (pk == kpiv->kt_piv && ret == ERRF_OK) {
+	if (IS_SYSTEM_TOKEN(pk) && ret == ERRF_OK) {
 		/*
 		 * If we get here, we're updating the system PIV token and
 		 * we either didn't cache the pin, or the cached value was
@@ -469,8 +471,11 @@ kbmd_unlock_ebox(struct ebox *ebox)
 		tpart = ebox_part_tpl(part);
 		ret = local_unlock(ebox_part_box(part),
 		    ebox_tpl_part_cak(tpart), ebox_tpl_part_name(tpart));
-		if (ret != ERRF_OK && !errf_caused_by(ret, "NotFoundError"))
-			return (ret);
+		if (ret != ERRF_OK && !errf_caused_by(ret, "NotFoundError")) {
+			return (errf("UnlockError", ret,
+			    "Failed to unlock ebox for %s dataset",
+			    ebox_private(ebox)));
+		}
 		if (ret != ERRF_OK) {
 			erfree(ret);
 			continue;

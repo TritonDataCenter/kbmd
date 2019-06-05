@@ -20,6 +20,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <stdarg.h>
+#include <stdio.h>
 #include <strings.h>
 #include <stropts.h>
 #include <sys/debug.h>
@@ -119,6 +120,12 @@ kbmd_ret_nvlist(nvlist_t *resp)
 {
 	struct retbuf *b = NULL;
 	size_t nvlen;
+
+	flockfile(stderr);
+	fprintf(stderr, "Response:\n");
+	nvlist_print(stderr, resp);
+	fputc('\n', stderr);
+	funlockfile(stderr);
 
 	VERIFY0(nvlist_size(resp, &nvlen, NV_ENCODE_NATIVE));
 	if (nvlen > DOOR_RET_MAX) {

@@ -88,13 +88,13 @@ char *
 buf_to_hex(const uint8_t *buf, size_t len, int spaces)
 {
 	char *str;
-	const size_t slen = spaces ? len * 2 + 1 : len * 3 + 1;
+	const size_t slen = spaces ? len * 3 + 1 : len * 2 + 1;
 	size_t i, j;
 
 	if ((str = calloc(1, slen)) == NULL)
 		return (NULL);
 
-	for (i = 0; i < len; i++) {
+	for (i = j = 0; i < len; i++) {
 		const uint8_t byte = buf[i];
 
 		if (i > 0 && spaces)
