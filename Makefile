@@ -87,6 +87,12 @@ KBMD_LIBS =		\
 	-lpcsclite
 out/kbmd:	LDLIBS += $(KBMD_LIBS)
 
+#
+# We explicitly statically link the pivy code.  We do not want any potentially
+# shared code pages with other programs in any of the pivy code.  Such
+# sharing could open up kbmd to timing attacks in any code that's handling
+# key material, which could make it vulnerable to unintentional disclosure.
+
 _LIBSSH_OBJS = 			\
 	atomicio.o		\
 	authfd.o		\
@@ -189,7 +195,7 @@ out/kbmadm: $(KBMADM_OBJS) out/common.a
 	$(CTFCONVERT) $@
 
 #
-# The openssl bits don't have CTF info, so -m is needed
+# The openssl bits don't currently have CTF info, so -m is needed
 out/kbmd: $(KBMD_OBJS) $(STATIC_LIBS)
 	$(CC) -o $@ $(CFLAGS) $(KBMD_OBJS) $(LDFLAGS) $(LDLIBS)
 	$(CTFCONVERT) -m $@
