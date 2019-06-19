@@ -18,12 +18,7 @@
 #include <string.h>
 #include <synch.h>
 #include <sys/list.h>
-#include "common.h"
-#include "envlist.h"
-#include "kbm.h"
 #include "kbmd.h"
-#include "pivy/ebox.h"
-#include "pivy/errf.h"
 #include "pivy/libssh/sshbuf.h"
 #include "pivy/words.h"
 
@@ -176,6 +171,19 @@ start_recovery(recovery_t *restrict r, struct ebox_config *restrict cfg)
 }
 
 static errf_t *
+recovery_alloc_cb(const struct ebox_tpl *tpl __unused,
+    struct ebox_tpl_config *tcfg, void *arg)
+{
+	size_t *np = arg;
+
+	if (ebox_tpl_config_type(tcfg) == EBOX_RECOVERY) {
+		(*np)++;
+	}
+
+	return (ERRF_OK);
+}
+
+static errf_t *
 recovery_alloc(pid_t pid, struct ebox *ebox, recovery_t **rp)
 {
 	errf_t *ret = ERRF_OK;
@@ -194,11 +202,8 @@ recovery_alloc(pid_t pid, struct ebox *ebox, recovery_t **rp)
 	}
 
 	n = 0;
-	CFG_FOREACH(cfg, ebox) {
-		tcfg = ebox_config_tpl(cfg);
-		if (ebox_tpl_config_type(tcfg) == EBOX_RECOVERY)
-			n++;
-	}
+	VERIFY0(ebox_tpl_foreach_cfg(ebox_tpl(ebox), recovery_alloc_cb,
+	    &n));
 
 	if (n == 0) {
 		return (errf("RecoveryFailure", NULL,
@@ -269,29 +274,69 @@ recovery_alloc(pid_t pid, struct ebox *ebox, recovery_t **rp)
 	return (ERRF_OK);
 }
 
+struct get_config_resp_data {
+	char			*gcrp_answer;
+	struct ebox_config	*gcrp_cfg;
+};
+
+static errf_t *
+get_config_resp_cb(const struct ebox_tpl *tpl, struct ebox_tpl_config *tcfg,
+ void *arg)
+{
+	struct get_config_resp_data *data = arg;
+	struct config_question *cq = ebox_tpl_config_private(tcfg);
+
+	if (cq == NULL) {
+		VERIFY3S(ebox_tpl_config_type(tcfg), !=, EBOX_RECOVERY);
+		return (ERRF_OK);
+	}
+
+	if (strcmp(data->gcrp_answer, cq->cq_answer) == 0) {
+		data->gcrp_cfg = cq->cq_cfg;
+		return (FOREACH_STOP);
+	}
+
+	return (ERRF_OK);
+}
+
 static struct ebox_config *
 get_config_response(recovery_t *restrict r, nvlist_t *restrict resp)
 {
-	struct ebox_config *cfg;
-	char *answer;
+	struct get_config_resp_data arg = { 0 };
 
-	if (nvlist_lookup_string(resp, KBM_NV_ANSWER, &answer) != 0)
+	if (nvlist_lookup_string(resp, KBM_NV_ANSWER, &arg.gcrp_answer) != 0)
 		return (NULL);
 
-	CFG_FOREACH(cfg, r->r_ebox) {
-		struct ebox_tpl_config *tcfg = ebox_config_tpl(cfg);
-		struct config_question *cq = ebox_tpl_config_private(tcfg);
+	(void) ebox_tpl_foreach_cfg(ebox_tpl(r->r_ebox), get_config_resp_cb,
+	    &arg);
+	return (arg.gcrp_cfg);
+}
 
-		if (cq == NULL) {
-			VERIFY3S(ebox_tpl_config_type(tcfg), !=, EBOX_RECOVERY);
-			continue;
-		}
+struct select_config_data {
+	nvlist_t	**scd_nvls;
+	size_t		scd_i;
+};
 
-		if (strcmp(cq->cq_answer, answer) == 0)
-			return (cq->cq_cfg);
+static errf_t *
+select_config_cb(const struct ebox_tpl *tpl __unused,
+    struct ebox_tpl_config *tcfg, void *arg)
+{
+	errf_t *ret = ERRF_OK;
+	struct select_config_data *data = arg;
+	struct config_question *cq = ebox_tpl_config_private(tcfg);
+	nvlist_t *nvl = NULL;
+
+	if ((ret = envlist_alloc(&nvl)) != ERRF_OK ||
+	    (ret = envlist_add_string(nvl, KBM_NV_DESC,
+	    cq->cq_desc)) != ERRF_OK ||
+	    (ret = envlist_add_string(nvl, KBM_NV_ANSWER,
+	    cq->cq_answer)) != ERRF_OK) {
+		nvlist_free(nvl);
+		return (ret);
 	}
 
-	return (NULL);
+	data->scd_nvls[data->scd_i++] = nvl;
+	return (ERRF_OK);
 }
 
 static errf_t *
@@ -299,51 +344,39 @@ select_config(nvlist_t *restrict req, nvlist_t *restrict resp,
     recovery_t *restrict r)
 {
 	errf_t *ret = ERRF_OK;
-	nvlist_t **nvls = NULL;
 	struct ebox_config *cfg;
-	size_t i;
+	struct select_config_data arg = { 0 };
 
 	ASSERT(MUTEX_HELD(&recovery_lock));
 
 	if ((cfg = get_config_response(r, resp)) != NULL)
 		return (start_recovery(r, cfg));
 
-	if ((nvls = calloc(r->r_ncfg, sizeof (nvlist_t *))) == NULL) {
+	if ((arg.scd_nvls = calloc(r->r_ncfg, sizeof (nvlist_t *))) == NULL) {
 		ret = errfno("calloc", errno, "");
 		return (ret);
 	}
 
-	i = 0;
-	CFG_FOREACH(cfg, r->r_ebox) {
-		struct ebox_tpl_config *tcfg = ebox_config_tpl(cfg);
-		struct config_question *cq = ebox_tpl_config_private(tcfg);
-
-		if ((ret = envlist_alloc(&nvls[i])) != ERRF_OK)
-			goto done;
-
-		if ((ret = envlist_add_string(nvls[i], KBM_NV_DESC,
-		    cq->cq_desc)) != ERRF_OK ||
-		    (ret = envlist_add_string(nvls[i], KBM_NV_ANSWER,
-		    cq->cq_answer)) != ERRF_OK)
-			goto done;
-		i++;
+	if ((ret = ebox_tpl_foreach_cfg(ebox_tpl(r->r_ebox), select_config_cb,
+	    &arg)) != ERRF_OK) {
+		goto done;
 	}
 
 	if ((ret = envlist_add_string(resp, KBM_NV_PROMPT,
 	    "Select recovery configuration")) != ERRF_OK)
 		goto done;
 
-	if ((ret = envlist_add_nvlist_array(resp, KBM_NV_CONFIGS, nvls,
+	if ((ret = envlist_add_nvlist_array(resp, KBM_NV_CONFIGS, arg.scd_nvls,
 	    r->r_ncfg)) != ERRF_OK)
 		goto done;
 
 	ret = envlist_add_int32(resp, KBM_NV_ACTION, (int32_t)KBM_ACT_CONFIG);
 
 done:
-	if (nvls != NULL) {
-		for (i = 0; i < r->r_ncfg; i++)
-			nvlist_free(nvls[i]);
-		free(nvls);
+	if (arg.scd_nvls != NULL) {
+		for (size_t i = 0; i < r->r_ncfg; i++)
+			nvlist_free(arg.scd_nvls[i]);
+		free(arg.scd_nvls);
 	}
 
 	return (ret);
@@ -638,4 +671,92 @@ kbmd_recover_resp(nvlist_t *req, pid_t pid)
 	}
 
 	recover_common(req, r);
+}
+
+errf_t *
+get_request_template(nvlist_t *restrict nvl, struct ebox_tpl **restrict tplp)
+{
+	errf_t *ret = ERRF_OK;
+	struct sshbuf *buf = NULL;
+	uint8_t *bytes = NULL;
+	uint_t nbytes = 0;
+
+	if ((ret = envlist_lookup_uint8_array(nvl, KBM_NV_TEMPLATE, &bytes,
+	    &nbytes)) != ERRF_OK)
+		return (ret);
+
+	if ((buf = sshbuf_from(bytes, nbytes)) == NULL) {
+		return (errfno("sshbuf_from", errno,
+		    "cannot allocate ebox template"));
+	}
+
+	ret = sshbuf_get_ebox_tpl(buf, tplp);
+	sshbuf_free(buf);
+	return (ret);
+}
+
+void
+kbmd_update_recovery(nvlist_t *req)
+{
+	errf_t *ret = ERRF_OK;
+	nvlist_t *resp = NULL;
+	kbmd_token_t *kt = NULL;
+	struct ebox *ebox_old = NULL, *ebox_new = NULL;
+	struct ebox_tpl *tpl = NULL;
+
+	if ((ret = envlist_alloc(&resp)) != ERRF_OK) {
+		kbmd_ret_error(ret);
+	}
+
+	mutex_enter(&piv_lock);
+
+	if (sys_box == NULL) {
+		mutex_exit(&piv_lock);
+		nvlist_free(resp);
+		kbmd_ret_error(errf("UnlockError", NULL,
+		    "system zpool dataset must be unlocked before updating "
+		    "its recovery template"));
+	}
+	VERIFY3P(zones_dataset, !=, NULL);
+
+	if ((ret = get_template(kpiv->kt_piv, &tpl)) != ERRF_OK ||
+	    (ret = add_supplied_template(req, tpl, B_TRUE)) != ERRF_OK) {
+		mutex_exit(&piv_lock);
+		nvlist_free(resp);
+		kbmd_ret_error(ret);
+	}
+
+	if ((ret = kbmd_get_ebox(zones_dataset, &ebox_old)) != ERRF_OK ||
+	    (ret = kbmd_unlock_ebox(ebox_old, &kt)) != ERRF_OK) {
+		mutex_exit(&piv_lock);
+		nvlist_free(resp);
+		kbmd_ret_error(ret);
+	}
+	VERIFY3P(kt, ==, kpiv);
+	VERIFY0(strcmp(ebox_private(ebox_old), zones_dataset));
+
+	if ((ret = kbmd_ebox_clone(ebox_old, &ebox_new, tpl, kt)) != ERRF_OK) {
+		mutex_exit(&piv_lock);
+		nvlist_free(resp);
+		ebox_tpl_free(tpl);
+		kbmd_ret_error(ret);
+	}
+
+	if ((ret = kbmd_put_ebox(ebox_new)) != ERRF_OK) {
+		nvlist_free(resp);
+		ebox_tpl_free(tpl);
+		mutex_exit(&piv_lock);
+		kbmd_ret_error(ret);
+	}
+
+	if (ebox_old == sys_box)
+		sys_box = ebox_new;
+	ebox_free(ebox_old);
+	ebox_old = ebox_new;
+	ebox_new = NULL;
+
+	kbmd_set_token(kt);
+
+	mutex_exit(&piv_lock);
+	kbmd_ret_nvlist(resp);
 }

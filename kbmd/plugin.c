@@ -494,3 +494,23 @@ done:
 	custr_free(input);
 	return (ret);
 }
+
+errf_t *
+kbmd_new_recovery_token(kbmd_token_t *restrict kt, uint8_t **restrict rtokenp,
+    size_t *restrict rtokenlenp)
+{
+	errf_t *ret = ERRF_OK;
+	uint8_t *buf = NULL;
+
+	/*
+	 * XXX: Write a real implementation.  This is just temporary.
+	 */
+	if ((ret = zalloc(32, &buf)) != ERRF_OK)
+		return (ret);
+
+	arc4random_buf(buf, 32);
+	*rtokenp = buf;
+	*rtokenlenp = 32;
+
+	return (ERRF_OK);
+}

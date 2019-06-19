@@ -14,6 +14,7 @@
  */
 
 #include <bunyan.h>
+#include <ctype.h>
 #include <door.h>
 #include <err.h>
 #include <errno.h>
@@ -51,9 +52,12 @@ char *template_f;
 uint8_t guid[GUID_LEN];
 
 static errf_t *parse_guid(const char *, uint8_t guid[GUID_LEN]);
+static errf_t *read_template_file(const char *, char **);
+static errf_t *read_template_stdin(char **);
 static errf_t *run_zpool_cmd(char **, const uint8_t *, size_t);
 static errf_t *do_create_zpool(int, char **);
 static errf_t *do_unlock(int, char **);
+static errf_t *do_update_recovery(int, char **);
 errf_t *do_recover(int, char **);
 
 static struct {
@@ -62,7 +66,8 @@ static struct {
 } cmd_tbl[] = {
 	{ "create-zpool", do_create_zpool },
 	{ "recover", do_recover },
-	{ "unlock", do_unlock }
+	{ "unlock", do_unlock },
+	{ "update-recovery", do_update_recovery },
 };
 
 static void __NORETURN
@@ -73,7 +78,9 @@ usage(void)
 	(void) fprintf(stderr,
 	    "Usage: %1$s create-zpool <zpool create args>...\n"
 	    "       %1$s recover\n"
-	    "       %1$s unlock [dataset...]\n", name);
+	    "       %1$s unlock [dataset...]\n"
+	    "       %1$s update-recovery [-d dataset] [-f template file]\n",
+	    name);
 
 	exit(EXIT_FAILURE);
 }
@@ -136,7 +143,7 @@ main(int argc, char *argv[])
 	argv += optind - 1;
 	/* XXX: End testing */
 
-	if (argc < 1)
+	if (argc <= 1)
 		usage();
 
 	for (i = 0; i < ARRAY_SIZE(cmd_tbl); i++) {
@@ -238,6 +245,10 @@ parse_guid(const char *str, uint8_t guid[GUID_LEN])
 	return (ERRF_OK);
 }
 
+/*
+ * Decode base64 encoded data 'b64' and add to nvl as a uint8 array w/
+ * name 'name' to nvl
+ */
 static errf_t *
 add_b64(nvlist_t *restrict nvl, const char *name, const char *b64)
 {
@@ -266,9 +277,6 @@ add_debug_args(nvlist_t *req)
 {
 	errf_t *ret = ERRF_OK;
 	char *buf = NULL;
-	FILE *f;
-	struct stat st = { 0 };
-	ssize_t n;
 
 	if (guidstr != NULL &&
 	    (ret = envlist_add_uint8_array(req, KBM_NV_GUID, guid,
@@ -282,27 +290,8 @@ add_debug_args(nvlist_t *req)
 	if (template_f == NULL)
 		return (ERRF_OK);
 
-	if ((f = fopen(template_f, "rR")) == NULL)
-		return (errfno("fopen", errno, "cannot open %s", template_f));
-
-	if (fstat(fileno(f), &st) < 0)
-		return (errfno("fstat", errno, "cannot stat %s", template_f));
-
-	if ((ret = zalloc(st.st_size + 1, &buf)) != ERRF_OK)
-		goto done;
-
-	n = fread(buf, 1, st.st_size, f);
-	if (n < st.st_size && feof(f)) {
-		ret = errf("IOError", NULL,
-		    "short read while reading template %s", template_f);
-		goto done;
-	}
-	if (ferror(f)) {
-		ret = errf("IOError", NULL, "error reading template %s",
-		    template_f);
-		goto done;
-	}
-	buf[n] = '\0';
+	if ((ret = read_template_file(template_f, &buf)) != ERRF_OK)
+		return (ret);
 
 	ret = add_b64(req, KBM_NV_TEMPLATE, buf);
 
@@ -312,7 +301,6 @@ done:
 	 * freezero() is not needed here
 	 */
 	free(buf);
-	(void) fclose(f);
 	return (ret);
 }
 
@@ -471,6 +459,172 @@ done:
 		(void) close(fd);
 	nvlist_free(req);
 	nvlist_free(resp);
+	return (ret);
+}
+
+static errf_t *
+do_update_recovery(int argc, char **argv)
+{
+	const char *dataset = "zones";
+	errf_t *ret = ERRF_OK;
+	nvlist_t *req = NULL, *resp = NULL;
+	char *tpl = NULL;
+	int c, fd;
+
+	while ((c = getopt(argc, argv, "d:f:")) != -1) {
+		switch (c) {
+		case 'd':
+			dataset = optarg;
+			break;
+		case 'f':
+			template_f = optarg;
+			break;
+		default:
+			(void) fprintf(stderr, "Invalid flag -%c\n", optopt);
+			usage();
+		}
+	}
+
+	if (template_f != NULL) {
+		if ((ret = read_template_file(template_f, &tpl)) != ERRF_OK)
+			return (ret);
+	} else {
+		if ((ret = read_template_stdin(&tpl)) != ERRF_OK)
+			return (ret);
+		if (tpl == NULL || strlen(tpl) == 0) {
+			ret = errf("ArgumentError", NULL,
+			    "no template was specified");
+			goto done;
+		}
+	}
+
+	if ((ret = req_new(KBM_CMD_UPDATE_RECOVERY, &req)) != ERRF_OK ||
+	    (ret = envlist_add_string(req, KBM_NV_DATASET,
+	    dataset)) != ERRF_OK ||
+	    (ret = add_b64(req, KBM_NV_TEMPLATE, tpl)) != ERRF_OK)
+		goto done;
+
+	if ((ret = open_door(&fd)) != ERRF_OK ||
+	    (ret = nv_door_call(fd, req, &resp)) != ERRF_OK) {
+		goto done;
+	}
+
+	ret = check_error(resp);
+
+done:
+	nvlist_free(req);
+	nvlist_free(resp);
+	free(tpl);
+	return (ret);
+
+}
+
+static errf_t *
+read_template_stdin(char **bufp)
+{
+	errf_t *ret = ERRF_OK;
+	custr_t *buf = NULL;
+	char *line = NULL;
+	size_t linesz = 0;
+	ssize_t n;
+
+	if ((ret = ecustr_alloc(&buf)) != ERRF_OK)
+		return (ret);
+
+	(void) printf("Enter base64 encoded template:\n");
+
+	while ((n = getline(&line, &linesz, stdin)) > 0) {
+		char *start, *end;
+
+		start = line;
+		end = &line[n - 1];
+
+		/* strip leading whitespace */
+		while (*start != '\0' && isspace(*start))
+			start++;
+		if (*start == '\0')
+			continue;
+
+		/* strip trailing whitespace */
+		while (end > start && isspace(*end)) {
+			*end = '\0';
+			end--;
+		}
+
+		/* ignore empty lines */
+		if (end == start)
+			continue;
+
+		if ((ret = ecustr_append(buf, line)) != ERRF_OK)
+			goto done;
+	}
+
+	if (ferror(stdin)) {
+		ret = errfno("getline", errno, "error reading template");
+		goto done;
+	}
+
+	if ((ret = zalloc(custr_len(buf) + 1, bufp)) != ERRF_OK)
+		goto done;
+
+	bcopy(custr_cstr(buf), *bufp, custr_len(buf));
+
+done:
+	free(line);
+	custr_free(buf);
+	return (ret);
+}
+
+static errf_t *
+read_template_file(const char *filename, char **bufp)
+{
+	errf_t *ret = ERRF_OK;
+	char *buf = NULL;
+	FILE *f = NULL;
+	struct stat st = { 0 };
+	ssize_t n;
+
+	if ((f = fopen(filename, "r")) == NULL)
+		return (errfno("fopen", errno, "cannot open %s", filename));
+
+	if (fstat(fileno(f), &st) < 0) {
+		ret = errfno("fstat", errno, "cannot stat %s", filename);
+		goto fail;
+	}
+
+	if ((ret = zalloc(st.st_size + 1, &buf)) != ERRF_OK)
+		goto fail;
+
+	n = fread(buf, 1, st.st_size, f);
+	if (n < st.st_size && feof(f)) {
+		ret = errf("IOError", NULL,
+		    "short read while reading template file %s", filename);
+		goto fail;
+	}
+
+	if (ferror(f)) {
+		ret = errf("IOError", NULL,
+		    "error reading template file %s", filename);
+		goto fail;
+	}
+
+	buf[n] = '\0';
+
+	if (fclose(f) < 0) {
+		ret = errfno("fclose", errno, "error closing template file %s",
+		    filename);
+		goto failnoclose;
+	}
+
+	*bufp = buf;
+	return (ERRF_OK);
+
+fail:
+	(void) fclose(f);
+
+failnoclose:
+	free(buf);
+	*bufp = NULL;
 	return (ret);
 }
 

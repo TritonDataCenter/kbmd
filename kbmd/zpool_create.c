@@ -113,141 +113,29 @@ add_create_data(nvlist_t *restrict resp, struct ebox *restrict ebox,
  * XXX: Until we integrate the gossip protocol, create a template with
  * just a primary config (from the given token).
  */
-static errf_t *
+errf_t *
 get_template(struct piv_token *restrict pk,
     struct ebox_tpl **restrict tplp)
 {
 	errf_t *ret = ERRF_OK;
-	struct piv_slot *slot = NULL;
 	struct ebox_tpl *tpl = NULL;
-	struct ebox_tpl_config *pri_cfg = NULL;
-	struct ebox_tpl_part *pri_part = NULL;
+	struct ebox_tpl_config *cfg = NULL;
 
 	if ((tpl = ebox_tpl_alloc()) == NULL) {
 		ret = errfno("ebox_tpl_alloc", errno, "creating template");
-		goto done;
+		return (errf("TemplateError", ret,
+		    "cannot create ebox template))"));
 	}
 
-	if ((pri_cfg = ebox_tpl_config_alloc(EBOX_PRIMARY)) == NULL) {
-		ret = errfno("ebox_tpl_config_alloc", errno,
-		    "creating template");
-		goto done;
-	}
-
-	ASSERT(piv_token_in_txn(pk));
-
-	if ((ret = get_slot(pk, PIV_SLOT_KEY_MGMT, &slot)) != ERRF_OK) {
-		ret = errf("TemplateError", ret,
-		    "cannot get current ebox template");
-		goto done;
-	}
-
-	if ((pri_part = ebox_tpl_part_alloc(piv_token_guid(pk), GUID_LEN,
-	    PIV_SLOT_KEY_MGMT, piv_slot_pubkey(slot))) == NULL) {
-		ret = errfno("ebox_tpl_part_alloc", errno,
-		    "cannot get current ebox template");
-		goto done;
-	}
-
-	if ((ret = get_slot(pk, PIV_SLOT_CARD_AUTH, &slot)) != ERRF_OK) {
-		ret = errf("TemplateError", ret,
-		    "cannot get current ebox template");
-		goto done;
-	}
-	ebox_tpl_part_set_cak(pri_part, piv_slot_pubkey(slot));
-
-	/*
-	 * XXX: We can also set a name for this template part, is there any
-	 * useful/meaningful value that could be used?
-	 */
-
-	ebox_tpl_config_add_part(pri_cfg, pri_part);
-	ebox_tpl_add_config(tpl, pri_cfg);
-	*tplp = tpl;
-
-done:
-	if (piv_token_in_txn(pk))
-		piv_txn_end(pk);
-
-	if (ret != ERRF_OK) {
-		ebox_tpl_part_free(pri_part);
-		ebox_tpl_config_free(pri_cfg);
+	if ((ret = create_piv_tpl_config(pk, &cfg)) != ERRF_OK) {
+		ret = errf("TemplateError", ret, "cannot create ebox template");
 		ebox_tpl_free(tpl);
+		return (ret);
 	}
+
+	ebox_tpl_add_config(tpl, cfg);
+	*tplp = tpl;
 	return (ret);
-}
-
-/*
- * For testing -- if kbmadm includes a template, merge in all the EBOX_RECOVERY
- * configs into tpl
- */
-static void
-get_supplied_template(nvlist_t *restrict nvl, struct ebox_tpl *restrict tpl)
-{
-	errf_t *ret;
-	struct ebox_tpl *utpl = NULL;
-	struct ebox_tpl_config *tconfig = NULL, *newcfg = NULL;
-	struct ebox_tpl_part *tpart = NULL, *newpart = NULL;
-	struct sshbuf *buf = NULL;
-	uint8_t *tbytes = NULL;
-	uint_t tlen = 0;
-
-	if (nvlist_lookup_uint8_array(nvl, KBM_NV_TEMPLATE, &tbytes,
-	    &tlen) != 0)
-		return;
-
-	/*
-	 * This function is just for testing, if we fail, we just act
-	 * like the template isn't there.
-	 */
-	if ((buf = sshbuf_from(tbytes, tlen)) == NULL)
-		return;
-
-	if ((ret = sshbuf_get_ebox_tpl(buf, &utpl)) != ERRF_OK)
-		goto done;
-
-	while ((tconfig = ebox_tpl_next_config(utpl, tconfig)) != NULL) {
-		if (ebox_tpl_config_type(tconfig) != EBOX_RECOVERY)
-			continue;
-
-		newcfg = ebox_tpl_config_alloc(EBOX_RECOVERY);
-		if (newcfg == NULL)
-			goto done;
-
-		if ((ret = ebox_tpl_config_set_n(newcfg,
-		    ebox_tpl_config_n(tconfig))) != ERRF_OK)
-			goto done;
-
-		tpart = NULL;
-		while ((tpart = ebox_tpl_config_next_part(tconfig,
-		    tpart)) != NULL) {
-			const char *name = ebox_tpl_part_name(tpart);
-			struct sshkey *cak = ebox_tpl_part_cak(tpart);
-
-			newpart = ebox_tpl_part_alloc(ebox_tpl_part_guid(tpart),
-			    GUID_LEN, ebox_tpl_part_slot(tpart),
-			    ebox_tpl_part_pubkey(tpart));
-			if (newpart == NULL)
-				goto done;
-
-			if (name != NULL)
-				ebox_tpl_part_set_name(newpart, name);
-			if (cak != NULL)
-				ebox_tpl_part_set_cak(newpart, cak);
-
-			ebox_tpl_config_add_part(newcfg, newpart);
-			newpart = NULL;
-		}
-
-		ebox_tpl_add_config(tpl, newcfg);
-		newcfg = NULL;
-	}
-
-done:
-	sshbuf_free(buf);
-	ebox_tpl_part_free(newpart);
-	ebox_tpl_config_free(newcfg);
-	ebox_tpl_free(utpl);
 }
 
 /*
@@ -402,7 +290,7 @@ kbmd_zpool_create(nvlist_t *req)
 	 * to supply the recovery parts.  We want to remove this once the
 	 * gossip protocol is written.
 	 */
-	get_supplied_template(req, tpl);
+	VERIFY3P(add_supplied_template(req, tpl, B_FALSE), ==, ERRF_OK);
 
 	if ((ret = ebox_create(tpl, key, keylen, kt->kt_rtoken,
 	    kt->kt_rtoklen, &ebox)) != ERRF_OK)
@@ -420,7 +308,12 @@ kbmd_zpool_create(nvlist_t *req)
 	    B_TRUE)) != ERRF_OK)
 		goto done;
 
+	sys_box = ebox;
+
 done:
+	if (kt != NULL && kt->kt_piv != NULL && piv_token_in_txn(kt->kt_piv))
+		piv_txn_end(kt->kt_piv);
+
 	mutex_exit(&piv_lock);
 	freezero(key, keylen);
 	nvlist_free(req);
@@ -429,6 +322,7 @@ done:
 	if (ret == ERRF_OK) {
 		kbmd_ret_nvlist(resp);
 	} else {
+		ebox_free(ebox);
 		nvlist_free(resp);
 		kbmd_ret_error(ret);
 	}
