@@ -148,7 +148,7 @@ errf_t *kbmd_replace_pivtoken(uint8_t [restrict], struct piv_token *restrict,
 errf_t *kbmd_new_recovery_token(kbmd_token_t *restrict,
     uint8_t **restrict, size_t *restrict);
 
-/* zfs_box.c */
+/* box.c */
 errf_t *kbmd_ebox_clone(struct ebox *restrict, struct ebox **restrict,
     struct ebox_tpl *restrict, kbmd_token_t *restrict);
 errf_t *kbmd_unlock_ebox(struct ebox *restrict, struct kbmd_token **restrict);
