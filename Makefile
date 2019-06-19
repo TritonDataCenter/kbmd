@@ -62,6 +62,7 @@ KBMADM_LIBS = -lbunyan -ltecla
 out/kbmadm:	LDLIBS += $(KBMADM_LIBS)
 
 _KBMD_SRCS =		\
+	box.c		\
 	door.c		\
 	event.c		\
 	kbmd.c		\
@@ -69,7 +70,6 @@ _KBMD_SRCS =		\
 	piv-bunyan.c	\
 	plugin.c	\
 	recover.c	\
-	zfs_box.c	\
 	zfs_unlock.c	\
 	zpool_create.c
 KBMD_SRCS =	$(_KBMD_SRCS:%=kbmd/%)
