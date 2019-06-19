@@ -19,39 +19,47 @@
 #include <strings.h>
 #include <sys/list.h>
 #include <libzfs.h>
-#include "common.h"
-#include "ecustr.h"
-#include "envlist.h"
 #include "kbmd.h"
 #include "pivy/ebox.h"
-#include "pivy/errf.h"
 #include "pivy/libssh/sshbuf.h"
 #include "pivy/libssh/ssherr.h"
-#include "pivy/piv.h"
 
 #include <stdio.h>
+
+struct ebox *sys_box;
 
 static errf_t *
 ezfs_open(libzfs_handle_t *hdl, const char *path, int types,
     zfs_handle_t **zhpp)
 {
-	if ((*zhpp = zfs_open(hdl, path, types)) == NULL) {
-		return (errf("ZFSError", NULL, "unable to open %s: %s",
-		    path, libzfs_error_description(hdl)));
-	}
-	return (ERRF_OK);
+	if ((*zhpp = zfs_open(hdl, path, types)) != NULL)
+		return (ERRF_OK);
+
+	return (errf("ZFSError", NULL, "unable to open %s: %s", path,
+	    libzfs_error_description(hdl)));
 }
 
 static errf_t *
 ezfs_prop_set_list(zfs_handle_t *zhp, nvlist_t *prop)
 {
-	if (zfs_prop_set_list(zhp, prop) != 0) {
-		return (errf("ZFSError", NULL,
-		    "zfs_prop_set_list on %s failed: %s",
-		    zfs_get_name(zhp),
-		    libzfs_error_description(zfs_get_handle(zhp))));
-	}
-	return (ERRF_OK);
+	if (zfs_prop_set_list(zhp, prop) == 0)
+		return (ERRF_OK);
+
+	return (errf("ZFSError", NULL, "zfs_prop_set_list on %s failed: %s",
+	    zfs_get_name(zhp),
+	    libzfs_error_description(zfs_get_handle(zhp))));
+}
+
+static errf_t *
+ezfs_prop_inherit(zfs_handle_t *zhp, const char *propname)
+{
+	if (zfs_prop_inherit(zhp, propname, B_FALSE) == 0)
+		return (ERRF_OK);
+
+	return (errf("ZFSError", NULL,
+	    "zfs_prop_inherit(%s) on %s failed: %s",
+	    propname, zfs_get_name(zhp),
+	    libzfs_error_description(zfs_get_handle(zhp))));
 }
 
 static errf_t *
@@ -124,19 +132,36 @@ done:
 	return (ret);
 }
 
-static errf_t *
-set_box_dataset(struct ebox *restrict ebox, const char *dsname)
+errf_t *
+set_box_name(struct ebox *restrict ebox, const char *name)
 {
-	size_t len = strlen(dsname) + 1;
+	size_t len = strlen(name) + 1;
 	char *str = ebox_alloc_private(ebox, len);
 
 	if (str == NULL) {
 		return (errfno("ebox_alloc_private", errno,
-		    "Unable to set dataset name %s on ebox", dsname));
+		    "Unable to set name '%s' on ebox", name));
 	}
 
-	bcopy(dsname, str, len);
+	bcopy(name, str, len);
 	return (ERRF_OK);
+}
+
+/*
+ * With libzfs, each property is stored as its own nvlist, with the 'value'
+ * name containing the value of the property.
+ */
+static errf_t *
+get_property_str(nvlist_t *restrict proplist, const char *propname,
+    char **restrict sp)
+{
+	errf_t *ret = ERRF_OK;
+	nvlist_t *val = NULL;
+
+	if ((ret = envlist_lookup_nvlist(proplist, propname, &val)) != ERRF_OK)
+		return (ret);
+
+	return (envlist_lookup_string(val, "value", sp));
 }
 
 static errf_t *
@@ -144,18 +169,19 @@ get_ebox_string(zfs_handle_t *restrict zhp, char **restrict sp)
 {
 	errf_t *ret = ERRF_OK;
 	nvlist_t *uprops = NULL;
-	nvlist_t *val = NULL;
 
 	uprops = zfs_get_user_props(zhp);
-	if ((ret = envlist_lookup_nvlist(uprops, BOX_PROP, &val)) != ERRF_OK) {
-		if (!errf_caused_by(ret, "ENOENT"))
-			return (ret);
-		return (errf("NotFoundError", ret,
-		    "dataset %s does not contain an ebox property (%s)",
-		    zfs_get_name(zhp), BOX_PROP));
-	}
 
-	return (envlist_lookup_string(val, "value", sp));
+	if ((ret = get_property_str(uprops, BOX_NEWPROP, sp)) == ERRF_OK ||
+	    !errf_caused_by(ret, "ENOENT"))
+		return (ret);
+
+	if ((ret = get_property_str(uprops, BOX_PROP, sp)) == ERRF_OK ||
+	    !errf_caused_by(ret, "ENOENT"))
+		return (ret);
+
+	return (errf("NotFoundError", ret,
+	    "dataset %s does not contain an ebox", zfs_get_name(zhp)));
 }
 
 static errf_t *
@@ -168,7 +194,7 @@ get_ebox_common(zfs_handle_t *restrict zhp, struct ebox **restrict eboxp)
 
 	if ((ret = get_ebox_string(zhp, &str)) != ERRF_OK ||
 	    (ret = str_to_ebox(dataset, str, &ebox)) != ERRF_OK ||
-	    (ret = set_box_dataset(ebox, dataset)) != ERRF_OK)
+	    (ret = set_box_name(ebox, dataset)) != ERRF_OK)
 		return (ret);
 
 	*eboxp = ebox;
@@ -180,6 +206,11 @@ kbmd_get_ebox(const char *dataset, struct ebox **eboxp)
 {
 	zfs_handle_t *zhp = NULL;
 	errf_t *ret = ERRF_OK;
+
+	if (sys_box != NULL && strcmp(ebox_private(sys_box), dataset) == 0) {
+		*eboxp = sys_box;
+		return (ERRF_OK);
+	}
 
 	mutex_enter(&g_zfs_lock);
 
@@ -200,7 +231,8 @@ done:
 }
 
 static errf_t *
-put_ebox_common(zfs_handle_t *restrict zhp, struct ebox *restrict ebox)
+put_ebox_common(zfs_handle_t *restrict zhp, const char *propname,
+    struct ebox *restrict ebox)
 {
 	errf_t *ret = ERRF_OK;
 	char *str = NULL;
@@ -208,7 +240,7 @@ put_ebox_common(zfs_handle_t *restrict zhp, struct ebox *restrict ebox)
 
 	if ((ret = envlist_alloc(&prop)) != ERRF_OK ||
 	    (ret = ebox_to_str(ebox, &str)) != ERRF_OK ||
-	    (ret = envlist_add_string(prop, BOX_PROP, str)) != ERRF_OK) {
+	    (ret = envlist_add_string(prop, propname, str)) != ERRF_OK) {
 		ret = errf("EBoxError", ret, "unable serialize ebox for %s",
 		    zfs_get_name(zhp));
 	    goto done;
@@ -243,7 +275,7 @@ kbmd_put_ebox(struct ebox *ebox)
 		goto done;
 	}
 
-	ret = put_ebox_common(zhp, ebox);
+	ret = put_ebox_common(zhp, BOX_PROP, ebox);
 
 done:
 	if (zhp != NULL)
@@ -252,124 +284,131 @@ done:
 	return (ret);
 }
 
-/*
- * For operations requiring a pin, if the token has not already been
- * authenticated, retrieve the pin and authenticate.
- */
+
 errf_t *
-kbmd_assert_pin(struct piv_token *pk)
+ebox_tpl_foreach_cfg(const struct ebox_tpl *tpl, ebox_tpl_cb_t cb, void *arg)
 {
 	errf_t *ret = ERRF_OK;
-	custr_t *pin = NULL;
-	enum piv_pin pin_auth;
+	struct ebox_tpl_config *cfg = NULL, *next = NULL;
 
-	/*
-	 * There's no way to assert this, but it's also assumed that
-	 * piv_select(pk) has been performed prior to the call to
-	 * kbmd_assert_pin().
-	 */
-	ASSERT(piv_token_in_txn(pk));
-
-	pin_auth = piv_token_default_auth(pk);
-
-	(void) bunyan_debug(tlog, "Checking pin status of PIV",
-	    BUNYAN_T_STRING, "token", piv_token_guid_hex(pk),
-	    BUNYAN_T_STRING, "default_auth", piv_pin_str(pin_auth),
-	    BUNYAN_T_END);
-
-#if 0
-	/*
-	 * Determine if we're already authed, if so just return ok.
-	 */
-	if ((ret = piv_verify_pin(pk, pin_auth, NULL, NULL,
-	    B_TRUE)) == ERRF_OK) {
-		(void) bunyan_debug(tlog,
-		    "PIV already authenticated, pin re-entry not needed",
-		    BUNYAN_T_STRING, "token", piv_token_guid_hex(pk),
-		    BUNYAN_T_STRING, "default_auth", piv_pin_str(pin_auth),
-		    BUNYAN_T_END);
-		return (ERRF_OK);
-	}
-#endif
-
-	/*
-	 * If it's the system pin, and we already have the cached pin,
-	 * try that.
-	 */
-	if (IS_SYSTEM_TOKEN(pk) && kpiv->kt_pin != NULL) {
-		ASSERT(MUTEX_HELD(&piv_lock));
-
-		if ((ret = piv_verify_pin(pk, pin_auth, kpiv->kt_pin, NULL,
-		    B_TRUE)) == ERRF_OK)
+	for (cfg = ebox_tpl_next_config(tpl, NULL); cfg != NULL; cfg = next) {
+		next = ebox_tpl_next_config(tpl, cfg);
+		if ((ret = cb(tpl, cfg, arg)) != ERRF_OK)
 			return (ret);
 	}
 
-	/*
-	 * Otherwise, retrieve the pin and unlock.
-	 */
-	if ((ret = kbmd_get_pin(piv_token_guid(pk), &pin)) != ERRF_OK)
-		return (ret);
+	return (ERRF_OK);
+}
 
-	/*
-	 * The error message on failure includes the retry count, so we
-	 * don't need to retrieve it again for error reporting.
-	 */
-	ret = piv_verify_pin(pk, pin_auth, custr_cstr(pin), NULL, B_TRUE);
+/*
+ * Creates the ebox template config for the given PIV token
+ */
+errf_t *
+create_piv_tpl_config(kbmd_token_t *restrict kt,
+    struct ebox_tpl_config **restrict cfgp)
+{
+	errf_t *ret = ERRF_OK;
+	struct piv_token *pk = kt->kt_piv;
+	struct piv_slot *slot = NULL;
+	struct piv_slot *auth_slot = NULL;
+	struct ebox_tpl_config *cfg = NULL;
+	struct ebox_tpl_part *part = NULL;
 
-	if (IS_SYSTEM_TOKEN(pk) && ret == ERRF_OK) {
-		/*
-		 * If we get here, we're updating the system PIV token and
-		 * we either didn't cache the pin, or the cached value was
-		 * wrong.  Either way update the pin.
-		 */
-		VERIFY3U(custr_len(pin), <, sizeof (kpiv->kt_pin));
-		explicit_bzero(kpiv->kt_pin, sizeof (kpiv->kt_pin));
-		bcopy(custr_cstr(pin), kpiv->kt_pin, custr_len(pin));
+	VERIFY(piv_token_in_txn(pk));
+
+	if ((ret = kbmd_get_slot(kt, PIV_SLOT_KEY_MGMT, &slot)) != ERRF_OK) {
+		return (errf("TemplateError", ret,
+		    "cannot read PIV %02X token slot", PIV_SLOT_KEY_MGMT));
 	}
 
-	custr_free(pin);
+	if ((ret = kbmd_get_slot(kt, PIV_SLOT_CARD_AUTH,
+	    &auth_slot)) != ERRF_OK) {
+		return (errf("TemplateError", ret,
+		    "cannot read PIV %02X token slot", PIV_SLOT_CARD_AUTH));
+	}
+
+	if ((cfg = ebox_tpl_config_alloc(EBOX_PRIMARY)) == NULL) {
+		ret = errfno("ebox_tpl_config_alloc", errno,
+		    "cannot create primary ebox config template");
+		ret = errf("TemplateError", ret, "");
+		goto fail;
+	}
+
+	if ((part = ebox_tpl_part_alloc(piv_token_guid(pk), GUID_LEN,
+	    PIV_SLOT_KEY_MGMT, piv_slot_pubkey(slot))) == NULL) {
+		ret = errfno("ebox_tpl_part_alloc", errno,
+		    "cannot create primary ebox config template part");
+		ret = errf("TemplateError", ret, "");
+		goto fail;
+	}
+
+	ebox_tpl_part_set_cak(part, piv_slot_pubkey(slot));
+
+	/*
+	 * XXX: We can set a name for this part.  Is there any useful/
+	 * meaningful value that could be used?
+	 */
+
+	ebox_tpl_config_add_part(cfg, part);
+	*cfgp = cfg;
+	return (ERRF_OK);
+
+fail:
+	ebox_tpl_part_free(part);
+	ebox_tpl_config_free(cfg);
+	*cfgp = NULL;
 	return (ret);
 }
 
+/*
+ * Place the key from src ebox (unlocked prior to calling) into a
+ * new ebox w/ a new template
+ */
 errf_t *
-auth_card(struct piv_token *restrict token, struct sshkey *restrict cak)
+kbmd_ebox_clone(struct ebox *restrict src, struct ebox **restrict dstp,
+    struct ebox_tpl *restrict tpl, kbmd_token_t *restrict kt)
 {
-	struct piv_slot *cakslot;
 	errf_t *ret = ERRF_OK;
+	struct ebox *ebox = NULL;
+	const char *name = NULL;
+	const uint8_t *key = NULL;
+       	uint8_t *rtoken = NULL;
+	size_t keylen = 0, rtokenlen = 0;
 
-	ASSERT(piv_token_in_txn(token));
+	VERIFY(MUTEX_HELD(&piv_lock));
 
-	if (cak == NULL)
-		return (ERRF_OK);
+	VERIFY3P(key = ebox_key(src, &keylen), !=, NULL);
+	name = ebox_private(src);
 
-	if ((cakslot = piv_get_slot(token, PIV_SLOT_CARD_AUTH)) == NULL) {
-		if ((ret = piv_read_cert(token,
-		    PIV_SLOT_CARD_AUTH)) != ERRF_OK) {
-			return (errf("CardAuthenticationError", ret,
-			    "Failed to validate Card Authentication "
-			    "Key (CAK)"));
-		}
+	if ((ret = kbmd_new_recovery_token(kt, &rtoken, &rtokenlen)) != ERRF_OK)
+		return (ret);
 
-		cakslot = piv_get_slot(token, PIV_SLOT_CARD_AUTH);
+	if ((ret = ebox_create(tpl, key, keylen, rtoken, rtokenlen,
+	    &ebox)) != ERRF_OK)
+		return (ret);
+
+	if ((ret = set_box_name(ebox, name)) != ERRF_OK) {
+		ebox_free(ebox);
+		return (ret);
 	}
 
-	if (cakslot == NULL) {
-		return (errf("CardAuthenticationError", NULL,
-		    "Falied to validate Card Authentication Key (CAK)"));
-	}
-
-	return (piv_auth_key(token, cakslot, cak));
+	*dstp = ebox;
+	return (ERRF_OK);
 }
 
 static errf_t *
-local_unlock(struct piv_ecdh_box *box, struct sshkey *cak, const char *name)
+find_part_pivtoken(struct ebox_part *part, kbmd_token_t **ktp)
 {
-	struct piv_token *tokens = NULL, *token = NULL;
-	struct piv_slot *slot;
 	errf_t *ret = ERRF_OK;
+	struct piv_ecdh_box *box = ebox_part_box(part);
+	const uint8_t *guid = piv_box_guid(box);
+	const struct sshkey *pubkey = piv_box_pubkey(box);
+	struct ebox_tpl_part *tpart = ebox_part_tpl(part);
+	enum piv_slotid slotid = piv_box_slot(box);
 
-	(void) bunyan_debug(tlog, "Trying part",
-	    BUNYAN_T_STRING, "partname", name,
+	(void) bunyan_debug(tlog, "Searching for pivtoken for ebox part",
+	    BUNYAN_T_STRING, "box_part_name", ebox_tpl_part_name(tpart),
+	    BUNYAN_T_STRING, "box_guid", piv_box_guid_hex(box),
 	    BUNYAN_T_END);
 
 	if (!piv_box_has_guidslot(box)) {
@@ -377,114 +416,291 @@ local_unlock(struct piv_ecdh_box *box, struct sshkey *cak, const char *name)
 		    "and slot information, can't unlock with local hardware"));
 	}
 
-	mutex_enter(&piv_lock);
-
-	/*
-	 * The following code might seem a bit redundant -- we could just
-	 * call piv_enumerate() to obtain a list of all present tokens and
-	 * pass the results to piv_box_find_token() to locate the
-	 * toke needed to unlock the box.  However, piv_enumerate() loads a
-	 * lot of information (discovery object, history keys, etc.) for
-	 * each token found -- all through a relatively slow communication
-	 * channel
-	 *
-	 * In the common case, we know the GUID of the token we need.  As
-	 * an optimization, we first try piv_find() which only loads the
-	 * information for the matching token (if found).  If we cannot
-	 * locate the required token by its GUID, only then do we use
-	 * piv_enumerate() to load all of the present tokens.
-	 * piv_box_find_token() will then search the list of tokens
-	 * passed to it for a matching token.  In the common case the list
-	 * will  be a single entry list with the token we alraedy know has
-	 * a matching GUID.  In the fallback case, it will be a list of all
-	 * tokens present on the system.  When piv_box_find_token() cannot
-	 * find the token by GUID, it will then search the passed-in list of
-	 * piv tokens for one with a matching 9D key.  If a matching token is
-	 * found, piv_box_find_token() then loads the correct slot needed to
-	 * unlock the given box.
-	 */
-	if ((ret = piv_find(piv_ctx, piv_box_guid(box), GUID_LEN,
-	    &tokens)) != ERRF_OK) {
-		if (!errf_caused_by(ret, "NotFoundError")) {
-			ret = errf("LocalUnlockError", ret,
-			    "failed to find token for box %s", name);
-			goto done;
-		}
-		erfree(ret);
-		if ((ret = piv_enumerate(piv_ctx, &tokens)) != ERRF_OK) {
-			ret = errf("LocalUnlockError", ret,
-			    "failed to find token for box %s", name);
-			goto done;
-		}
+	if ((ret = kbmd_find_byguid(guid, GUID_LEN, ktp)) != ERRF_OK ||
+	    (ret = kbmd_find_byslot(slotid, pubkey, ktp)) != ERRF_OK) {
+		return (errf("NotFoundError", ret,
+		    "Unable to find PIV token for piv box"));
 	}
 
-	if ((ret = piv_box_find_token(tokens, box, &token, &slot)) != ERRF_OK) {
-		ret = errf("LocalUnlockError", ret,
-		    "failed to find token for box %s", name);
-		goto done;
-	}
-
-	(void) bunyan_debug(tlog, "Found token",
-	    BUNYAN_T_STRING, "guid", piv_token_guid_hex(token),
-	    BUNYAN_T_END);
-
-	if ((ret = piv_txn_begin(token)) != ERRF_OK ||
-	    (ret = piv_select(token)) != ERRF_OK ||
-	    (ret = auth_card(token, cak)) != ERRF_OK ||
-	    (ret = kbmd_assert_pin(token)) != ERRF_OK) {
-		ret = errf("LocalUnlockError", ret,
-		    "failed to unlock piv token for box %s", name);
-		goto done;
-	}
-
-	/*
-	 * On failure, we'll end up printing out the errf_t chain
-	 * when we return, so don't worry about that here.
-	 */
-	if ((ret = piv_box_open(token, slot, box)) == ERRF_OK)
-		(void) bunyan_debug(tlog, "Unlock successful", BUNYAN_T_END);
-
-done:
-	if (token != NULL && piv_token_in_txn(token))
-		piv_txn_end(token);
-
-	piv_release(tokens);
-	mutex_exit(&piv_lock);
-	return (ret);
+	return (ERRF_OK);
 }
 
 errf_t *
-kbmd_unlock_ebox(struct ebox *ebox)
+kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 {
+	errf_t *ret = ERRF_OK;
 	struct ebox_config *config = NULL;
 	struct ebox_part *part = NULL;
-	struct ebox_tpl_part *tpart = NULL;
-	struct ebox_tpl_config *tconfig = NULL;
-	errf_t *ret = ERRF_OK;
+	kbmd_token_t *kt = NULL;
+	const char *boxname;
+
+	VERIFY(MUTEX_HELD(&piv_lock));
+
+	*ktp = NULL;
+	if ((boxname = ebox_private(ebox)) == NULL)
+		boxname = "(not set)";
+
+	(void) bunyan_debug(tlog, "Attempting to unlock ebox",
+	    BUNYAN_T_STRING, "eboxname", boxname,
+	    BUNYAN_T_END);
 
 	while ((config = ebox_next_config(ebox, config)) != NULL) {
+		struct ebox_tpl_config *tconfig = NULL;
+		struct ebox_tpl_part *tpart = NULL;
+		const char *tname = NULL;
+		struct sshkey *cak = NULL;
+		struct piv_slot *slot = NULL;
+		struct piv_ecdh_box *dhbox = NULL;
+
 		tconfig = ebox_config_tpl(config);
 		if (ebox_tpl_config_type(tconfig) != EBOX_PRIMARY)
 			continue;
 
 		part = ebox_config_next_part(config, NULL);
 		tpart = ebox_part_tpl(part);
-		ret = local_unlock(ebox_part_box(part),
-		    ebox_tpl_part_cak(tpart), ebox_tpl_part_name(tpart));
-		if (ret != ERRF_OK && !errf_caused_by(ret, "NotFoundError")) {
-			return (errf("UnlockError", ret,
-			    "Failed to unlock ebox for %s dataset",
-			    ebox_private(ebox)));
+		if (tpart == NULL)
+			tname = "(not set)";
+
+		dhbox = ebox_part_box(part);
+
+		if (!piv_box_has_guidslot(dhbox)) {
+			(void) bunyan_debug(tlog,
+			    "Ebox config part does not have GUID; skipping",
+			    BUNYAN_T_STRING, "partname", tname,
+			    BUNYAN_T_END);
+			continue;
 		}
-		if (ret != ERRF_OK) {
+
+		(void) bunyan_debug(tlog, "Trying part",
+		    BUNYAN_T_STRING, "partname", tname,
+		    BUNYAN_T_END);
+
+		if (kt != NULL &&
+		    bcmp(piv_token_guid(kt->kt_piv), piv_box_guid(dhbox),
+		    GUID_LEN) != 0) {
+			if (kt != kpiv)
+				kbmd_token_free(kt);
+			kt = NULL;
+
+			(void) bunyan_key_remove(tlog, "piv_guid");
+		}
+
+		if (kt != NULL &&
+		    (ret = find_part_pivtoken(part, &kt)) != ERRF_OK) {
+			if (kt != kpiv)
+				kbmd_token_free(kt);
+
+			if (errf_caused_by(ret, "NotFoundError")) {
+				erfree(ret);
+
+				(void) bunyan_debug(tlog,
+				    "PIV token not present for part; trying "
+				    "next part",
+				    BUNYAN_T_STRING, "partname", tname,
+				    BUNYAN_T_END);
+				continue;
+			}
+
+			(void) bunyan_debug(tlog,
+			    "Fatal failure finding PIV token for part",
+			    BUNYAN_T_STRING, "partname", tname,
+			    BUNYAN_T_END);
+
+			return (ret);
+		}
+
+		(void) bunyan_key_add(tlog,
+		    "piv_guid", BUNYAN_T_STRING, piv_token_guid(kt->kt_piv));
+
+		(void) bunyan_debug(tlog, "Found PIV token for part",
+		    BUNYAN_T_STRING, "partname", tname,
+		    BUNYAN_T_END);
+
+		cak = ebox_tpl_part_cak(tpart);
+
+		(void) bunyan_debug(tlog, "Attempt to unlock PIV token",
+		    BUNYAN_T_END);
+
+		if ((ret = piv_txn_begin(kt->kt_piv)) != ERRF_OK ||
+		    (ret = piv_select(kt->kt_piv)) != ERRF_OK ||
+		    (ret = kbmd_auth_pivtoken(kt, cak)) != ERRF_OK ||
+		    (ret = kbmd_assert_pin(kt)) != ERRF_OK ||
+		    (ret = kbmd_verify_pin(kt)) != ERRF_OK) {
+			piv_txn_end(kt->kt_piv);
+
+			(void) bunyan_debug(tlog, "Unlock failed",
+			    BUNYAN_T_END);
+
+			continue;
+		}
+
+		if ((ret = kbmd_get_slot(kt, piv_box_slot(dhbox),
+		    &slot)) != ERRF_OK) {
+			piv_txn_end(kt->kt_piv);
+
+			char slotstr[3] = { 0 };
+			(void) snprintf(slotstr, sizeof (slotstr), "%02X",
+			    piv_box_slot(dhbox));
+			(void) bunyan_debug(tlog, "Failed to read slot",
+			    BUNYAN_T_STRING, "slot", slotstr,
+			    BUNYAN_T_END);
+
+			goto done;
+		}
+
+		if ((ret = piv_box_open(kt->kt_piv, slot, dhbox)) != ERRF_OK) {
+			piv_txn_end(kt->kt_piv);
+
+			(void) bunyan_debug(tlog, "Failed to unlock part",
+			    BUNYAN_T_STRING, "partname", tname,
+			    BUNYAN_T_STRING, "error", errf_name(ret),
+			    BUNYAN_T_STRING, "errmsg", errf_message(ret),
+			    BUNYAN_T_STRING, "errfunc", errf_function(ret),
+			    BUNYAN_T_END);
+
 			erfree(ret);
 			continue;
 		}
 
-		return (ebox_unlock(ebox, config));
+		(void) bunyan_debug(tlog, "Part unlocked",
+		    BUNYAN_T_STRING, "partname", tname,
+		    BUNYAN_T_END);
+
+		piv_txn_end(kt->kt_piv);
+
+		/*
+		 * If we successfully unlocked a part, but are still unable
+		 * to unlock the ebox that contains the part, we don't want
+		 * to try again.
+		 */
+		if ((ret = ebox_unlock(ebox, config)) == ERRF_OK) {
+			(void) bunyan_debug(tlog, "ebox unlocked",
+			    BUNYAN_T_STRING, "eboxname", boxname,
+			    BUNYAN_T_END);
+
+			*ktp = kt;
+		}
+		return (ret);
 	}
 
-	return (errf("NeedRecovery", ret,
-	    "Cannot unlock box for %s; recovery is required",
-	    ebox_private(ebox)));
+	ret = errf("NeedRecovery", ret,
+	    "Cannot unlock box for %s; recovery is required", boxname);
+
+done:
+	if (kt != kpiv)
+		kbmd_token_free(kt);
+
+	return (ret);
+}
+
+/*
+ * If both a 'new' and 'old' zfs ebox exist, remove the 'old' config, leaving
+ * the 'new' config.  Unlike the soft token eboxes, we don't (won't) have
+ * a separate recovery ebox, so we just age out the old config.
+ *
+ * XXX: Better name?
+ */
+errf_t *
+kbmd_rotate_zfs_ebox(const char *dataset)
+{
+	errf_t *ret = ERRF_OK;
+	zfs_handle_t *zhp = NULL;
+	nvlist_t *uprops = NULL;
+	nvlist_t *newprops = NULL;
+	char *old = NULL, *new = NULL;
+
+	mutex_enter(&g_zfs_lock);
+
+	if ((ret = ezfs_open(g_zfs, dataset,
+	    ZFS_TYPE_FILESYSTEM|ZFS_TYPE_VOLUME, &zhp)) != ERRF_OK) {
+		ret = errf("EBoxError", ret,
+		    "unable to consolidate ebox for %s", dataset);
+		goto done;
+	}
+
+	uprops = zfs_get_user_props(zhp);
+
+	if ((ret = get_property_str(uprops, BOX_NEWPROP, &new)) != ERRF_OK)
+		goto done;
+
+	/*
+	 * If there is a 'new' ebox, we always want to try to move it to
+	 * the 'old' property.  If the 'old' ebox doesn't exist, that's ok,
+	 * but some other problem suggests a bigger problem and we abort.
+	 */
+	if ((ret = get_property_str(uprops, BOX_PROP, &old)) != ERRF_OK &&
+	    !errf_caused_by(ret, "ENOENT"))
+		goto done;
+
+	/*
+	 * Currently, there is no way to do this atomically, so we remove the
+	 * old property first, then set the old to the new, then remove the
+	 * new so any failure still leaves a valid box.  If zfs channel
+	 * programs ever support setting properties, we should consider
+	 * altering this to do the change using a channel program so everything
+	 * happens in a single TXG.
+	 */
+	if ((ret = ezfs_prop_inherit(zhp, BOX_PROP)) != ERRF_OK)
+		goto done;
+
+	if ((ret = envlist_alloc(&newprops)) != ERRF_OK ||
+	    (ret = envlist_add_string(newprops, BOX_PROP, new)) != ERRF_OK ||
+	    (ret = ezfs_prop_set_list(zhp, newprops)) != ERRF_OK)
+		goto done;
+
+	ret = ezfs_prop_inherit(zhp, BOX_NEWPROP);
+
+done:
+	if(zhp != NULL)
+		zfs_close(zhp);
+	mutex_exit(&g_zfs_lock);
+	nvlist_free(newprops);
+	return (ret);
+}
+
+static errf_t *
+keep_recovery(const struct ebox_tpl *tpl, struct ebox_tpl_config *cfg,
+    void *arg __unused)
+{
+	if (ebox_tpl_config_type(cfg) != EBOX_RECOVERY) {
+		ebox_tpl_remove_config((struct ebox_tpl *)tpl, cfg);
+	}
+	return (ERRF_OK);
+}
+
+/*
+ * For testing -- if kbmadm includes a template, merge in all the EBOX_RECOVERY
+ * configs into tpl
+ */
+errf_t *
+add_supplied_template(nvlist_t *restrict nvl, struct ebox_tpl *restrict tpl,
+    boolean_t required)
+{
+	errf_t *ret = ERRF_OK;
+	struct ebox_tpl *reqtpl = NULL;
+	struct ebox_tpl_config *cfg = NULL, *nextcfg = NULL;
+
+	/*
+	 * This function is just for testing, if we fail, we just act
+	 * like the template isn't there.
+	 */
+	if ((ret = get_request_template(nvl, &reqtpl)) != ERRF_OK) {
+		if (required)
+			return (ret);
+		erfree(ret);
+		return (ERRF_OK);
+	}
+	ebox_tpl_foreach_cfg(reqtpl, keep_recovery, NULL);
+
+	cfg = ebox_tpl_next_config(reqtpl, NULL);
+	while (cfg != NULL) {
+		nextcfg = ebox_tpl_next_config(reqtpl, cfg);
+		VERIFY3S(ebox_tpl_config_type(cfg), !=, EBOX_PRIMARY);
+		ebox_tpl_remove_config(reqtpl, cfg);
+		ebox_tpl_add_config(tpl, cfg);
+		cfg = nextcfg;
+	}
+
+	ebox_tpl_free(reqtpl);
+	return (ERRF_OK);
 }

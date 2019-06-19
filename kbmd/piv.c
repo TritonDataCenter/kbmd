@@ -10,31 +10,17 @@
  */
 
 /*
- * Copyright 2019, Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 
-#include <bunyan.h>
-#include <libnvpair.h>
 #include <openssl/err.h>
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
-#include <stdarg.h>
-#include <strings.h>
-#include <sys/debug.h>
-#include <sys/list.h>
-#include <sys/types.h>
-#include "common.h"
-#include "ecustr.h"
-#include "envlist.h"
-#include "errf.h"
-#include "kbm.h"
 #include "kbmd.h"
-#include "kspawn.h"
 #include "pivy/libssh/sshbuf.h"
 #include "pivy/libssh/ssherr.h"
 #include "pivy/libssh/sshkey.h"
 #include "pivy/tlv.h"
-#include "pivy/piv.h"
 
 /*  We need the piv_cert_comp enum */
 #include "pivy/piv-internal.h"
@@ -56,31 +42,6 @@ static const uint8_t DEFAULT_ADMIN_KEY[ADMIN_KEY_LENGTH] = {
 };
 static const char DEFAULT_PIN[] = "123456";
 static const char DEFAULT_PUK[] = "12345678";
-
-/*
- * XXX: It might make more sense to have the pin_type->string
- * code in pivy instead of here
- */
-const char *
-piv_pin_str(enum piv_pin pin_type)
-{
-	switch (pin_type) {
-	case PIV_PIN:
-		return("PIN");
-	case PIV_GLOBAL_PIN:
-		return("global PIN");
-	case PIV_PUK:
-		return("PUK");
-	case PIV_OCC:
-		return("OCC");
-	case PIV_OCC2:
-		return("OCC2");
-	case PIV_PAIRING:
-		return("pairing PIN");
-	default:
-		return("unknown PIN");
-	}
-}
 
 /*
  * Set the given PIN type to a new random pin pin_len characters long and
@@ -118,12 +79,12 @@ set_pin(struct piv_token *restrict pk, char pin[restrict], size_t pin_len,
 }
 
 static errf_t *
-set_pins(struct piv_token *restrict pk, char pin[restrict PIN_LENGTH + 1])
+set_pins(struct piv_token *restrict pk, char pin[restrict PIN_MAX_LENGTH + 1])
 {
 	errf_t *ret = ERRF_OK;
-	char puk[PIN_LENGTH + 1] = { 0 };
+	char puk[PIN_MAX_LENGTH + 1] = { 0 };
 
-	if ((ret = set_pin(pk, pin, PIN_LENGTH, PIV_PIN,
+	if ((ret = set_pin(pk, pin, PIN_MAX_LENGTH, PIV_PIN,
 	    DEFAULT_PIN)) != ERRF_OK)
 		return (ret);
 
@@ -132,7 +93,7 @@ set_pins(struct piv_token *restrict pk, char pin[restrict PIN_LENGTH + 1])
 	 * modification or replacement of any of the generated keys without
 	 * doing a re-initialization of the token).
 	 */
-	ret = set_pin(pk, puk, PIN_LENGTH, PIV_PUK, DEFAULT_PUK);
+	ret = set_pin(pk, puk, PIN_MAX_LENGTH, PIV_PUK, DEFAULT_PUK);
 	explicit_bzero(puk, sizeof (puk));
 	return (ret);
 }
@@ -145,6 +106,13 @@ set_admin_key(struct piv_token *pk)
 
 	ASSERT(piv_token_in_txn(pk));
 
+	/*
+	 * The administrative key is a concept currently exclusive to
+	 * yubikeys.  We silently ignore non-yubikeys since we immediately
+	 * discard the generated value after generating the keys and certs
+	 * in order to seal the yubikey.  Other PIV tokens will need to
+	 * be handled as a separate case if they include similar functionality.
+	 */
 	if (!piv_token_is_ykpiv(pk))
 		return (ERRF_OK);
 
@@ -540,6 +508,10 @@ generate_certs(struct piv_token *pk)
 	return (generate_cert(pk, slot));
 }
 
+/*
+ * Take a base64 encoded recovery token value and convert to a raw array
+ * of bytes.  Caller must free *rawp when done.
+ */
 static errf_t *
 convert_recovery_token(custr_t *restrict b64, uint8_t **restrict rawp,
     size_t *restrict lenp)
@@ -585,7 +557,7 @@ convert_recovery_token(custr_t *restrict b64, uint8_t **restrict rawp,
  * and write the guid of the piv token to 'guid'.
  */
 static errf_t *
-kbmd_init_token(uint8_t guid[restrict])
+init_token(uint8_t guid[restrict])
 {
 	errf_t *ret = ERRF_OK;
 	struct piv_token *pk, *tokens;
@@ -697,6 +669,16 @@ kbmd_init_token(uint8_t guid[restrict])
 	tlv_write(chuid, expiry, 0, sizeof (expiry));
 	tlv_pop(chuid);
 
+	/*
+	 * We write out the UUID of the original host where the PIV
+	 * token was initialized as the owner UUID in the CHUID.
+	 * kbmd does not otherwise use the owner UUID.  It's strictly there
+	 * for information.
+	 */
+	tlv_push(chuid, 0x36);
+	tlv_write(chuid, sys_uuid, 0, sizeof (sys_uuid));
+	tlv_pop(chuid);
+
 	tlv_push(chuid, 0x3E);
 	tlv_pop(chuid);
 	tlv_push(chuid, 0xFE);
@@ -749,9 +731,7 @@ kbmd_setup_token(kbmd_token_t **ktp)
 {
 	errf_t *ret = ERRF_OK;
 	struct piv_token *pk = NULL;
-	kbmd_token_t *kt = NULL;
 	custr_t *recovery = NULL;
-	char pin[PIN_LENGTH + 1] = { 0 };
 	uint8_t guid[GUID_LEN] = { 0 };
 
 	ASSERT(MUTEX_HELD(&piv_lock));
@@ -759,7 +739,7 @@ kbmd_setup_token(kbmd_token_t **ktp)
 	if ((ret = zalloc(sizeof (kbmd_token_t), ktp)) != ERRF_OK)
 		return (ret);
 
-	if ((ret = kbmd_init_token(guid)) != ERRF_OK)
+	if ((ret = init_token(guid)) != ERRF_OK)
 		goto fail;
 
 	/*
@@ -781,7 +761,7 @@ kbmd_setup_token(kbmd_token_t **ktp)
 	if ((ret = generate_certs(pk)) != ERRF_OK)
 		goto fail;
 
-	if ((ret = set_pins(pk, pin)) != ERRF_OK)
+	if ((ret = set_pins(pk, (*ktp)->kt_pin)) != ERRF_OK)
 		goto fail;
 
 	if ((ret = set_admin_key(pk)) != ERRF_OK)
@@ -794,8 +774,10 @@ kbmd_setup_token(kbmd_token_t **ktp)
 	 * some point to support retrying without requiring the operator
 	 * to reset the token and then re-init it.
 	 */
-	if ((ret = kbmd_register_pivtoken(pk, pin, &recovery)) != ERRF_OK)
+	if ((ret = kbmd_register_pivtoken(pk, (*ktp)->kt_pin,
+	    &recovery)) != ERRF_OK) {
 		goto fail;
+	}
 
 	ret = convert_recovery_token(recovery, &(*ktp)->kt_rtoken,
 	    &(*ktp)->kt_rtoklen);
@@ -804,8 +786,6 @@ kbmd_setup_token(kbmd_token_t **ktp)
 		goto fail;
 
 	(*ktp)->kt_piv = pk;
-	bcopy(pin, (*ktp)->kt_pin, PIN_LENGTH + 1);
-	explicit_bzero(pin, sizeof (pin));
 	return (ERRF_OK);
 
 fail:
@@ -814,7 +794,6 @@ fail:
 			piv_txn_end(pk);
 		piv_release(pk);
 	}
-	explicit_bzero(pin, sizeof (pin));
 	kbmd_token_free(*ktp);
 	*ktp = NULL;
 	return (ret);
@@ -826,11 +805,13 @@ kbmd_token_free(kbmd_token_t *kt)
 	if (kt == NULL)
 		return;
 
-	if (kt->kt_pin != NULL) {
-		size_t len = strlen(kt->kt_pin) + 1;
-		freezero(kt->kt_pin, len);
+	if (kt == kpiv) {
+		VERIFY(MUTEX_HELD(&piv_lock));
+		if (kt == kpiv)
+			kpiv = NULL;
 	}
 
+	explicit_bzero(kt->kt_pin, sizeof (kt->kt_pin));
 	freezero(kt->kt_rtoken, kt->kt_rtoklen);
 	free(kt);
 }
@@ -847,11 +828,18 @@ kbmd_set_token(kbmd_token_t *kt)
 	kpiv = kt;
 }
 
+/*
+ * One must call piv_read_cert() to load the slot data, or else
+ * piv_get_slot() returns NULL.  Since the communication channel to a
+ * PIV token is relatively slow, wrap 'try + load if fail + try again'
+ * in a handy function for use in kbmd.
+ */
 errf_t *
-get_slot(struct piv_token *restrict pk, enum piv_slotid slotid,
+kbmd_get_slot(kbmd_token_t *restrict kt, enum piv_slotid slotid,
     struct piv_slot **restrict slotp)
 {
 	errf_t *ret;
+	struct piv_token *pk = kt->kt_piv;
 
 	if ((*slotp = piv_get_slot(pk, slotid)) != NULL) {
 		return (ERRF_OK);
@@ -865,4 +853,213 @@ get_slot(struct piv_token *restrict pk, enum piv_slotid slotid,
 	*slotp = piv_get_slot(pk, slotid);
 	VERIFY3P(*slotp, !=, NULL);
 	return (ERRF_OK);
+}
+
+/*
+ * Make sure kt's pin is known.
+ */
+errf_t *
+kbmd_assert_pin(kbmd_token_t *kt)
+{
+	errf_t *ret = ERRF_OK;
+	custr_t *pin = NULL;
+
+	VERIFY3P(kt->kt_piv, !=, NULL);
+
+	if (strlen(kt->kt_pin) > 0) {
+		(void) bunyan_debug(tlog, "Using cached PIN for PIV token",
+		    BUNYAN_T_STRING, "piv_guid", piv_token_guid(kt->kt_piv),
+		    BUNYAN_T_END);
+		return (ERRF_OK);
+	}
+
+	(void) bunyan_debug(tlog, "Fetching PIN from plugin",
+	    BUNYAN_T_STRING, "piv_guid", piv_token_guid(kt->kt_piv),
+	    BUNYAN_T_END);
+
+	/*
+	 * The plugin will likely need to use the PIV token for authentication
+	 * purposes (e.g. authenticating a KBMAPI request for the pin), so
+	 * we cannot tie up the PIV token while the plugin executes.
+	 */
+	VERIFY(!piv_token_in_txn(kt->kt_piv));
+
+	if ((ret = kbmd_get_pin(piv_token_guid(kt->kt_piv), &pin)) != ERRF_OK)
+		return (ret);
+
+	if (custr_len(pin) < PIN_MIN_LENGTH) {
+		ret = errf("PinError", NULL,
+		    "pin length (%u digits) from plugin is too short",
+		    custr_len(pin));
+		custr_free(pin);
+		return (ret);
+	}
+
+	if (custr_len(pin) > PIN_MAX_LENGTH) {
+		ret = errf("PinError", NULL,
+		    "pin length (%u digits) from plugin is too long",
+		    custr_len(pin));
+		custr_free(pin);
+		return (ret);
+	}
+
+	/* +1 to NUL terminate pin */
+	bcopy(custr_cstr(pin), kt->kt_pin, custr_len(pin) + 1);
+	custr_free(pin);
+	return (ERRF_OK);
+}
+
+errf_t *
+kbmd_verify_pin(kbmd_token_t *kt)
+{
+	errf_t *ret = ERRF_OK;
+	enum piv_pin pin_auth;
+	size_t pinlen = strlen(kt->kt_pin);
+
+	VERIFY3U(pinlen, >=, PIN_MIN_LENGTH);
+	VERIFY3U(pinlen, <=, PIN_MAX_LENGTH);
+
+	VERIFY(piv_token_in_txn(kt->kt_piv));
+
+	(void) bunyan_debug(tlog, "Verifying PIN of PIV token",
+	    BUNYAN_T_STRING, "piv_guid", piv_token_guid(kt->kt_piv),
+	    BUNYAN_T_STRING, "auth", piv_pin_str(pin_auth),
+	    BUNYAN_T_END);
+
+	pin_auth = piv_token_default_auth(kt->kt_piv);
+	return (piv_verify_pin(kt->kt_piv, pin_auth, kt->kt_pin, NULL, B_TRUE));
+}
+
+/*
+ * Verify we are communicating with the PIV token w/ the given card
+ * authentication key.
+ */
+errf_t *
+kbmd_auth_pivtoken(kbmd_token_t *restrict kt, struct sshkey *restrict cak)
+{
+	errf_t *ret = ERRF_OK;
+	struct piv_slot *cakslot = NULL;
+
+	VERIFY(piv_token_in_txn(kt->kt_piv));
+
+	if (cak == NULL)
+		return (ERRF_OK);
+
+	if ((ret = kbmd_get_slot(kt, PIV_SLOT_CARD_AUTH, &cakslot)) != ERRF_OK)
+		return (ret);
+
+	return (piv_auth_key(kt->kt_piv, cakslot, cak));
+}
+
+static errf_t *
+kbmd_token_alloc(struct piv_token *pt, kbmd_token_t **ktp)
+{
+	kbmd_token_t *kt;
+
+	if ((kt = calloc(1, sizeof (kbmd_token_t))) == NULL)
+		return (errfno("calloc", errno, ""));
+	kt->kt_piv = pt;
+	*ktp = kt;
+	return (ERRF_OK);
+}
+
+errf_t *
+kbmd_find_byguid(const uint8_t *guid, size_t guidlen, kbmd_token_t **ktp)
+{
+	errf_t *ret = ERRF_OK;
+	struct piv_token *pt = NULL;
+
+	VERIFY(MUTEX_HELD(&piv_lock));
+
+	ret = piv_find(piv_ctx, guid, guidlen, &pt);
+
+	if (ret != ERRF_OK)
+		return (ret);
+
+	if ((ret = kbmd_token_alloc(pt, ktp)) != ERRF_OK) {
+		piv_release(pt);
+		return (ret);
+	}
+
+	return (ERRF_OK);
+}
+
+errf_t *
+kbmd_find_byslot(enum piv_slotid slotid, const struct sshkey *key,
+    kbmd_token_t **ktp)
+{
+	errf_t *ret = ERRF_OK;
+	struct piv_token *pt = NULL, *tokens = NULL;
+
+	VERIFY(MUTEX_HELD(&piv_lock));
+
+	if ((ret = piv_enumerate(piv_ctx, &tokens)) != ERRF_OK) {
+		return (ret);
+	}
+
+	for (pt = tokens; pt != NULL; pt = piv_token_next(pt)) {
+		struct piv_slot *slot = NULL;
+
+		slot = piv_get_slot(pt, slotid);
+		if (slot == NULL) {
+			if ((ret = piv_txn_begin(pt)) != ERRF_OK ||
+			    (ret = piv_select(pt)) != ERRF_OK ||
+			    (ret = piv_read_cert(pt, slotid)) != ERRF_OK) {
+				erfree(ret);
+				piv_txn_end(pt);
+				continue;
+			}
+			piv_txn_end(pt);
+			slot = piv_get_slot(pt, slotid);
+			if (slot == NULL)
+				continue;
+		}
+
+		/*
+		 * If there are multiple tokens present on the system
+		 * (i.e. tokens has more than one element in the list), we
+		 * do not want to carry around the whole list in tokens.  We
+		 * just want a single struct piv_token, so we free the list
+		 * and then try to refind the token using the GUID.
+		 */
+		if (sshkey_equal_public(piv_slot_pubkey(slot), key)) {
+			uint8_t guid[GUID_LEN];
+
+			bcopy(piv_token_guid(pt), guid, GUID_LEN);
+			piv_release(tokens);
+			pt = NULL;
+
+			return (kbmd_find_byguid(guid, GUID_LEN, ktp));
+		}
+	}
+	VERIFY3P(pt, ==, NULL);
+
+	piv_release(tokens);
+	return (errf("NotFoundError", NULL,
+	    "No PIV token found on system with matching %02X key", slotid));
+}
+
+/*
+ * XXX: It might make more sense to have the pin_type->string
+ * code in pivy instead of here
+ */
+const char *
+piv_pin_str(enum piv_pin pin_type)
+{
+	switch (pin_type) {
+	case PIV_PIN:
+		return("PIN");
+	case PIV_GLOBAL_PIN:
+		return("global PIN");
+	case PIV_PUK:
+		return("PUK");
+	case PIV_OCC:
+		return("OCC");
+	case PIV_OCC2:
+		return("OCC2");
+	case PIV_PAIRING:
+		return("pairing PIN");
+	default:
+		return("unknown PIN");
+	}
 }

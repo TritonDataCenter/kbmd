@@ -16,6 +16,11 @@
 #ifndef _KBM_H
 #define	_KBM_H
 
+#include "common/common.h"
+#include "common/kspawn.h"
+#include "common/ecustr.h"
+#include "common/envlist.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -128,6 +133,7 @@ typedef enum kbm_cmd {
 	KBM_CMD_ZPOOL_CREATE,
 	KBM_CMD_RECOVER_START,
 	KBM_CMD_RECOVER_RESP,
+	KBM_CMD_UPDATE_RECOVERY, /* XXX: Only for testing */
 } kbm_cmd_t;
 
 typedef enum kbm_act {

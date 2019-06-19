@@ -281,6 +281,9 @@ kbmd_door_server(void *cookie, char *argp, size_t arg_size, door_desc_t *dp,
 	case KBM_CMD_RECOVER_RESP:
 		kbmd_recover_resp(req, dcred.dc_pid);
 		break;
+	case KBM_CMD_UPDATE_RECOVERY:
+		kbmd_update_recovery(req);
+		break;
 	default:
 		(void) bunyan_info(tlog, "Unrecognized command",
 		    BUNYAN_T_INT32, "cmdval", (int32_t)cmdval,
