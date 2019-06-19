@@ -16,8 +16,6 @@
 #include <bunyan.h>
 #include <fcntl.h>
 #include <strings.h>
-#include <sys/debug.h>
-#include <sys/list.h>
 #include <sys/mnttab.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -279,7 +277,7 @@ kbmd_zfs_unlock(nvlist_t *req)
 		    BUNYAN_T_STRING, "errmsg", errf_message(ret),
 		    BUNYAN_T_END);
 
-		erfree(ret);
+		errf_free(ret);
 	}
 
 	if ((ret = envlist_alloc(&resp)) != ERRF_OK ||

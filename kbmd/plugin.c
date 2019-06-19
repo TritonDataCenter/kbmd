@@ -276,7 +276,7 @@ add_keys(struct piv_token *restrict pt, nvlist_t *restrict pubkeys,
 		 * error
 		 */
 		if (cert == NULL && errf_caused_by(ret, "NotFoundError")) {
-			erfree(ret);
+			errf_free(ret);
 			ret = ERRF_OK;
 			continue;
 		} else if (cert == NULL) {

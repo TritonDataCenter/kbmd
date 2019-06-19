@@ -20,7 +20,7 @@
 #include <sys/debug.h>
 #include <umem.h>
 #include "ecustr.h"
-#include "errf.h"
+#include "pivy/errf.h"
 
 /*
  * Just to be paranoid, we use a custom custr allocator that always

@@ -27,9 +27,9 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include "pivy/errf.h"
 #include "common.h"
 #include "ecustr.h"
-#include "errf.h"
 #include "kspawn.h"
 
 /*

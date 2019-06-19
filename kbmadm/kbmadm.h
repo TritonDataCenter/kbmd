@@ -17,7 +17,12 @@
 #define	_KBMADM_H
 
 #include <inttypes.h>
-#include "../common/kbm.h"
+#include <sys/debug.h>
+#include "kbm.h"
+#include "common.h"
+#include "ecustr.h"
+#include "envlist.h"
+#include "kspawn.h"
 
 #ifdef __cplusplus
 extern "C" {

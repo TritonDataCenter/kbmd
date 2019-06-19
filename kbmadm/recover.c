@@ -216,7 +216,7 @@ challenge(GetLine *restrict gl, nvlist_t *restrict q,
 			return (ret);
 		if (name != NULL &&
 		    (ret = ecustr_append_printf(desc, " (Name: %s)",
-		    name) != ERRF_OK))
+		    name)) != ERRF_OK)
 			return (ret);
 
 		(void) printf("--- BEGIN CHALLENGE for %s ---\n",

@@ -24,7 +24,7 @@
 #include "common.h"
 #include "ecustr.h"
 #include "envlist.h"
-#include "errf.h"
+#include "pivy/errf.h"
 
 char panicstr[256];
 

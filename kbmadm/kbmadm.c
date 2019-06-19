@@ -31,13 +31,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <umem.h>
-#include "common.h"
-#include "ecustr.h"
-#include "envlist.h"
-#include "errf.h"
-#include "kbm.h"
 #include "kbmadm.h"
-#include "kspawn.h"
+#include "pivy/errf.h"
 #include "pivy/libssh/sshbuf.h"
 
 #if 0

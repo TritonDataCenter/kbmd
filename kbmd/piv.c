@@ -494,7 +494,7 @@ generate_certs(struct piv_token *pk)
 	struct piv_slot *slot;
 
 	if ((ret = piv_read_cert(pk, 0x9E)) != ERRF_OK) {
-		erfree(ret);
+		errf_free(ret);
 		slot = piv_force_slot(pk, 0x9E, PIV_ALG_ECCP256);
 		if ((ret = generate_cert(pk, slot)) != ERRF_OK)
 			return (ret);
@@ -617,7 +617,7 @@ init_token(uint8_t guid[restrict])
 
 	/* Our card ID */
 	tlv_push(ccc, 0xF0);
-	tlv_write(ccc, cardId, 0, sizeof (cardId));
+	tlv_write(ccc, cardId, sizeof (cardId));
 	tlv_pop(ccc);
 
 	/* Container version numbers */
@@ -658,15 +658,15 @@ init_token(uint8_t guid[restrict])
 	chuid = tlv_init_write();
 
 	tlv_push(chuid, 0x30);
-	tlv_write(chuid, fascn, 0, sizeof (fascn));
+	tlv_write(chuid, fascn, sizeof (fascn));
 	tlv_pop(chuid);
 
 	tlv_push(chuid, 0x34);
-	tlv_write(chuid, nguid, 0, sizeof (nguid));
+	tlv_write(chuid, nguid, sizeof (nguid));
 	tlv_pop(chuid);
 
 	tlv_push(chuid, 0x35);
-	tlv_write(chuid, expiry, 0, sizeof (expiry));
+	tlv_write(chuid, expiry, sizeof (expiry));
 	tlv_pop(chuid);
 
 	/*
@@ -676,7 +676,7 @@ init_token(uint8_t guid[restrict])
 	 * for information.
 	 */
 	tlv_push(chuid, 0x36);
-	tlv_write(chuid, sys_uuid, 0, sizeof (sys_uuid));
+	tlv_write(chuid, sys_uuid, sizeof (sys_uuid));
 	tlv_pop(chuid);
 
 	tlv_push(chuid, 0x3E);
@@ -1005,7 +1005,7 @@ kbmd_find_byslot(enum piv_slotid slotid, const struct sshkey *key,
 			if ((ret = piv_txn_begin(pt)) != ERRF_OK ||
 			    (ret = piv_select(pt)) != ERRF_OK ||
 			    (ret = piv_read_cert(pt, slotid)) != ERRF_OK) {
-				erfree(ret);
+				errf_free(ret);
 				piv_txn_end(pt);
 				continue;
 			}

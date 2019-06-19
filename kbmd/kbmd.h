@@ -20,13 +20,14 @@
 #include <inttypes.h>
 #include <thread.h>
 #include <synch.h>
+#include <sys/debug.h>
 #include <sys/uuid.h>
 #include <wintypes.h>
 #include <winscard.h>
 
 #include "common/kbm.h"
-#include "pivy/ebox.h"
 #include "pivy/errf.h"
+#include "pivy/ebox.h"
 #include "pivy/piv.h"
 
 #ifdef __cplusplus
@@ -103,7 +104,7 @@ void kbmd_recover_start(struct nvlist *, pid_t);
 void kbmd_recover_resp(struct nvlist *, pid_t);
 void kbmd_update_recovery(struct nvlist *);
 
-errf_t *get_template(struct piv_token *, struct ebox_tpl **);
+errf_t *get_template(kbmd_token_t *, struct ebox_tpl **);
 errf_t *get_request_template(struct nvlist *restrict,
     struct ebox_tpl **restrict);
 errf_t *add_supplied_template(struct nvlist *, struct ebox_tpl *,

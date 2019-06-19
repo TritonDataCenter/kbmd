@@ -14,7 +14,6 @@
  */
 
 #include <sys/corectl.h>
-#include <sys/debug.h>
 #include <sys/list.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
@@ -42,10 +41,7 @@
 #include <synch.h>
 #include <umem.h>
 #include <unistd.h>
-#include "errf.h"
-#include "kbm.h"
 #include "kbmd.h"
-#include "common.h"
 
 #define	KBMD_PG		"kbmd"
 #define	KBMD_PROP_INC	"include_path" /* XXX: module path instead? */
