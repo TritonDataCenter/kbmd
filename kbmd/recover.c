@@ -455,7 +455,7 @@ process_chal_response(recovery_t *restrict r, nvlist_t *restrict resp)
 	 */
 	if ((ret = ebox_challenge_response(r->r_cfg, box, &part)) != ERRF_OK) {
 		/*  XXX: warn failed + maybe msg to user? */
-		erfree(ret);
+		errf_free(ret);
 		ret = ERRF_OK;
 		goto done;
 	}

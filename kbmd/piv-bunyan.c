@@ -67,44 +67,21 @@ static bunyan_log_f
 getlog(enum bunyan_log_level lvl)
 {
 	switch (lvl) {
-	case BNY_L_TRACE:
+	case BNY_TRACE:
 		return (bunyan_trace);
-	case BNY_L_DEBUG:
+	case BNY_DEBUG:
 		return (bunyan_debug);
-	case BNY_L_INFO:
+	case BNY_INFO:
 		return (bunyan_info);
-	case BNY_L_WARN:
+	case BNY_WARN:
 		return (bunyan_warn);
-	case BNY_L_ERROR:
+	case BNY_ERROR:
 		return (bunyan_error);
-	case BNY_L_FATAL:
+	case BNY_FATAL:
 		return (bunyan_fatal);
 	default:
 		panic("Invalid log level %d", lvl);
 	}
-}
-
-char *
-buf_to_hex(const uint8_t *buf, size_t len, int spaces)
-{
-	char *str;
-	const size_t slen = spaces ? len * 3 + 1 : len * 2 + 1;
-	size_t i, j;
-
-	if ((str = calloc(1, slen)) == NULL)
-		return (NULL);
-
-	for (i = j = 0; i < len; i++) {
-		const uint8_t byte = buf[i];
-
-		if (i > 0 && spaces)
-			str[j++] = ' ';
-
-		str[j++] = hexdigits[byte >> 4];
-		str[j++] = hexdigits[byte & 0xF];
-	}
-	str[j] = '\0';
-	return (str);
 }
 
 void
@@ -120,7 +97,7 @@ bunyan_log(enum bunyan_log_level lvl, const char *msg, ...)
 		return;
 
 	if ((ret = ecustr_alloc(&bh)) != ERRF_OK) {
-		erfree(ret);
+		errf_free(ret);
 		return;
 	}
 

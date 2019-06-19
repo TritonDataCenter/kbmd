@@ -135,7 +135,8 @@ _PIVY_OBJS =			\
 	debug.o			\
 	ebox.o			\
 	piv.o			\
-	tlv.o
+	tlv.o			\
+	utils.o
 PIVY_OBJS = $(_PIVY_OBJS:%=pivy/%)
 
 PIVY_A_OBJS =		\

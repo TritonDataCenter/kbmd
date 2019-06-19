@@ -17,16 +17,10 @@
 #include <libnvpair.h>
 #include <stdio.h>
 #include <strings.h>
-#include <sys/debug.h>
 #include <sys/list.h>
 #include <sys/sysmacros.h>
 #include <sys/types.h>
-#include "common.h"
-#include "envlist.h"
-#include "errf.h"
-#include "kbm.h"
 #include "kbmd.h"
-#include "kspawn.h"
 #include "pivy/ebox.h"
 #include "pivy/libssh/sshbuf.h"
 
@@ -114,8 +108,7 @@ add_create_data(nvlist_t *restrict resp, struct ebox *restrict ebox,
  * just a primary config (from the given token).
  */
 errf_t *
-get_template(struct piv_token *restrict pk,
-    struct ebox_tpl **restrict tplp)
+get_template(kbmd_token_t *restrict kt, struct ebox_tpl **restrict tplp)
 {
 	errf_t *ret = ERRF_OK;
 	struct ebox_tpl *tpl = NULL;
@@ -127,7 +120,7 @@ get_template(struct piv_token *restrict pk,
 		    "cannot create ebox template))"));
 	}
 
-	if ((ret = create_piv_tpl_config(pk, &cfg)) != ERRF_OK) {
+	if ((ret = create_piv_tpl_config(kt, &cfg)) != ERRF_OK) {
 		ret = errf("TemplateError", ret, "cannot create ebox template");
 		ebox_tpl_free(tpl);
 		return (ret);
@@ -219,7 +212,7 @@ assert_token(nvlist_t *restrict req, kbmd_token_t **restrict ktp)
 	 */
 	if (errf_errno(ret) != ENOENT)
 		return (ret);
-	erfree(ret);
+	errf_free(ret);
 	ret = ERRF_OK;
 
 	/*
@@ -275,11 +268,11 @@ kbmd_zpool_create(nvlist_t *req)
 
 	if ((ret = piv_txn_begin(kt->kt_piv)) != ERRF_OK ||
 	    (ret = piv_select(kt->kt_piv)) != ERRF_OK ||
-	    (ret = kbmd_assert_pin(kt->kt_piv)) != ERRF_OK) {
+	    (ret = kbmd_assert_pin(kt)) != ERRF_OK) {
 		goto done;
 	}
 
-	if ((ret = get_template(kt->kt_piv, &tpl)) != ERRF_OK) {
+	if ((ret = get_template(kt, &tpl)) != ERRF_OK) {
 		ret = errf("ZpoolCreateError", ret,
 		    "cannot retrieve current ebox template");
 		goto done;

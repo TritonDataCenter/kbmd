@@ -23,16 +23,10 @@
 #include <stdio.h>
 #include <strings.h>
 #include <stropts.h>
-#include <sys/debug.h>
 #include <thread.h>
 #include <unistd.h>
 #include <umem.h>
-#include "ecustr.h"
-#include "envlist.h"
-#include "errf.h"
-#include "kbm.h"
 #include "kbmd.h"
-#include "common.h"
 
 #define	DOOR_RET_MAX 16384
 
@@ -211,8 +205,8 @@ kbmd_ret_error(errf_t *ef)
 	kbmd_ret_nvlist(nvret);
 
 fail:
-	erfree(ef);
-	erfree(ret);
+	errf_free(ef);
+	errf_free(ret);
 	nvlist_free(nvret);
 	custr_free(cu);
 	door_return(generr, generr_sz, NULL, 0);
@@ -247,7 +241,7 @@ kbmd_door_server(void *cookie, char *argp, size_t arg_size, door_desc_t *dp,
 		    BUNYAN_T_INT32, "errno", errf_errno(ret),
 		    BUNYAN_T_STRING, "errmsg", errf_message(ret),
 		    BUNYAN_T_END);
-		erfree(ret);
+		errf_free(ret);
 		door_return(generr, generr_sz, NULL, 0);
 	}
 

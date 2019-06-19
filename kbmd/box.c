@@ -17,7 +17,6 @@
 #include <err.h>
 #include <stddef.h>
 #include <strings.h>
-#include <sys/list.h>
 #include <libzfs.h>
 #include "kbmd.h"
 #include "pivy/ebox.h"
@@ -491,7 +490,7 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 				kbmd_token_free(kt);
 
 			if (errf_caused_by(ret, "NotFoundError")) {
-				erfree(ret);
+				errf_free(ret);
 
 				(void) bunyan_debug(tlog,
 				    "PIV token not present for part; trying "
@@ -558,7 +557,7 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 			    BUNYAN_T_STRING, "errfunc", errf_function(ret),
 			    BUNYAN_T_END);
 
-			erfree(ret);
+			errf_free(ret);
 			continue;
 		}
 
@@ -687,7 +686,7 @@ add_supplied_template(nvlist_t *restrict nvl, struct ebox_tpl *restrict tpl,
 	if ((ret = get_request_template(nvl, &reqtpl)) != ERRF_OK) {
 		if (required)
 			return (ret);
-		erfree(ret);
+		errf_free(ret);
 		return (ERRF_OK);
 	}
 	ebox_tpl_foreach_cfg(reqtpl, keep_recovery, NULL);
