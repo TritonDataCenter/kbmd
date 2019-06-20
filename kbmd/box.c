@@ -285,7 +285,7 @@ done:
 
 
 errf_t *
-ebox_tpl_foreach_cfg(const struct ebox_tpl *tpl, ebox_tpl_cb_t cb, void *arg)
+ebox_tpl_foreach_cfg(struct ebox_tpl *tpl, ebox_tpl_cb_t cb, void *arg)
 {
 	errf_t *ret = ERRF_OK;
 	struct ebox_tpl_config *cfg = NULL, *next = NULL;
@@ -341,7 +341,7 @@ create_piv_tpl_config(kbmd_token_t *restrict kt,
 		goto fail;
 	}
 
-	ebox_tpl_part_set_cak(part, piv_slot_pubkey(slot));
+	ebox_tpl_part_set_cak(part, piv_slot_pubkey(auth_slot));
 
 	/*
 	 * XXX: We can set a name for this part.  Is there any useful/
@@ -457,8 +457,13 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 
 		part = ebox_config_next_part(config, NULL);
 		tpart = ebox_part_tpl(part);
-		if (tpart == NULL)
+		if (tpart != NULL) {
+			tname = ebox_tpl_part_name(tpart);
+		}
+
+		if (tname == NULL) {
 			tname = "(not set)";
+		}
 
 		dhbox = ebox_part_box(part);
 
@@ -484,7 +489,7 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 			(void) bunyan_key_remove(tlog, "piv_guid");
 		}
 
-		if (kt != NULL &&
+		if (kt == NULL &&
 		    (ret = find_part_pivtoken(part, &kt)) != ERRF_OK) {
 			if (kt != kpiv)
 				kbmd_token_free(kt);
@@ -507,9 +512,12 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 
 			return (ret);
 		}
+		VERIFY3P(kt, !=, NULL);
+		VERIFY3P(kt->kt_piv, !=, NULL);
 
 		(void) bunyan_key_add(tlog,
-		    "piv_guid", BUNYAN_T_STRING, piv_token_guid(kt->kt_piv));
+		    "piv_guid", BUNYAN_T_STRING,
+		    piv_token_guid_hex(kt->kt_piv));
 
 		(void) bunyan_debug(tlog, "Found PIV token for part",
 		    BUNYAN_T_STRING, "partname", tname,
@@ -520,16 +528,32 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 		(void) bunyan_debug(tlog, "Attempt to unlock PIV token",
 		    BUNYAN_T_END);
 
+		/*
+		 * kbmd_assert_pin() may need to call a plugin to obtain
+		 * the PIN.  Because the plugin itself may need to use
+		 * the PIV token (e.g. using the CAK to authenticate a
+		 * KBMAPI request), we must do this prior to starting
+		 * the PIV transaction.
+		 */
+		if ((ret = kbmd_assert_pin(kt)) != ERRF_OK) {
+			(void) bunyan_info(tlog,
+			    "Failed to obtain PIV token pin",
+			    BUNYAN_T_END);
+
+			(void) bunyan_key_remove(tlog, "piv_guid");
+			continue;
+		}
+
 		if ((ret = piv_txn_begin(kt->kt_piv)) != ERRF_OK ||
 		    (ret = piv_select(kt->kt_piv)) != ERRF_OK ||
 		    (ret = kbmd_auth_pivtoken(kt, cak)) != ERRF_OK ||
-		    (ret = kbmd_assert_pin(kt)) != ERRF_OK ||
 		    (ret = kbmd_verify_pin(kt)) != ERRF_OK) {
 			piv_txn_end(kt->kt_piv);
 
 			(void) bunyan_debug(tlog, "Unlock failed",
 			    BUNYAN_T_END);
 
+			(void) bunyan_key_remove(tlog, "piv_guid");
 			continue;
 		}
 
@@ -658,11 +682,17 @@ done:
 }
 
 static errf_t *
-keep_recovery(const struct ebox_tpl *tpl, struct ebox_tpl_config *cfg,
-    void *arg __unused)
+move_recovery(struct ebox_tpl *tpl, struct ebox_tpl_config *cfg,
+    void *arg)
 {
-	if (ebox_tpl_config_type(cfg) != EBOX_RECOVERY) {
-		ebox_tpl_remove_config((struct ebox_tpl *)tpl, cfg);
+	struct ebox_tpl *dst_tpl = arg;
+
+	if (ebox_tpl_config_type(cfg) == EBOX_RECOVERY) {
+		(void) bunyan_debug(tlog, "Adding recovery template",
+		    BUNYAN_T_END);
+
+		ebox_tpl_remove_config(tpl, cfg);
+		ebox_tpl_add_config(dst_tpl, cfg);
 	}
 	return (ERRF_OK);
 }
@@ -689,17 +719,8 @@ add_supplied_template(nvlist_t *restrict nvl, struct ebox_tpl *restrict tpl,
 		errf_free(ret);
 		return (ERRF_OK);
 	}
-	ebox_tpl_foreach_cfg(reqtpl, keep_recovery, NULL);
 
-	cfg = ebox_tpl_next_config(reqtpl, NULL);
-	while (cfg != NULL) {
-		nextcfg = ebox_tpl_next_config(reqtpl, cfg);
-		VERIFY3S(ebox_tpl_config_type(cfg), !=, EBOX_PRIMARY);
-		ebox_tpl_remove_config(reqtpl, cfg);
-		ebox_tpl_add_config(tpl, cfg);
-		cfg = nextcfg;
-	}
-
+	ebox_tpl_foreach_cfg(reqtpl, move_recovery, tpl);
 	ebox_tpl_free(reqtpl);
 	return (ERRF_OK);
 }

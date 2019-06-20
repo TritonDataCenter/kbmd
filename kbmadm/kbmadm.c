@@ -124,9 +124,8 @@ main(int argc, char *argv[])
 		}
 	}
 
-	if ((guidstr != NULL && recovery == NULL) ||
-	    (guidstr == NULL && recovery != NULL)) {
-		errx(EXIT_FAILURE, "both -g and -r are required, or neither");
+	if (recovery != NULL && guidstr == NULL) {
+		err(EXIT_FAILURE, "-r also requires -g options");
 	}
 
 	if (guidstr != NULL) {

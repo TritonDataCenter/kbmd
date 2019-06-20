@@ -262,16 +262,23 @@ kbmd_zpool_create(nvlist_t *req)
 	keylen = zfs_key_len;
 	arc4random_buf(key, keylen);
 
-	if ((ret = assert_token(req, &kt)) != ERRF_OK)
-		goto done;
-	VERIFY3P(kt->kt_rtoken, !=, NULL);
-
-	if ((ret = piv_txn_begin(kt->kt_piv)) != ERRF_OK ||
-	    (ret = piv_select(kt->kt_piv)) != ERRF_OK ||
+	if ((ret = assert_token(req, &kt)) != ERRF_OK ||
 	    (ret = kbmd_assert_pin(kt)) != ERRF_OK) {
 		goto done;
 	}
+	VERIFY3P(kt->kt_rtoken, !=, NULL);
 
+	if ((ret = piv_txn_begin(kt->kt_piv)) != ERRF_OK ||
+	    (ret = piv_select(kt->kt_piv)) != ERRF_OK) {
+		goto done;
+	}
+
+	/*
+	 * Currently, we create a new template using either the
+	 * PIV token given in the create command (for testing) via the -g GUID
+	 * option, or the PIV token we've just initialized (no -g GUID given
+	 * and an uninitialized PIV token is present on the system).
+	 */
 	if ((ret = get_template(kt, &tpl)) != ERRF_OK) {
 		ret = errf("ZpoolCreateError", ret,
 		    "cannot retrieve current ebox template");
