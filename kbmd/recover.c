@@ -719,7 +719,7 @@ kbmd_update_recovery(nvlist_t *req)
 	}
 	VERIFY3P(zones_dataset, !=, NULL);
 
-	if ((ret = get_template(kpiv->kt_piv, &tpl)) != ERRF_OK ||
+	if ((ret = get_template(kpiv, &tpl)) != ERRF_OK ||
 	    (ret = add_supplied_template(req, tpl, B_TRUE)) != ERRF_OK) {
 		mutex_exit(&piv_lock);
 		nvlist_free(resp);
