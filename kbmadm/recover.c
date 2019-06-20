@@ -45,12 +45,15 @@ static void printwrap(FILE *, const char *, size_t);
 errf_t *
 do_recover(int argc, char **argv)
 {
-	FILE *term;
-	GetLine *gl;
 	errf_t *ret = ERRF_OK;
+	FILE *term = NULL;
+	GetLine *gl = NULL;
 	nvlist_t *req = NULL, *resp = NULL;
 	uint32_t id;
 	int fd = -1;
+
+	if ((gl = new_GetLine(1024, 1024)) == NULL)
+		return (errfno("new_GetLine", errno, "cannot setup terminal"));
 
 	if ((term = fopen("/dev/tty", "w+")) == NULL)
 		return (errfno("fopen", errno, ""));
@@ -106,8 +109,11 @@ done:
 		(void) close(fd);
 	nvlist_free(req);
 	nvlist_free(resp);
-	/*  XXX: cleanup gl */
+
+	if (gl != NULL)
+		del_GetLine(gl);
 	(void) fclose(term);
+
 	return (ret);
 }
 

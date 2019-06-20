@@ -157,10 +157,10 @@ errf_t *kbmd_rotate_zfs_ebox(const char *);
 
 #define	FOREACH_STOP ((errf_t *)(uintptr_t)-1)
 
-typedef errf_t *(ebox_tpl_cb_t)(const struct ebox_tpl *,
+typedef errf_t *(ebox_tpl_cb_t)(struct ebox_tpl *,
     struct ebox_tpl_config *, void *);
 
-errf_t *ebox_tpl_foreach_cfg(const struct ebox_tpl *, ebox_tpl_cb_t, void *);
+errf_t *ebox_tpl_foreach_cfg(struct ebox_tpl *, ebox_tpl_cb_t, void *);
 
 #ifdef __cplusplus
 }

@@ -866,23 +866,24 @@ kbmd_assert_pin(kbmd_token_t *kt)
 
 	VERIFY3P(kt->kt_piv, !=, NULL);
 
+	/*
+	 * The plugin will likely need to use the PIV token for authentication
+	 * purposes (e.g. authenticating a KBMAPI request for the pin), so
+	 * callers cannot call kbmd_assert_pin while the PIV token is in
+	 * a transaction.
+	 */
+	VERIFY(!piv_token_in_txn(kt->kt_piv));
+
 	if (strlen(kt->kt_pin) > 0) {
 		(void) bunyan_debug(tlog, "Using cached PIN for PIV token",
-		    BUNYAN_T_STRING, "piv_guid", piv_token_guid(kt->kt_piv),
+		    BUNYAN_T_STRING, "piv_guid", piv_token_guid_hex(kt->kt_piv),
 		    BUNYAN_T_END);
 		return (ERRF_OK);
 	}
 
 	(void) bunyan_debug(tlog, "Fetching PIN from plugin",
-	    BUNYAN_T_STRING, "piv_guid", piv_token_guid(kt->kt_piv),
+	    BUNYAN_T_STRING, "piv_guid", piv_token_guid_hex(kt->kt_piv),
 	    BUNYAN_T_END);
-
-	/*
-	 * The plugin will likely need to use the PIV token for authentication
-	 * purposes (e.g. authenticating a KBMAPI request for the pin), so
-	 * we cannot tie up the PIV token while the plugin executes.
-	 */
-	VERIFY(!piv_token_in_txn(kt->kt_piv));
 
 	if ((ret = kbmd_get_pin(piv_token_guid(kt->kt_piv), &pin)) != ERRF_OK)
 		return (ret);
