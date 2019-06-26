@@ -198,6 +198,24 @@ main(int argc, char *argv[])
 	return (0);
 }
 
+static void *
+kbmd_rotate_thread(void *arg __unused)
+{
+	for (;;) {
+		errf_t *ret = ERRF_OK;
+		uint32_t interval;
+
+		interval = arc4random_uniform(ROTATE_SPLAY) + ROTATE_MIN;
+		sleep(interval);
+
+		ret = kbmd_rotate_zfs_ebox(zones_dataset);
+		errf_free(ret);
+	}
+
+	/* NOTREACHED */
+	return (NULL);
+}
+
 /*
  * We borrow fmd's daemonization style. Basically, the parent waits for the
  * child to successfully set up a door and recover all of the old configurations
@@ -211,7 +229,7 @@ kbmd_daemonize(int dirfd)
 	sigset_t set, oset;
 	int estatus, pfds[2];
 	pid_t child;
-#if 0
+#if notyet
 	priv_set_t *pset;
 #endif
 
@@ -279,17 +297,13 @@ kbmd_daemonize(int dirfd)
 	/*
 	 * Drop privileges here.
 	 *
-	 * We should make sure we keep around PRIV_NET_PRIVADDR and
-	 * PRIV_SYS_DLCONFIG, but drop everything else; however, keep basic
-	 * privs and have our child drop them.
-	 *
-	 * We should also run as netadm:netadm and drop all of our groups.
+	 * TODO: Determine what things are needed/can be dropped
 	 */
 	if (setgroups(0, NULL) != 0)
 		abort();
 	if (setgid(GID_KBMD) == -1 || seteuid(UID_KBMD) == -1)
 		abort();
-#if 0
+#if notyet
 	if ((pset = priv_allocset()) == NULL)
 		abort();
 	priv_basicset(pset);

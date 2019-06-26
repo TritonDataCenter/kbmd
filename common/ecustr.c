@@ -19,8 +19,10 @@
 #include <strings.h>
 #include <sys/debug.h>
 #include <umem.h>
+#include "common.h"
 #include "ecustr.h"
 #include "pivy/errf.h"
+#include "pivy/libssh/sshbuf.h"
 
 /*
  * Just to be paranoid, we use a custom custr allocator that always
@@ -113,4 +115,63 @@ ecustr_append_printf(custr_t *cu, const char *fmt, ...)
 	va_end(ap);
 
 	return (ret);
+}
+
+errf_t *
+ecustr_append_b64(custr_t *cu, const uint8_t *bytes, size_t len)
+{
+	errf_t *ret = ERRF_OK;
+	char *temp = NULL;
+	size_t templen = ((len + 2) / 3) * 4 + 1;
+
+	if ((ret = zalloc(templen, &temp)) != ERRF_OK) {
+		return (ret);
+	}
+
+	if (b64_ntop((const u_char *)bytes, len, temp, templen) < 0) {
+		ret = errf("ConversionFailure", NULL,
+		    "could not convert bytes to base64");
+		freezero(temp, templen);
+		return (ret);
+	}
+
+	ret = ecustr_append(cu, temp);
+	freezero(temp, templen);
+
+	return (ret);
+}
+
+errf_t *
+ecustr_fromb64(custr_t *restrict cu, uint8_t **restrict bufp,
+    size_t *restrict lenp)
+{
+	errf_t *ret = ERRF_OK;
+	uint8_t *buf = NULL;
+	size_t clen = custr_len(cu);
+	int buflen = 0;
+
+	*bufp = NULL;
+	*lenp = 0;
+
+	if ((ret = zalloc(clen, &buf)) != ERRF_OK) {
+		return (ret);
+	}
+
+	buflen = b64_pton(custr_cstr(cu), (uchar_t *)buf, clen);
+	if (buflen == -1) {
+		freezero(buf, clen);
+		return (errf("FormatError", NULL,
+		    "failed to decode base64 data"));
+	}
+
+	if ((ret = zalloc(buflen, bufp)) != ERRF_OK) {
+		freezero(buf, clen);
+		return (ret);
+	}
+
+	bcopy(buf, *bufp, buflen);
+	*lenp = buflen;
+	freezero(buf, clen);
+
+	return (ERRF_OK);
 }

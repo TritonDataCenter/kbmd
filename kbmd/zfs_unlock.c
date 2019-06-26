@@ -15,6 +15,8 @@
 
 #include <bunyan.h>
 #include <fcntl.h>
+#include <libzfs.h>
+#include <libzfs_core.h>
 #include <strings.h>
 #include <sys/mnttab.h>
 #include <sys/stat.h>
@@ -25,61 +27,22 @@
 #include "pivy/ebox.h"
 #include "pivy/errf.h"
 
-#define	ZFS_CMD	"/sbin/zfs"
-
-/*
- * For now at least, effectively do 'cat key | zfs load-key <dataset>'
- * The current libzfs api doesn't lend itself well to using input methods
- * beyond those available from invoking the command i.e. read from fd or tty,
- * or open and file.  It also does some transformation on the key value prior
- * to issuing the zfs ioctl, so just running the command is simpler for now.
- *
- * XXX: It appears libzfs_core might have a function that could simplify
- * this.  Need to test that.
- */
-static errf_t *
+errf_t *
 load_key(const char *dataset, const uint8_t *key, size_t keylen)
 {
 	errf_t *ret = ERRF_OK;
-	custr_t *data[2] = { 0 };
-	int fds[3] = { -1, -1, -1 };
-	int exitval = 0;
-	strarray_t args = STRARRAY_INIT;
-	pid_t pid;
+	int rc;
 
-	if ((ret = ecustr_alloc(&data[0])) != ERRF_OK ||
-	    (ret = ecustr_alloc(&data[1])) != ERRF_OK)
-			return (ret);
-
-	if ((ret = strarray_append(&args, "%s", ZFS_CMD)) != ERRF_OK ||
-	    (ret = strarray_append(&args, "load-key")) != ERRF_OK ||
-	    (ret = strarray_append(&args, "%s", dataset)) != ERRF_OK)
-		goto done;
-
-	(void) bunyan_debug(tlog, "Attemping to run zfs load-key",
-	    BUNYAN_T_STRING, "dataset", dataset,
-	    BUNYAN_T_END);
-
-	if ((ret = spawn(ZFS_CMD, args.sar_strs, _environ, &pid,
-	    fds)) != ERRF_OK)
-		goto done;
-
-	if ((ret = interact(pid, fds, key, keylen, data,
-	    &exitval)) != ERRF_OK)
-		goto done;
-
-	if (exitval != 0) {
-		(void) bunyan_warn(tlog, "zfs load-key command failed",
-		    BUNYAN_T_STRING, "stderr", custr_cstr(data[1]),
-		    BUNYAN_T_INT32, "exitval", (int32_t)exitval,
-		    BUNYAN_T_END);
-		ret = errf("CommandError", NULL, "zfs load-key");
+	/*
+	 * lzc_load_key() returns EEXIST if the key is already loaded.
+	 * Don't treat EEXIST as a failure.
+	 */
+	if ((rc = lzc_load_key(dataset, B_FALSE, key, keylen)) != 0 &&
+	    rc != EEXIST) {
+		ret = errfno("lzc_load_key", rc,
+		    "failed to load key for %s dataset", dataset);
 	}
 
-done:
-	strarray_fini(&args);
-	custr_free(data[0]);
-	custr_free(data[1]);
 	return (ret);
 }
 
@@ -144,6 +107,35 @@ get_dataset_mountpoint(const char *dataset, char **mountp)
 }
 
 /*
+ * Attempt to mount the same datasets that are mounted during a 'zpool import'
+ * on a non-encrypted pool.  Like 'zpool import', this is best effort.
+ */
+void
+kbmd_mount_zpool(const char *pool, const char *mntopts)
+{
+	zpool_handle_t *zhp = NULL;
+
+	(void) bunyan_debug(tlog, "Attempting to mount datasets in pool",
+	    BUNYAN_T_STRING, "pool", pool,
+	    BUNYAN_T_END);
+
+	mutex_enter(&g_zfs_lock);
+	if ((zhp = zpool_open_canfail(g_zfs, pool)) == NULL) {
+		mutex_exit(&g_zfs_lock);
+	}
+
+	if (zpool_get_state(zhp) == POOL_STATE_UNAVAIL) {
+		goto done;
+	}
+
+	(void) zpool_enable_datasets(zhp, mntopts, 0);
+
+done:
+	zpool_close(zhp);
+	mutex_exit(&g_zfs_lock);
+}
+
+/*
  * The system zpool is defined as the one whose root dataset
  * contains '.system_pool'.  This is almost always 'zones'.
  */
@@ -157,9 +149,21 @@ is_system_zpool(const char *dataset, boolean_t *valp)
 
 	*valp = B_FALSE;
 
+	(void) bunyan_debug(tlog, "Checking if pool is system zpool",
+	    BUNYAN_T_STRING, "pool", dataset,
+	    BUNYAN_T_END);
+
 	if ((ret = get_dataset_mountpoint(dataset, &mountp)) != ERRF_OK) {
+		(void) bunyan_debug(tlog, "Failed to get mountpoint of pool",
+		    BUNYAN_T_STRING, "pool", dataset,
+		    BUNYAN_T_END);
 		return (ret);
 	}
+
+	(void) bunyan_debug(tlog, "Found pool mountpoint",
+	    BUNYAN_T_STRING, "pool", dataset,
+	    BUNYAN_T_STRING, "mountpoint", mountp,
+	    BUNYAN_T_END);
 
 	if ((fd = open(mountp, O_RDONLY)) == -1) {
 		ret = errfno("open", errno, "failed to open %s", mountp);
@@ -167,7 +171,7 @@ is_system_zpool(const char *dataset, boolean_t *valp)
 		return (ret);
 	}
 
-	if ((fstatat(fd, ".system_pool", &st, 0)) != 0) {
+	if (fstatat(fd, ".system_pool", &st, 0) != 0) {
 		/*
 		 * ENOENT is not a fatal error, it merely means the
 		 * dataset is not the system pool.  Any other error
@@ -237,11 +241,31 @@ kbmd_zfs_unlock(nvlist_t *req)
 	}
 
 	/*
+	 * If the dataset is the top most dataset in the pool, we
+	 * attempt to mount the things that are normally mounted
+	 * during 'zpool import'.  Since the key for the pool isn't
+	 * available until now, those datasets won't be mounted during
+	 * import if the whole pool is encrypted.
+	 *
+	 * XXX: At some point, we should support '-o mntopts' similar to
+	 * what zpool import does (not to be confused with -o 'property=value').
+	 * For now, we don't pass any options.
+	 */
+	if (IS_ZPOOL(dataset)) {
+		kbmd_mount_zpool(dataset, NULL);
+	}
+
+	/*
 	 * Whatever token ends up being the one that works is what we'll
 	 * set as the 'system' token.
 	 */
 	if ((ret = is_system_zpool(dataset, &is_syspool)) == ERRF_OK &&
 	    is_syspool) {
+
+		(void) bunyan_debug(tlog, "Setting pool as system zpool",
+		    BUNYAN_T_STRING, "pool", dataset,
+		    BUNYAN_T_END);
+
 		/*
 		 * This is currently just for diagnostic purposes, so
 		 * we won't care too much if strdup fails.
@@ -261,7 +285,7 @@ kbmd_zfs_unlock(nvlist_t *req)
 			sys_box = ebox;
 			ebox = NULL;
 		}
-	} else {
+	} else if (ret != ERRF_OK) {
 		/*
 		 * If we successfully obtained and loaded the key for
 		 * the given dataset, but somehow failed to determine

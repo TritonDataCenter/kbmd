@@ -17,6 +17,7 @@
 #define	_KBMD_H
 
 #include <errno.h>
+#include <limits.h>
 #include <inttypes.h>
 #include <thread.h>
 #include <synch.h>
@@ -44,12 +45,15 @@ extern "C" {
 #define	BOX_PROP	"rfd77:ebox"
 #define	BOX_NEWPROP	"rfd77:newebox"
 
-#define	CONSOLIDATE_MIN		(6U * 60U * 60U)
-#define	CONSOLIDATE_SPLAY	CONSOLIDATE_MIN
+#define	ROTATE_MIN	(6U * 60U * 60U)
+#define	ROTATE_SPLAY	ROTATE_MIN
+CTASSERT(ROTATE_MIN + ROTATE_SPLAY <= UINT32_MAX);
 
 /* These come from NIST 800-73-4 */
 #define	PIN_MIN_LENGTH	6
 #define	PIN_MAX_LENGTH	8
+
+#define	IS_ZPOOL(_name) (strchr(_name, '/') == NULL)
 
 struct custr;
 struct ebox;
@@ -97,7 +101,6 @@ int kbmd_door_setup(const char *);
 void kbmd_ret_nvlist(struct nvlist *) __NORETURN;
 void kbmd_ret_error(errf_t *) __NORETURN;
 
-void kbmd_zfs_unlock(struct nvlist *);
 void kbmd_zpool_create(struct nvlist *);
 void kbmd_recover_init(void);
 void kbmd_recover_start(struct nvlist *, pid_t);
@@ -142,10 +145,9 @@ const char *piv_pin_str(enum piv_pin pin_type);
 
 /* plugin.c */
 errf_t *kbmd_get_pin(const uint8_t guid[restrict], struct custr **restrict);
-errf_t *kbmd_register_pivtoken(struct piv_token *restrict, const char *restrict,
-    struct custr **restrict);
-errf_t *kbmd_replace_pivtoken(uint8_t [restrict], struct piv_token *restrict,
-    const char *restrict, const char *restrict, struct custr **restrict);
+errf_t *kbmd_register_pivtoken(kbmd_token_t *);
+errf_t *kbmd_replace_pivtoken(const uint8_t *, size_t, const uint8_t *, size_t,
+    kbmd_token_t *);
 errf_t *kbmd_new_recovery_token(kbmd_token_t *restrict,
     uint8_t **restrict, size_t *restrict);
 
@@ -161,6 +163,11 @@ typedef errf_t *(ebox_tpl_cb_t)(struct ebox_tpl *,
     struct ebox_tpl_config *, void *);
 
 errf_t *ebox_tpl_foreach_cfg(struct ebox_tpl *, ebox_tpl_cb_t, void *);
+
+/* zfs_unlock.c */
+errf_t *load_key(const char *, const uint8_t *, size_t);
+void kbmd_mount_zpool(const char *, const char *);
+void kbmd_zfs_unlock(struct nvlist *);
 
 #ifdef __cplusplus
 }

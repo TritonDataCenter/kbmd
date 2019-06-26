@@ -63,12 +63,37 @@
  *		{ Replacement token JSON
  *		...
  *		}
- *	Writes the new recovery token to stdout on success.
+ *	Writes the new recovery token to stdout on success.  This is
+ *	different from 'new-token' in that this uses the recovery token
+ *	to authenticate and replace the PIV token (as well as generate
+ *	a new recovery token).
+ *
+ * new-token <guid>
+ *	Asks for a new recovery token for the given GUID.  Unlike
+ *	replace-token, the GUID does not change.  This is used when
+ *	replacing/updating the recovery configuration (we can only
+ *	obtain the current recovery token by performing an actual
+ *	recovery, so when changing the recovery configuration, we
+ *	must create a brand new ebox complete with a new recovery
+ *	token).
+ *
+ * In all cases, the PIV token must not currently be in a transaction
+ * when we call out to the plugins.  Since they are separate processes, they
+ * will be unable to use the PIV token if we keep it locked in a transaction.
  */
 
-#define	GET_PIN_CMD		"/root/bin/dummy-getpin"
-#define	REGISTER_TOK_CMD	"/root/bin/dummy-regtok"
-#define	REPLACE_TOK_CMD		"/root/bin/dummy-replacetok"
+/* XXX: This path should change */
+#define	PLUGIN_PATH		"/root/bin/"
+
+#define	GET_PIN_CMD		"get-pin"
+#define	REGISTER_TOK_CMD	"register-pivtoken"
+#define	REPLACE_TOK_CMD		"replace-pivtoken"
+#define	NEW_TOK_CMD		"new-rtoken"
+
+#define	GET_PIN_PATH		PLUGIN_PATH GET_PIN_CMD
+#define	REGISTER_TOK_PATH	PLUGIN_PATH REGISTER_TOK_CMD
+#define	REPLACE_TOK_PATH	PLUGIN_PATH REPLACE_TOK_CMD
+#define	NEW_TOK_PATH		PLUGIN_PATH NEW_TOK_CMD
 
 extern char **_environ;
 
@@ -98,7 +123,7 @@ kbmd_get_pin(const uint8_t guid[restrict], custr_t **restrict pinp)
 
 	*pinp = NULL;
 
-	if ((ret = strarray_append(&args, "dummy-getpin")) != ERRF_OK ||
+	if ((ret = strarray_append(&args, GET_PIN_CMD)) != ERRF_OK ||
 	    (ret = strarray_append_guid(&args, guid)) != ERRF_OK) {
 		return (errf("PluginError", ret, ""));
 	}
@@ -107,8 +132,8 @@ kbmd_get_pin(const uint8_t guid[restrict], custr_t **restrict pinp)
 	 * NOTE: this depends on the GUID being the most recently appended
 	 * string to args
 	 */
-	(void) bunyan_debug(tlog, "Running get-pin plugin",
-	    BUNYAN_T_STRING, "path", GET_PIN_CMD,
+	(void) bunyan_debug(tlog, "Running " GET_PIN_CMD " plugin",
+	    BUNYAN_T_STRING, "path", GET_PIN_PATH,
 	    BUNYAN_T_STRING, "guid", args.sar_strs[args.sar_n - 1],
 	    BUNYAN_T_END);
 
@@ -116,7 +141,7 @@ kbmd_get_pin(const uint8_t guid[restrict], custr_t **restrict pinp)
 	 * Let the command inherit our environment.
 	 * XXX: Maybe set the environment to a fixed known value?
 	 */
-	ret = spawn(GET_PIN_CMD, args.sar_strs, _environ, &pid, fds);
+	ret = spawn(GET_PIN_PATH, args.sar_strs, _environ, &pid, fds);
 	strarray_fini(&args);
 	if (ret != ERRF_OK)
 		return (errf("PluginError", ret, ""));
@@ -131,7 +156,6 @@ kbmd_get_pin(const uint8_t guid[restrict], custr_t **restrict pinp)
 		custr_free(data[1]);
 		return (errf("PluginError", ret, ""));
 	}
-
 
 	/*
 	 * XXX: What do with any stderr output?  We can append it to
@@ -434,42 +458,91 @@ done:
 	return (ret);
 }
 
+static errf_t *
+set_recovery_token(kbmd_token_t *restrict kt, custr_t *restrict rtoken)
+{
+	errf_t *ret = ERRF_OK;
+	struct sshbuf *buf = NULL;
+	size_t len;
+	int rc;
+
+	if ((buf = sshbuf_new()) == NULL)
+		return (errfno("sshbuf_new", errno, ""));
+
+	rc = sshbuf_b64tod(buf, custr_cstr(rtoken));
+	if (rc != SSH_ERR_SUCCESS) {
+		sshbuf_free(buf);
+		return (ssherrf("sshbuf_b64tod", rc,
+		    "cannot decode recovery token"));
+	}
+
+	len = sshbuf_len(buf);
+	if ((ret = zalloc(len, &kt->kt_rtoken)) != ERRF_OK) {
+		sshbuf_free(buf);
+		return (ret);
+	}
+
+	rc = sshbuf_get(buf, kt->kt_rtoken, len);
+	if (rc != SSH_ERR_SUCCESS) {
+		ret = ssherrf("sshbuf_get", rc, "");
+		sshbuf_free(buf);
+		freezero(kt->kt_rtoken, len);
+		kt->kt_rtoken = NULL;
+		return (ret);
+	}
+
+	kt->kt_rtoklen = len;
+	sshbuf_free(buf);
+	return (ERRF_OK);
+}
+
 errf_t *
-kbmd_register_pivtoken(struct piv_token *restrict pt, const char *restrict pin,
-    custr_t **restrict recovery_keyp)
+kbmd_register_pivtoken(kbmd_token_t *kt)
 {
 	errf_t *ret = ERRF_OK;
 	custr_t *input = NULL;
+	custr_t *rtoken = NULL;
 	strarray_t args = STRARRAY_INIT;
 
-	if ((ret = ecustr_alloc(&input)) != ERRF_OK)
-		goto done;
+	VERIFY(!piv_token_in_txn(kt->kt_piv));
 
-	if ((ret = strarray_append(&args, "dummy-regtok")) != ERRF_OK)
+	if ((ret = ecustr_alloc(&input)) != ERRF_OK) {
 		goto done;
+	}
 
-	ret = plugin_pivtoken_common(pt, pin, REGISTER_TOK_CMD, args.sar_strs,
-	    input, recovery_keyp);
+	if ((ret = strarray_append(&args, REGISTER_TOK_CMD)) != ERRF_OK) {
+		goto done;
+	}
+
+	if ((ret = plugin_pivtoken_common(kt->kt_piv, kt->kt_pin,
+	    REGISTER_TOK_PATH, args.sar_strs, input, &rtoken)) != ERRF_OK) {
+		goto done;
+	}
+
+	ret = set_recovery_token(kt, rtoken);
 
 done:
 	strarray_fini(&args);
+	custr_free(rtoken);
 	custr_free(input);
 	return (ret);
 }
 
 errf_t *
-kbmd_replace_pivtoken(uint8_t guid[restrict], struct piv_token *restrict newpt,
-    const char *restrict new_pin, const char *restrict recovery_key,
-    custr_t **restrict new_recovery_keyp)
+kbmd_replace_pivtoken(const uint8_t *guid, size_t guidlen,
+    const uint8_t *rtoken, size_t rtokenlen, kbmd_token_t *kt)
 {
 	errf_t *ret = ERRF_OK;
 	custr_t *input = NULL;
+	custr_t *new_rtoken = NULL;
 	strarray_t args = STRARRAY_INIT;
+
+	VERIFY(!piv_token_in_txn(kt->kt_piv));
 
 	if ((ret = ecustr_alloc(&input)) != ERRF_OK)
 		goto done;
 
-	if ((ret = strarray_append(&args, "dummy-renametok")) != ERRF_OK ||
+	if ((ret = strarray_append(&args, REPLACE_TOK_CMD)) != ERRF_OK ||
 	    (ret = strarray_append_guid(&args, guid)) != ERRF_OK)
 		goto done;
 
@@ -482,16 +555,21 @@ kbmd_replace_pivtoken(uint8_t guid[restrict], struct piv_token *restrict newpt,
 	 *
 	 * So prepend '<recovery token>\n' to the input data.
 	 */
-	if ((ret = ecustr_append(input, recovery_key)) != ERRF_OK ||
+	if ((ret = ecustr_append_b64(input, rtoken, rtokenlen)) != ERRF_OK ||
 	    (ret = ecustr_appendc(input, '\n')) != ERRF_OK)
 		goto done;
 
-	ret = plugin_pivtoken_common(newpt, new_pin, REPLACE_TOK_CMD,
-	    args.sar_strs, input, new_recovery_keyp);
+	if ((ret = plugin_pivtoken_common(kt->kt_piv, kt->kt_pin,
+	    REPLACE_TOK_PATH, args.sar_strs, input, &new_rtoken)) != ERRF_OK) {
+		goto done;
+	}
+
+	ret = set_recovery_token(kt, new_rtoken);
 
 done:
 	strarray_fini(&args);
 	custr_free(input);
+	custr_free(new_rtoken);
 	return (ret);
 }
 
@@ -501,16 +579,64 @@ kbmd_new_recovery_token(kbmd_token_t *restrict kt, uint8_t **restrict rtokenp,
 {
 	errf_t *ret = ERRF_OK;
 	uint8_t *buf = NULL;
+	strarray_t args = STRARRAY_INIT;
+	int fds[3] = { -1, -1, -1 };
+	pid_t pid;
 
-	/*
-	 * XXX: Write a real implementation.  This is just temporary.
-	 */
-	if ((ret = zalloc(32, &buf)) != ERRF_OK)
-		return (ret);
+	VERIFY(!piv_token_in_txn(kt->kt_piv));
 
-	arc4random_buf(buf, 32);
-	*rtokenp = buf;
-	*rtokenlenp = 32;
+	*rtokenp = NULL;
+	*rtokenlenp = 0;
 
-	return (ERRF_OK);
+	if ((ret = strarray_append(&args, NEW_TOK_CMD)) != ERRF_OK ||
+	    (ret = strarray_append_guid(&args,
+	    piv_token_guid(kt->kt_piv))) != ERRF_OK) {
+		return (errf("PluginError", ret,
+		    "failed to create cmdline for %s", NEW_TOK_CMD));
+	}
+
+	(void) bunyan_debug(tlog, "Running " NEW_TOK_CMD " plugin",
+	    BUNYAN_T_STRING, "path", NEW_TOK_PATH,
+	    BUNYAN_T_STRING, "guid", args.sar_strs[args.sar_n - 1],
+	    BUNYAN_T_END);
+
+	ret = spawn(NEW_TOK_PATH, args.sar_strs, _environ, &pid, fds);
+	strarray_fini(&args);
+	if (ret != ERRF_OK) {
+		return (errf("PluginError", ret, ""));
+	}
+
+	custr_t *data[2] = { 0 };
+	int exitval;
+
+	if ((ret = ecustr_alloc(&data[0])) != ERRF_OK ||
+	    (ret = ecustr_alloc(&data[1])) != ERRF_OK ||
+	    (ret = interact(pid, fds, NULL, 0, data, &exitval)) != ERRF_OK) {
+		custr_free(data[0]);
+		custr_free(data[1]);
+		return (errf("PluginError", ret, ""));
+	}
+
+	if (exitval != 0) {
+		(void) bunyan_warn(tlog,
+		    "New recovery token  plugin returned an error",
+		    BUNYAN_T_STRING, "plugin", NEW_TOK_CMD,
+		    BUNYAN_T_INT32, "retval", (int32_t)exitval,
+		    BUNYAN_T_END);
+
+		ret = errf("PluginError", NULL, "Plugin returned %d (%s)",
+		    exitval, NEW_TOK_CMD);
+	} else {
+		extract_line(data[0]);
+		if (custr_len(data[0]) == 0) {
+			ret = errf("PluginError", NULL,
+			    "script did not return any data");
+		} else {
+			ret = ecustr_fromb64(data[0], rtokenp, rtokenlenp);
+		}
+	}
+
+	custr_free(data[0]);
+	custr_free(data[1]);
+	return (ret);
 }
