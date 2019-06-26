@@ -1,0 +1,28 @@
+#!/bin/bash
+
+#
+# Copyright 2019, Joyent, Inc.
+#
+
+# get-pin: Retrieve the PIN for the given PIV token
+#
+# Args:
+#   $1 = GUID of the PIV token
+#
+# Output:
+#   The pin is written on a single line to stdout.
+#
+# On success 0 is returned, otherwise a non-zero error is returned.
+# kbmd currently only cares about zero vs. non-zero, though any non-zero
+# value is logged by kbmd for troubleshooting purposes.  Currently any
+# stderr output is discarded (until a better way of dealing with it in kbmd
+# is devised).
+
+PIVYTOOL=/usr/sbin/pivy-tool
+CURL=/usr/bin/curl
+ENC=xxx
+
+url="/pivtokens/$1/pin"
+date="$(date +"%a, %e %b %Y %T %Z")"
+sig="$(echo $date | $PIVYTOOL sign 9e | $enc)"
+
