@@ -84,10 +84,11 @@ KBMD_LIBS =		\
 	-luuid		\
 	-lz		\
 	-lzfs		\
+	-lzfs_core	\
 	-lpcsclite
 out/kbmd:	LDLIBS += $(KBMD_LIBS)
 # For flockfile and funlockfile
-out/kbmd:	CPPFLAGS += -D__EXTENSIONS__
+out/kbmd:	CPPFLAGS += -D__EXTENSIONS__ -D_REENTRANT
 
 #
 # We explicitly statically link the pivy code.  We do not want any potentially

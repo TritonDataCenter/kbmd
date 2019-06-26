@@ -104,8 +104,12 @@ add_create_data(nvlist_t *restrict resp, struct ebox *restrict ebox,
 }
 
 /*
- * XXX: Until we integrate the gossip protocol, create a template with
- * just a primary config (from the given token).
+ * Create an ebox template with 'kt' as the PIV token for the primary
+ * config, and the current recovery configuration from the gossip
+ * protocol as the recovery configuration.
+ *
+ * XXX: Until we integrate the gossip protocol support, no recovery
+ * configurations are added (but this is where that should occur).
  */
 errf_t *
 get_template(kbmd_token_t *restrict kt, struct ebox_tpl **restrict tplp)
@@ -204,8 +208,10 @@ assert_token(nvlist_t *restrict req, kbmd_token_t **restrict ktp)
 	 * XXX: Allow caller to specify PIV token and recovery token.
 	 * This is only for testing and should be removed before go live.
 	 */
-	if ((ret = req_has_token(req, ktp)) == ERRF_OK)
+	if ((ret = req_has_token(req, ktp)) == ERRF_OK) {
 		return (ERRF_OK);
+	}
+
 	/*
 	 * Any error but 'not found' means something else has gone wrong and
 	 * should be propagated up stack.
@@ -293,15 +299,10 @@ kbmd_zpool_create(nvlist_t *req)
 	VERIFY3P(add_supplied_template(req, tpl, B_FALSE), ==, ERRF_OK);
 
 	if ((ret = ebox_create(tpl, key, keylen, kt->kt_rtoken,
-	    kt->kt_rtoklen, &ebox)) != ERRF_OK)
-		goto done;
-
-	if ((buf = ebox_alloc_private(ebox, datasetlen + 1)) == NULL) {
-		ret = errfno("ebox_alloc_private", errno,
-		    "cannot set ebox private data");
+	    kt->kt_rtoklen, &ebox)) != ERRF_OK ||
+	    (ret = set_box_name(ebox, dataset)) != ERRF_OK) {
 		goto done;
 	}
-	(void) strlcpy(dataset, buf, datasetlen + 1);
 
 	if ((ret = add_create_data(resp, ebox, key, keylen)) != ERRF_OK ||
 	    (ret = envlist_add_boolean_value(resp, KBM_NV_SUCCESS,

@@ -509,50 +509,6 @@ generate_certs(struct piv_token *pk)
 }
 
 /*
- * Take a base64 encoded recovery token value and convert to a raw array
- * of bytes.  Caller must free *rawp when done.
- */
-static errf_t *
-convert_recovery_token(custr_t *restrict b64, uint8_t **restrict rawp,
-    size_t *restrict lenp)
-{
-	errf_t *ret = ERRF_OK;
-	struct sshbuf *buf = NULL;
-	size_t len;
-	int rc;
-
-	if ((buf = sshbuf_new()) == NULL)
-		return (errfno("sshbuf_new", errno, ""));
-
-	rc = sshbuf_b64tod(buf, custr_cstr(b64));
-	if (rc != SSH_ERR_SUCCESS) {
-		sshbuf_free(buf);
-		return (ssherrf("sshbuf_b64tod", rc,
-		    "cannot decode recovery token"));
-	}
-
-	len = sshbuf_len(buf);
-	if ((*rawp = malloc(len)) == NULL) {
-		ret = errfno("malloc", errno, "");
-		sshbuf_free(buf);
-		return (ret);
-	}
-
-	rc = sshbuf_get(buf, *rawp, len);
-	if (rc != SSH_ERR_SUCCESS) {
-		ret = ssherrf("sshbuf_get", rc, "");
-		sshbuf_free(buf);
-		freezero(*rawp, len);
-		*rawp = NULL;
-		return (ret);
-	}
-
-	*lenp = len;
-	sshbuf_free(buf);
-	return (ERRF_OK);
-}
-
-/*
  * Largely taken from pivy/piv-tool.c cmd_init().  Initialize a piv token
  * and write the guid of the piv token to 'guid'.
  */
@@ -604,7 +560,7 @@ init_token(uint8_t guid[restrict])
 	}
 
 	if (pk == NULL) {
-		return (errf("SetupError", NULL,
+		return (errf("NotFoundError", NULL,
 		    "no uninitialized tokens are present"));
 	}
 
@@ -769,23 +725,18 @@ kbmd_setup_token(kbmd_token_t **ktp)
 
 	piv_txn_end(pk);
 
+	(*ktp)->kt_piv = pk;
+	pk = NULL;
+
 	/*
 	 * XXX: If this fails due to network issues, it would be nice at
 	 * some point to support retrying without requiring the operator
 	 * to reset the token and then re-init it.
 	 */
-	if ((ret = kbmd_register_pivtoken(pk, (*ktp)->kt_pin,
-	    &recovery)) != ERRF_OK) {
+	if ((ret = kbmd_register_pivtoken(*ktp)) != ERRF_OK) {
 		goto fail;
 	}
 
-	ret = convert_recovery_token(recovery, &(*ktp)->kt_rtoken,
-	    &(*ktp)->kt_rtoklen);
-	custr_free(recovery);
-	if (ret != ERRF_OK)
-		goto fail;
-
-	(*ktp)->kt_piv = pk;
 	return (ERRF_OK);
 
 fail:
@@ -919,15 +870,15 @@ kbmd_verify_pin(kbmd_token_t *kt)
 
 	VERIFY3U(pinlen, >=, PIN_MIN_LENGTH);
 	VERIFY3U(pinlen, <=, PIN_MAX_LENGTH);
-
 	VERIFY(piv_token_in_txn(kt->kt_piv));
 
+	pin_auth = piv_token_default_auth(kt->kt_piv);
+
 	(void) bunyan_debug(tlog, "Verifying PIN of PIV token",
-	    BUNYAN_T_STRING, "piv_guid", piv_token_guid(kt->kt_piv),
+	    BUNYAN_T_STRING, "piv_guid", piv_token_guid_hex(kt->kt_piv),
 	    BUNYAN_T_STRING, "auth", piv_pin_str(pin_auth),
 	    BUNYAN_T_END);
 
-	pin_auth = piv_token_default_auth(kt->kt_piv);
 	return (piv_verify_pin(kt->kt_piv, pin_auth, kt->kt_pin, NULL, B_TRUE));
 }
 

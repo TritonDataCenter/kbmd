@@ -38,11 +38,6 @@ enum part_state {
 	PART_STATE_UNLOCKED
 };
 
-#define	CFG_FOREACH(_cfg, _box)				\
-	for ((_cfg) = ebox_next_config((_box), NULL);	\
-	(_cfg) != NULL;					\
-	(_cfg) = ebox_next_config((_box), (_cfg)))
-
 struct config_question {
 	struct ebox_config *cq_cfg;
 	char	cq_desc[128];
@@ -171,7 +166,7 @@ start_recovery(recovery_t *restrict r, struct ebox_config *restrict cfg)
 }
 
 static errf_t *
-recovery_alloc_cb(const struct ebox_tpl *tpl __unused,
+recovery_alloc_cb(struct ebox_tpl *tpl __unused,
     struct ebox_tpl_config *tcfg, void *arg)
 {
 	size_t *np = arg;
@@ -232,7 +227,7 @@ recovery_alloc(pid_t pid, struct ebox *ebox, recovery_t **rp)
 	} while (recovery_get(r->r_id, pid) != NULL);
 
 	n = 0;
-	CFG_FOREACH(cfg, ebox) {
+	while ((cfg = ebox_next_config(ebox, cfg)) != NULL) {
 		tcfg = ebox_config_tpl(cfg);
 
 		if (ebox_tpl_config_type(tcfg) != EBOX_RECOVERY)
@@ -249,6 +244,7 @@ recovery_alloc(pid_t pid, struct ebox *ebox, recovery_t **rp)
 				return (errf("RecoveryFailure", ret,
 				    "failed to initialize recovery instance"));
 			}
+			n++;
 			break;
 		}
 
@@ -280,7 +276,7 @@ struct get_config_resp_data {
 };
 
 static errf_t *
-get_config_resp_cb(const struct ebox_tpl *tpl, struct ebox_tpl_config *tcfg,
+get_config_resp_cb(struct ebox_tpl *tpl, struct ebox_tpl_config *tcfg,
  void *arg)
 {
 	struct get_config_resp_data *data = arg;
@@ -318,7 +314,7 @@ struct select_config_data {
 };
 
 static errf_t *
-select_config_cb(const struct ebox_tpl *tpl __unused,
+select_config_cb(struct ebox_tpl *tpl __unused,
     struct ebox_tpl_config *tcfg, void *arg)
 {
 	errf_t *ret = ERRF_OK;
@@ -437,31 +433,46 @@ process_chal_response(recovery_t *restrict r, nvlist_t *restrict resp)
 	enum part_state *pstate = NULL;
 	struct ebox_part *part = NULL;
 
-	if (nvlist_lookup_string(resp, KBM_NV_ANSWER, &answer) != 0)
+	if (nvlist_lookup_string(resp, KBM_NV_ANSWER, &answer) != 0) {
+		(void) bunyan_debug(tlog, "No answer in response",
+		    BUNYAN_T_END);
 		return (ERRF_OK);
+	}
 
-	if ((buf = sshbuf_new()) == NULL)
+	if ((buf = sshbuf_new()) == NULL) {
 		return (errf("OutOfMemory", NULL, ""));
+	}
 
-	if (sshbuf_b64tod(buf, answer) != 0)
+	if (sshbuf_b64tod(buf, answer) != 0) {
+		ret = errf("ChallengeError", NULL,
+		    "Failed to decode challenge response");
 		goto done;
+	}
 
 	pbuf = sshbuf_fromb(buf);
-	if (sshbuf_get_piv_box(pbuf, &box) != 0)
+	if (sshbuf_get_piv_box(pbuf, &box) != 0) {
+		ret = errf("ChallengeError", NULL,
+		    "Invalid challenge response");
 		goto done;
+	}
 
-	/*
-	 * A failed response just means we keep asking, and not a fatal error.
-	 */
 	if ((ret = ebox_challenge_response(r->r_cfg, box, &part)) != ERRF_OK) {
-		/*  XXX: warn failed + maybe msg to user? */
-		errf_free(ret);
-		ret = ERRF_OK;
 		goto done;
 	}
 
 	pstate = ebox_part_private(part);
 	if (*pstate != PART_STATE_UNLOCKED) {
+		struct ebox_tpl_part *tpart = ebox_part_tpl(part);
+		const char *pname = ebox_tpl_part_name(tpart);
+
+		if (pname == NULL) {
+			pname = "(not set)";
+		}
+
+		(void) bunyan_debug(tlog, "Unlocked part",
+		    BUNYAN_T_STRING, "partname", pname,
+		    BUNYAN_T_END);
+
 		*pstate = PART_STATE_UNLOCKED;
 		r->r_n--;
 		r->r_m--;
@@ -470,6 +481,187 @@ process_chal_response(recovery_t *restrict r, nvlist_t *restrict resp)
 done:
 	sshbuf_free(buf);
 	sshbuf_free(pbuf);
+	return (ret);
+}
+
+static errf_t *
+strip_primary_cb(struct ebox_tpl *tpl, struct ebox_tpl_config *tcfg,
+    void *arg __unused)
+{
+	if (ebox_tpl_config_type(tcfg) == EBOX_PRIMARY) {
+		ebox_tpl_remove_config(tpl, tcfg);
+	}
+	return (ERRF_OK);
+}
+
+/*
+ * Combine an EBOX_PRIMARY config for kt and the EBOX_RECOVERY config(s)
+ * from oldtpl into *newtplp.
+ */
+static errf_t *
+create_replacement_tpl(kbmd_token_t *kt, struct ebox_tpl *oldtpl,
+    struct ebox_tpl **newtplp)
+{
+	errf_t *ret = ERRF_OK;
+	struct ebox_tpl *newtpl = NULL;
+	struct ebox_tpl_config *newpri = NULL;
+
+	/*
+	 * We can't clone an ebox_tpl_config directly, so we create a
+	 * complete copy of the old config, then remove the EBOX_PRIMARY
+	 * config(s) and then add the new EBOX_PRIMARY.
+	 */
+	if ((newtpl = ebox_tpl_clone(oldtpl)) == NULL) {
+		return (errfno("ebox_tpl_clone", errno,
+		    "cannot clone template"));
+	}
+
+	if ((ret = create_piv_tpl_config(kt, &newpri)) != ERRF_OK) {
+		ebox_tpl_free(newtpl);
+		return (ret);
+	}
+
+	VERIFY0(ebox_tpl_foreach_cfg(newtpl, strip_primary_cb, NULL));
+	ebox_tpl_add_config(newtpl, newpri);
+	*newtplp = newtpl;
+	return (ERRF_OK);
+}
+
+struct update_data {
+	kbmd_token_t	*ud_tok;
+	const uint8_t	*ud_rtoken;
+	size_t		ud_rtokenlen;
+};
+
+static errf_t *
+piv_update_cb(struct ebox_tpl *tpl, struct ebox_tpl_config *tcfg, void *arg)
+{
+	errf_t *ret = ERRF_OK;
+	struct update_data *data = arg;
+	struct ebox_tpl_part *tpart = NULL;
+
+	if (ebox_tpl_config_type(tcfg) != EBOX_PRIMARY) {
+		return (ERRF_OK);
+	}
+
+	/*
+	 * Since this is an EBOX_PRIMARY config, we assume a single
+	 * template part.
+	 */
+	tpart = ebox_tpl_config_next_part(tcfg, NULL);
+
+	if ((ret = kbmd_replace_pivtoken(ebox_tpl_part_guid(tpart), GUID_LEN,
+	    data->ud_rtoken, data->ud_rtokenlen, data->ud_tok)) == ERRF_OK) {
+		return (FOREACH_STOP);
+	}
+
+	errf_free(ret);
+	return (ERRF_OK);
+}
+
+static errf_t *
+do_piv_update(struct ebox *ebox, kbmd_token_t *newkt, const uint8_t *rtoken,
+    size_t rtokenlen)
+{
+	errf_t *ret = ERRF_OK;
+	struct update_data data = {
+		.ud_tok = newkt,
+		.ud_rtoken = rtoken,
+		.ud_rtokenlen = rtokenlen
+	};
+
+	/*
+	 * It's possible, though rare that an ebox could have multiple
+	 * primary configs, in which case we're not sure which GUID from
+	 * the template will successfully match w/ the recovered token
+	 * when we call the update plugin.  So try each one until we succeed
+	 * or exhaust the list.
+	 */
+	VERIFY0(ebox_tpl_foreach_cfg(ebox_tpl(ebox), piv_update_cb, &data));
+
+	if (newkt->kt_rtoken != NULL) {
+		return (ERRF_OK);
+	}
+
+	/*
+	 * XXX: Not thrilled with this error message -- basically trying
+	 * to replace the token in KBMAPI failed, but if we're also planning
+	 * to make this Triton agnostic, mentioning KBMAPI seems wrong.
+	 */
+	return (errf("RecoverError", NULL,
+	    "failed to update PIV token information"));
+}
+
+static errf_t *
+post_recovery(recovery_t *r)
+{
+	errf_t *ret = ERRF_OK;
+	kbmd_token_t *kt = NULL;
+	struct ebox *new_ebox = NULL;
+	struct ebox_tpl *tpl = NULL;
+	const char *dataset = NULL;
+	const uint8_t *key = NULL, *rtoken = NULL;
+	size_t keylen = 0, rtokenlen = 0;
+
+	dataset = ebox_private(r->r_ebox);
+
+	key = ebox_key(r->r_ebox, &keylen);
+	rtoken = ebox_recovery_token(r->r_ebox, &rtokenlen);
+
+	VERIFY3P(rtoken, !=, NULL);
+	VERIFY3P(key, !=, NULL);
+
+	if ((ret = load_key(dataset, key, keylen)) != ERRF_OK) {
+		return (ret);
+	}
+
+	if (IS_ZPOOL(dataset)) {
+		kbmd_mount_zpool(dataset, NULL);
+	}
+
+	mutex_enter(&piv_lock);
+
+	if ((ret = kbmd_setup_token(&kt)) != ERRF_OK) {
+		if (errf_caused_by(ret, "NotFoundError")) {
+			/*
+			 * XXX: Might we also want to spit this out to
+			 * syslog and/or the console?
+			 */
+			(void) bunyan_warn(tlog,
+			    "No uninitialized tokens found for replacement; "
+			    "recovery will need to be run again when one is "
+			    "available",
+			    BUNYAN_T_END);
+		} else {
+			ret = errf("RecoveryError", ret,
+			    "cannot setup replacement token");
+		}
+
+		mutex_exit(&piv_lock);
+		return (ret);
+	}
+
+	if ((ret = create_replacement_tpl(kt, ebox_tpl(r->r_ebox),
+	    &tpl)) != ERRF_OK) {
+		mutex_exit(&piv_lock);
+		kbmd_token_free(kt);
+		return (ret);
+	}
+
+	mutex_exit(&piv_lock);
+
+	if ((ret = do_piv_update(r->r_ebox, kt, rtoken,
+	    rtokenlen)) != ERRF_OK) {
+		kbmd_token_free(kt);
+		return (ret);
+	}
+
+	if ((ret = kbmd_ebox_clone(r->r_ebox, &new_ebox, tpl, kt)) != ERRF_OK ||
+	    (ret = kbmd_put_ebox(new_ebox)) != ERRF_OK) {
+		ebox_free(new_ebox);
+		return (ret);
+	}
+
 	return (ERRF_OK);
 }
 
@@ -487,13 +679,60 @@ challenge(nvlist_t *restrict req, nvlist_t *restrict resp,
 	size_t wordlen = 0;
 	size_t m;
 
+	(void) bunyan_trace(tlog, "challenge(): enter", BUNYAN_T_END);
+
 	ASSERT(MUTEX_HELD(&recovery_lock));
 
-	if ((ret = process_chal_response(r, resp)) != ERRF_OK)
-		return (ret);
+	/*
+	 * Any failures with processing a response are noted, but otherwise
+	 * ignored.
+	 */
+	if ((ret = process_chal_response(r, req)) != ERRF_OK) {
+		(void) bunyan_info(tlog, "Failed to process challenge response",
+		    BUNYAN_T_STRING, "caused_by", errf_name(ret),
+		    BUNYAN_T_STRING, "errmsg", errf_message(ret),
+		    BUNYAN_T_STRING, "err_func", errf_function(ret),
+		    BUNYAN_T_STRING, "err_file", errf_file(ret),
+		    BUNYAN_T_UINT32, "err_line", (uint32_t)errf_line(ret),
+		    BUNYAN_T_END);
+		errf_free(ret);
+		ret = ERRF_OK;
+	}
 
 	if (r->r_n == 0) {
-		ret = envlist_add_boolean(resp, KBM_NV_RECOVERY_COMPLETE);
+		(void) bunyan_debug(tlog,
+		    "challenge threshold met; decrypting box",
+		    BUNYAN_T_END);
+
+		if ((ret = ebox_recover(r->r_ebox, r->r_cfg)) != ERRF_OK ||
+		    (ret = post_recovery(r)) != ERRF_OK) {
+			(void) bunyan_info(tlog, "Recovery failed",
+			    BUNYAN_T_STRING, "caused_by", errf_name(ret),
+			    BUNYAN_T_STRING, "errmsg", errf_message(ret),
+			    BUNYAN_T_STRING, "err_func", errf_function(ret),
+			    BUNYAN_T_STRING, "err_file", errf_file(ret),
+			    BUNYAN_T_UINT32, "err_line",
+			    (uint32_t)errf_line(ret),
+			    BUNYAN_T_END);
+		} else {
+			(void) bunyan_info(tlog, "Recovery complete",
+			    BUNYAN_T_END);
+		}
+
+		/*
+		 * No matter the result of the recovery, once we hit
+		 * the threshold, we're done recovering, so tell kbmadm
+		 * we're done.
+		 *
+		 * If adding this fails, it just means kbmadm might generate
+		 * an error. Realistically, this only happens when the
+		 * system is extremely starved for memory.  Under such
+		 * circumstances, it's unlikely much of anything
+		 * will actually be working correctly.
+		 *
+		 */
+		(void) nvlist_add_boolean(resp, KBM_NV_RECOVERY_COMPLETE);
+
 		kbmd_unwatch_pid(r->r_pid);
 		list_remove(&recovery_list, r);
 		recovery_free(r);
@@ -510,15 +749,19 @@ challenge(nvlist_t *restrict req, nvlist_t *restrict resp,
 		goto done;
 	}
 
-	if ((ret = envlist_add_uint32(resp, KBM_NV_REMAINING,
-	    r->r_m)) != ERRF_OK)
+	if ((ret = envlist_add_int32(resp, KBM_NV_ACTION,
+	    KBM_ACT_CHALLENGE)) != ERRF_OK ||
+	    (ret = envlist_add_uint32(resp, KBM_NV_REMAINING,
+	    r->r_m)) != ERRF_OK) {
 		goto done;
+	}
 
 	m = 0;
 	while ((part = ebox_config_next_part(cfg, part)) != NULL) {
 		enum part_state *statep;
+		struct ebox_tpl_part *tpart = ebox_part_tpl(part);
 		const struct ebox_challenge *chal;
-		char **tmp;
+		const char **tmp;
 
 		statep = ebox_part_private(part);
 		if (*statep == PART_STATE_UNLOCKED)
@@ -526,6 +769,11 @@ challenge(nvlist_t *restrict req, nvlist_t *restrict resp,
 
 		chal = ebox_part_challenge(part);
 		words = ebox_challenge_words(chal, &wordlen);
+
+		(void) bunyan_trace(tlog, "Adding challenge part",
+		    BUNYAN_T_STRING, "partname", ebox_tpl_part_name(tpart),
+		    BUNYAN_T_UINT32, "wordlen", (uint32_t)wordlen,
+		    BUNYAN_T_END);
 
 		sshbuf_reset(buf);
 		if ((ret = sshbuf_put_ebox_challenge(buf, chal)) != ERRF_OK)
@@ -536,8 +784,11 @@ challenge(nvlist_t *restrict req, nvlist_t *restrict resp,
 			ret = errfno("reallocarray", errno, "");
 			goto done;
 		}
-		for (size_t i = 0; i < wordlen; i++)
+		wordstrs = tmp;
+
+		for (size_t i = 0; i < wordlen; i++) {
 			wordstrs[i] = wordlist[words[i]];
+		}
 
 		if ((ret = add_challenge(&nvls[m], ebox_part_tpl(part), buf,
 		    wordstrs, wordlen)) != ERRF_OK)
@@ -568,13 +819,26 @@ recover_common(nvlist_t *restrict req, recovery_t *restrict r)
 
 	ASSERT(MUTEX_HELD(&recovery_lock));
 
-	if ((ret = envlist_alloc(&resp)) != ERRF_OK)
-		goto fail;
+	(void) bunyan_key_add(tlog, "recover_id", BUNYAN_T_UINT32, r->r_id);
+
+	if ((ret = envlist_alloc(&resp)) != ERRF_OK) {
+		goto done;
+	}
+
+	if ((ret = envlist_add_uint32(resp, KBM_NV_RECOVER_ID,
+	    r->r_id)) != ERRF_OK) {
+		ret = errf("InternalError", ret,
+		    "user response is missing a recovery id");
+		goto done;
+	}
 
 	if ((nvlist_lookup_boolean(req, KBM_NV_RESP_QUIT)) == 0) {
+		(void) bunyan_info(tlog, "User terminated recovery",
+		    BUNYAN_T_END);
+
 		if ((ret = envlist_add_boolean(resp,
 		    KBM_NV_RESP_QUIT)) != ERRF_OK) {
-			goto fail;
+			goto done;
 		}
 		goto done;
 	}
@@ -608,19 +872,19 @@ recover_common(nvlist_t *restrict req, recovery_t *restrict r)
 	ret = challenge(req, resp, r);
 
 done:
-	if ((ret = envlist_add_boolean_value(resp, KBM_NV_SUCCESS,
-	    B_TRUE)) != ERRF_OK) {
-		goto fail;
+	if (ret == ERRF_OK) {
+		ret = envlist_add_boolean_value(resp, KBM_NV_SUCCESS, B_TRUE);
 	}
 
 	nvlist_free(req);
 	mutex_exit(&recovery_lock);
-	kbmd_ret_nvlist(resp);
+	(void) bunyan_key_remove(tlog, "recover_id");
 
-fail:
-	nvlist_free(req);
-	mutex_exit(&recovery_lock);
-	kbmd_ret_error(ret);
+	if (ret == ERRF_OK) {
+		kbmd_ret_nvlist(resp);
+	} else {
+		kbmd_ret_error(ret);
+	}
 }
 
 void
@@ -629,6 +893,9 @@ kbmd_recover_start(nvlist_t *req, pid_t pid)
 	errf_t *ret = ERRF_OK;
 	struct ebox *ebox = NULL;
 	recovery_t *r = NULL;
+
+	(void) bunyan_trace(tlog, "kbmd_recover_start: enter",
+	    BUNYAN_T_END);
 
 	if ((ret = kbmd_get_ebox(zones_dataset, &ebox)) != ERRF_OK)
 		goto fail;
@@ -641,6 +908,10 @@ kbmd_recover_start(nvlist_t *req, pid_t pid)
 		goto fail;
 	}
 	ebox = NULL;
+
+	(void) bunyan_info(tlog, "Recovery started",
+	    BUNYAN_T_UINT32, "recover_id", r->r_id,
+	    BUNYAN_T_END);
 
 	return (recover_common(req, r));
 
@@ -659,14 +930,18 @@ kbmd_recover_resp(nvlist_t *req, pid_t pid)
 	uint32_t id;
 
 	if ((ret = envlist_lookup_uint32(req, KBM_NV_RECOVER_ID,
-	    &id)) != ERRF_OK)
+	    &id)) != ERRF_OK) {
+		ret = errf("InternalError", ret,
+		    "response is missing a recovery id");
 		kbmd_ret_error(ret);
+	}
 
 	mutex_enter(&recovery_lock);
 	if ((r = recovery_get(id, pid)) == NULL) {
 		mutex_exit(&recovery_lock);
 		ret = errf("NotFoundError", NULL,
-		   "no matching recovery session found");
+		   "no matching recovery session for id %" PRIu32 " found",
+		   id);
 		kbmd_ret_error(ret);
 	}
 
@@ -719,15 +994,20 @@ kbmd_update_recovery(nvlist_t *req)
 	}
 	VERIFY3P(zones_dataset, !=, NULL);
 
-	if ((ret = get_template(kpiv, &tpl)) != ERRF_OK ||
+	if ((ret = piv_txn_begin(kpiv->kt_piv)) != ERRF_OK ||
+	    (ret = piv_select(kpiv->kt_piv)) != ERRF_OK ||
+	    (ret = get_template(kpiv, &tpl)) != ERRF_OK ||
 	    (ret = add_supplied_template(req, tpl, B_TRUE)) != ERRF_OK) {
+		piv_txn_end(kpiv->kt_piv);
 		mutex_exit(&piv_lock);
+		ebox_tpl_free(tpl);
 		nvlist_free(resp);
 		kbmd_ret_error(ret);
 	}
 
 	if ((ret = kbmd_get_ebox(zones_dataset, &ebox_old)) != ERRF_OK ||
 	    (ret = kbmd_unlock_ebox(ebox_old, &kt)) != ERRF_OK) {
+		piv_txn_end(kpiv->kt_piv);
 		mutex_exit(&piv_lock);
 		nvlist_free(resp);
 		kbmd_ret_error(ret);
@@ -736,16 +1016,19 @@ kbmd_update_recovery(nvlist_t *req)
 	VERIFY0(strcmp(ebox_private(ebox_old), zones_dataset));
 
 	if ((ret = kbmd_ebox_clone(ebox_old, &ebox_new, tpl, kt)) != ERRF_OK) {
+		piv_txn_end(kpiv->kt_piv);
 		mutex_exit(&piv_lock);
 		nvlist_free(resp);
 		ebox_tpl_free(tpl);
 		kbmd_ret_error(ret);
 	}
 
+	piv_txn_end(kpiv->kt_piv);
+
 	if ((ret = kbmd_put_ebox(ebox_new)) != ERRF_OK) {
+		mutex_exit(&piv_lock);
 		nvlist_free(resp);
 		ebox_tpl_free(tpl);
-		mutex_exit(&piv_lock);
 		kbmd_ret_error(ret);
 	}
 
@@ -758,5 +1041,6 @@ kbmd_update_recovery(nvlist_t *req)
 	kbmd_set_token(kt);
 
 	mutex_exit(&piv_lock);
+	ebox_tpl_free(tpl);
 	kbmd_ret_nvlist(resp);
 }

@@ -292,8 +292,9 @@ ebox_tpl_foreach_cfg(struct ebox_tpl *tpl, ebox_tpl_cb_t cb, void *arg)
 
 	for (cfg = ebox_tpl_next_config(tpl, NULL); cfg != NULL; cfg = next) {
 		next = ebox_tpl_next_config(tpl, cfg);
-		if ((ret = cb(tpl, cfg, arg)) != ERRF_OK)
-			return (ret);
+		if ((ret = cb(tpl, cfg, arg)) != ERRF_OK) {
+			return ((ret == FOREACH_STOP) ? ERRF_OK : ret);
+		}
 	}
 
 	return (ERRF_OK);
@@ -643,8 +644,14 @@ kbmd_rotate_zfs_ebox(const char *dataset)
 
 	uprops = zfs_get_user_props(zhp);
 
-	if ((ret = get_property_str(uprops, BOX_NEWPROP, &new)) != ERRF_OK)
+	if ((ret = get_property_str(uprops, BOX_NEWPROP, &new)) != ERRF_OK) {
+		if (errf_caused_by(ret, "ENOENT")) {
+			errf_free(ret);
+			ret = ERRF_OK;
+		}
+
 		goto done;
+	}
 
 	/*
 	 * If there is a 'new' ebox, we always want to try to move it to
@@ -652,8 +659,9 @@ kbmd_rotate_zfs_ebox(const char *dataset)
 	 * but some other problem suggests a bigger problem and we abort.
 	 */
 	if ((ret = get_property_str(uprops, BOX_PROP, &old)) != ERRF_OK &&
-	    !errf_caused_by(ret, "ENOENT"))
+	    !errf_caused_by(ret, "ENOENT")) {
 		goto done;
+	}
 
 	/*
 	 * Currently, there is no way to do this atomically, so we remove the
@@ -663,19 +671,22 @@ kbmd_rotate_zfs_ebox(const char *dataset)
 	 * altering this to do the change using a channel program so everything
 	 * happens in a single TXG.
 	 */
-	if ((ret = ezfs_prop_inherit(zhp, BOX_PROP)) != ERRF_OK)
+	if ((ret = ezfs_prop_inherit(zhp, BOX_PROP)) != ERRF_OK) {
 		goto done;
+	}
 
 	if ((ret = envlist_alloc(&newprops)) != ERRF_OK ||
 	    (ret = envlist_add_string(newprops, BOX_PROP, new)) != ERRF_OK ||
-	    (ret = ezfs_prop_set_list(zhp, newprops)) != ERRF_OK)
+	    (ret = ezfs_prop_set_list(zhp, newprops)) != ERRF_OK) {
 		goto done;
+	}
 
 	ret = ezfs_prop_inherit(zhp, BOX_NEWPROP);
 
 done:
-	if(zhp != NULL)
+	if(zhp != NULL) {
 		zfs_close(zhp);
+	}
 	mutex_exit(&g_zfs_lock);
 	nvlist_free(newprops);
 	return (ret);

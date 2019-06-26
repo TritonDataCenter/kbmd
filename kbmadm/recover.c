@@ -13,9 +13,11 @@
  * Copyright 2019 Joyent, Inc.
  */
 
+#include <ctype.h>
 #include <errno.h>
 #include <libtecla.h>
 #include <limits.h>
+#include <regex.h>
 #include <string.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -26,31 +28,33 @@
 #include "kbm.h"
 #include "pivy/errf.h"
 
+static const char r_begin[] = "-+ *begin response";
+static const char r_end[] = "-+ *end response";
+static regex_t rc_begin;
+static regex_t rc_end;
+static boolean_t rc_compiled;
+
 /*
  * To avoid copy/paste issues with the challenge value, we conservatively
  * wrap the output at 60 columns.
  */
 #define	CHALLENGE_COLS 60
 
+static void assert_regex(void);
 static const char *get_prompt(nvlist_t *restrict, const char *);
 static errf_t *get_action(nvlist_t *restrict, kbm_act_t *restrict);
-static errf_t *select_config(GetLine *restrict, nvlist_t *restrict,
-    nvlist_t *restrict);
-static errf_t *challenge(GetLine *restrict, nvlist_t *restrict,
-    nvlist_t *restrict);
+static errf_t *get_answer(GetLine *restrict, const char *, custr_t **restrict);
+static errf_t *select_config(nvlist_t *restrict, nvlist_t *restrict);
+static errf_t *challenge(nvlist_t *restrict, nvlist_t *restrict);
 static boolean_t recovery_complete(nvlist_t *);
 static errf_t *readline(GetLine *restrict, const char *, char **restrict);
 static void printwrap(FILE *, const char *, size_t);
 
-errf_t *
-do_recover(int argc, char **argv)
+static errf_t *
+create_gl(GetLine **glp)
 {
-	errf_t *ret = ERRF_OK;
-	FILE *term = NULL;
 	GetLine *gl = NULL;
-	nvlist_t *req = NULL, *resp = NULL;
-	uint32_t id;
-	int fd = -1;
+	FILE *term = NULL;
 
 	if ((gl = new_GetLine(1024, 1024)) == NULL)
 		return (errfno("new_GetLine", errno, "cannot setup terminal"));
@@ -60,6 +64,29 @@ do_recover(int argc, char **argv)
 
 	gl_change_terminal(gl, term, term, getenv("TERM"));
 
+	*glp = gl;
+	return (ERRF_OK);
+}
+
+errf_t *
+do_recover(int argc, char **argv)
+{
+	errf_t *ret = ERRF_OK;
+	nvlist_t *req = NULL, *resp = NULL;
+	uint32_t id;
+	int fd = -1;
+
+	if (isatty(STDIN_FILENO) == 0) {
+		if (errno != ENOTTY) {
+			ret = errfno("isatty", errno,
+			    "unable to determine status of stdin");
+		} else {
+			ret = errf("RecoveryError", NULL,
+			    "recovery must be run from a terminal");
+		}
+		return (ret);
+	}
+
 	if ((ret = req_new(KBM_CMD_RECOVER_START, &req)) != ERRF_OK ||
 	    (ret = open_door(&fd)) != ERRF_OK ||
 	    (ret = nv_door_call(fd, req, &resp)) != ERRF_OK ||
@@ -67,8 +94,11 @@ do_recover(int argc, char **argv)
 		goto done;
 
 	if ((ret = envlist_lookup_uint32(resp, KBM_NV_RECOVER_ID,
-	    &id)) != ERRF_OK)
+	    &id)) != ERRF_OK) {
+		ret = errf("RecoverError", ret,
+		    "kbmd response is missing a recovery id");
 		goto done;
+	}
 
 	nvlist_free(req);
 	req = NULL;
@@ -80,16 +110,16 @@ do_recover(int argc, char **argv)
 			goto done;
 
 		if ((ret = req_new(KBM_CMD_RECOVER_RESP, &req)) != ERRF_OK ||
-		    (ret = envlist_add_int32(req, KBM_NV_RECOVER_ID,
+		    (ret = envlist_add_uint32(req, KBM_NV_RECOVER_ID,
 		    id)) != ERRF_OK)
 			goto done;
 
 		switch (action) {
 		case KBM_ACT_CONFIG:
-			ret = select_config(gl, resp, req);
+			ret = select_config(resp, req);
 			break;
 		case KBM_ACT_CHALLENGE:
-			ret = challenge(gl, resp, req);
+			ret = challenge(resp, req);
 			break;
 		}
 
@@ -109,31 +139,35 @@ done:
 		(void) close(fd);
 	nvlist_free(req);
 	nvlist_free(resp);
-
-	if (gl != NULL)
-		del_GetLine(gl);
-	(void) fclose(term);
-
 	return (ret);
 }
 
 static errf_t *
-select_config(GetLine *restrict gl, nvlist_t *restrict q,
-    nvlist_t *restrict req)
+select_config(nvlist_t *restrict q, nvlist_t *restrict req)
 {
-	errf_t *ret;
+	errf_t *ret = ERRF_OK;
+	GetLine *gl = NULL;
 	const char *prompt = NULL;
 	char *response = NULL;
 	nvlist_t **cfg = NULL;
 	uint_t ncfg = 0;
 	int c;
 
-	if ((ret = envlist_lookup_nvlist_array(q, KBM_NV_CONFIGS, &cfg,
-	    &ncfg)) != ERRF_OK) {
-		return (errf("InternalError", ret,
-		    "response is missing '%s' value", KBM_NV_CONFIGS));
+	if ((ret  = create_gl(&gl)) != ERRF_OK) {
+		return (ret);
 	}
 
+	if ((ret = envlist_lookup_nvlist_array(q, KBM_NV_CONFIGS, &cfg,
+	    &ncfg)) != ERRF_OK) {
+		ret = errf("InternalError", ret,
+		    "response is missing '%s' value", KBM_NV_CONFIGS);
+		del_GetLine(gl);
+		return (ret);
+	}
+
+	/*
+	 * If no prompt was given, we use a default value
+	 */
 	(void) nvlist_lookup_string(q, KBM_NV_PROMPT, (char **)&prompt);
 
 	(void) printf("Select recovery configuration:\n");
@@ -145,43 +179,55 @@ select_config(GetLine *restrict gl, nvlist_t *restrict q,
 		if ((ret = envlist_lookup_string(cfg[i], KBM_NV_DESC,
 		    &desc)) != ERRF_OK ||
 		    (ret = envlist_lookup_string(cfg[i], KBM_NV_ANSWER,
-		    &ans)) != ERRF_OK)
+		    &ans)) != ERRF_OK) {
+			del_GetLine(gl);
 			return (ret);
+		}
 
 		(void) printf("%s. %s\n", ans, desc);
 	}
 
 	prompt = get_prompt(q, "> ");
 
-	if ((ret = readline(gl, prompt, &response)) != ERRF_OK)
+	if ((ret = readline(gl, prompt, &response)) != ERRF_OK) {
+		del_GetLine(gl);
 		return (ret);
+	}
 
 	ret = envlist_add_string(req, KBM_NV_ANSWER, response);
 	free(response);
+	del_GetLine(gl);
 
 	return (ret);
 }
 
 static errf_t *
-challenge(GetLine *restrict gl, nvlist_t *restrict q,
-    nvlist_t *restrict req)
+challenge(nvlist_t *restrict q, nvlist_t *restrict req)
 {
 	errf_t *ret;
+	GetLine *gl = NULL;
 	const char *prompt;
 	nvlist_t **parts;
-	custr_t *desc;
-	char *answer = NULL;
+	custr_t *desc = NULL, *answer = NULL;
 	uint_t nparts;
 	uint32_t remain;
 
-	if ((ret = ecustr_alloc(&desc)) != ERRF_OK)
+	if ((ret = ecustr_alloc(&desc)) != ERRF_OK ||
+	    (ret = create_gl(&gl)) != ERRF_OK) {
+		if (gl != NULL)
+			del_GetLine(gl);
 		return (ret);
+	}
 
 	if ((ret = envlist_lookup_nvlist_array(q, KBM_NV_PARTS, &parts,
 	    &nparts)) != ERRF_OK ||
 	    (ret = envlist_lookup_uint32(q, KBM_NV_REMAINING,
-	    &remain)) != ERRF_OK)
+	    &remain)) != ERRF_OK) {
+		custr_free(desc);
+		del_GetLine(gl);
 		return (ret);
+
+	}
 
 	(void) printf("Remaining challenges (%u required):\n", remain);
 
@@ -230,7 +276,7 @@ challenge(GetLine *restrict gl, nvlist_t *restrict q,
 		printwrap(stdout, challenge, CHALLENGE_COLS);
 		(void) printf("--- END CHALLENGE ---\n");
 
-		(void) printf("VERIFICATION WORDS for %s:\n", custr_cstr(desc));
+		(void) printf("VERIFICATION WORDS: ");
 		for (size_t j = 0; j < nwords; j++) {
 			(void) printf("%s%s", (j > 0) ? " " : "", words[j]);
 		}
@@ -240,13 +286,17 @@ challenge(GetLine *restrict gl, nvlist_t *restrict q,
 
 	prompt = get_prompt(q, "Enter challenge response:");
 
-	if ((ret = readline(gl, prompt, &answer)) != ERRF_OK) {
-		return (ret);
+	if ((ret = get_answer(gl, prompt, &answer)) != ERRF_OK) {
+		ret = errf("RecoverError", ret, "Failed to read user response");
+		goto done;
 	}
 
-	ret = envlist_add_string(req, KBM_NV_ANSWER, answer);
-	freezero(answer, strlen(answer) + 1);
+	ret = envlist_add_string(req, KBM_NV_ANSWER, custr_cstr(answer));
 
+done:
+	custr_free(desc);
+	custr_free(answer);
+	del_GetLine(gl);
 	return (ret);
 }
 
@@ -280,8 +330,12 @@ get_action(nvlist_t *restrict resp, kbm_act_t *restrict actp)
 	errf_t *ret;
 	int32_t act;
 
-	if ((ret = envlist_lookup_int32(resp, KBM_NV_ACTION, &act)) != ERRF_OK)
+	if ((ret = envlist_lookup_int32(resp, KBM_NV_ACTION,
+	    &act)) != ERRF_OK) {
+		ret = errf("RecoveryError", ret,
+		    "kbmd response is missing an action");
 		return (ret);
+	}
 
 	switch ((kbm_act_t)act) {
 	case KBM_ACT_CONFIG:
@@ -306,7 +360,7 @@ readline(GetLine *restrict gl, const char *prompt, char **restrict linep)
 {
 	char *line;
 
-	line = gl_get_line(gl, (prompt == NULL) ? "> " : prompt, NULL, -1);
+	line = gl_get_line(gl, (prompt == NULL) ? "" : prompt, NULL, -1);
 
 	if (line != NULL) {
 		if ((*linep = strdup(line)) == NULL)
@@ -345,6 +399,59 @@ readline(GetLine *restrict gl, const char *prompt, char **restrict linep)
 	}
 }
 
+static void
+trim_whitespace(char *line, size_t len)
+{
+	while (len > 0 && isspace(line[len - 1])) {
+		line[len - 1] = '\0';
+		len--;
+	}
+
+	char *start = line;
+
+	while (*start != '\0' && len > 0 && isspace(*start)) {
+		start++;
+		len--;
+	}
+
+	if (start == line || len == 0) {
+		return;
+	}
+
+	(void) memmove(line, start, len);
+}
+
+static errf_t *
+get_answer(GetLine *restrict gl, const char *prompt, custr_t **restrict answerp)
+{
+	errf_t *ret = ERRF_OK;
+	custr_t *ans = NULL;
+	char *line = NULL;
+
+	if ((ret = ecustr_alloc(&ans)) != ERRF_OK) {
+		return (ret);
+	}
+
+	(void) printf("%s:\n", prompt);
+
+	while ((line = gl_get_line(gl, "", NULL, -1)) != NULL) {
+		trim_whitespace(line, strlen(line));
+		if ((ret = ecustr_append(ans, line)) != ERRF_OK) {
+			custr_free(ans);
+			return (ret);
+		}
+	}
+
+	if (ret != ERRF_OK) {
+		custr_free(ans);
+		*answerp = NULL;
+	} else {
+		*answerp = ans;
+	}
+
+	return (ret);
+}
+
 static const char *
 get_prompt(nvlist_t *restrict nvl, const char *def)
 {
@@ -353,4 +460,16 @@ get_prompt(nvlist_t *restrict nvl, const char *def)
 	if (nvlist_lookup_string(nvl, KBM_NV_PROMPT, &val) == 0)
 		return (val);
 	return (def);
+}
+
+static void
+assert_regex(void)
+{
+	if (rc_compiled) {
+		return;
+	}
+
+	VERIFY0(regcomp(&rc_begin, r_begin, REG_EXTENDED|REG_ICASE));
+	VERIFY0(regcomp(&rc_end, r_end, REG_EXTENDED|REG_ICASE));
+	rc_compiled = B_TRUE;
 }

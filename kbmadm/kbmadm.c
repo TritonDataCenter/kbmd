@@ -35,11 +35,7 @@
 #include "pivy/errf.h"
 #include "pivy/libssh/sshbuf.h"
 
-#if 0
 #define	ZPOOL_CMD	"zpool"
-#else
-#define	ZPOOL_CMD	"/root/bin/dummy-zpool"
-#endif
 
 char *guidstr;
 char *recovery;
