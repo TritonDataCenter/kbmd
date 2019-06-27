@@ -106,11 +106,13 @@ extract_line(custr_t *cu)
 {
 	const char *s = custr_cstr(cu);
 	const char *end = strchr(s, '\n');
+	size_t idx;
 
 	if (end == NULL)
 		return;
 
-	custr_delete(cu, (ssize_t)(end - s), SSIZE_MAX);
+	idx = (size_t)(end - s);
+	VERIFY0(custr_trunc(cu, idx));
 }
 
 errf_t *
