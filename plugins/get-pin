@@ -20,9 +20,21 @@
 
 PIVYTOOL=/usr/sbin/pivy-tool
 CURL=/usr/bin/curl
-ENC=xxx
+# For base64 encoding in the GZ
+OPENSSL=/usr/bin/openssl
 
-url="/pivtokens/$1/pin"
+# XXX: This needs more work
+host=$(json -f /system/boot/networking.json datacenter_ame dns_domain | \
+    sed 'N;s/\n/./')
+path="/pivtokens/$1/pin"
+url="http://kbmapi.$host/$path"
+
 date="$(date +"%a, %e %b %Y %T %Z")"
-sig="$(echo $date | $PIVYTOOL sign 9e | $enc)"
+sig="$(echo $date | $PIVYTOOL sign 9e | $OPENSSL enc -base64)"
 
+pin=$($CURL -sS \
+    -H "Date: $date" \
+    -H "Authorization: $sig" \
+    "$url" | json pin) || exit 1
+
+echo $pin

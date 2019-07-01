@@ -284,7 +284,7 @@ challenge(nvlist_t *restrict q, nvlist_t *restrict req)
 		(void) fputc('\n', stdout);
 	}
 
-	prompt = get_prompt(q, "Enter challenge response:");
+	prompt = get_prompt(q, "Enter challenge response");
 
 	if ((ret = get_answer(gl, prompt, &answer)) != ERRF_OK) {
 		ret = errf("RecoverError", ret, "Failed to read user response");
@@ -400,26 +400,54 @@ readline(GetLine *restrict gl, const char *prompt, char **restrict linep)
 }
 
 static void
-trim_whitespace(char *line, size_t len)
+strip_whitespace(custr_t *cus)
 {
-	while (len > 0 && isspace(line[len - 1])) {
-		line[len - 1] = '\0';
-		len--;
+	const char *p;
+	size_t i, start, len;
+
+	p = custr_cstr(cus);
+	i = 0;
+	while (p[i] != '\0') {
+		if (!isspace(p[i])) {
+			i++;
+			continue;
+		}
+
+		start = i;
+		len = 0;
+		while (p[start + len] != '\0' && isspace(p[start + len]))
+			len++;
+
+		VERIFY0(custr_remove(cus, start, len));
+		/*
+		 * While the current implementation does not change the
+		 * address of the underlying buffer during a remove, we
+		 * should not assume it in case this changes in future
+		 * implementations.  Since we are always removing after p[i],
+		 * we should however always be still use i as a valid index
+		 * after obtaining the new pointer to the data.
+		 */
+		p = custr_cstr(cus);
 	}
-
-	char *start = line;
-
-	while (*start != '\0' && len > 0 && isspace(*start)) {
-		start++;
-		len--;
-	}
-
-	if (start == line || len == 0) {
-		return;
-	}
-
-	(void) memmove(line, start, len);
 }
+
+/*
+ * When reading a challenge response, we support pasting in the base64
+ * encoded answer with arbitrary embedded whitespace, across an
+ * arbitrary number of lines.
+ *
+ * We also recognize (but do not require) the '-- Begin Response --' and
+ * '-- End Response --' delimiters in the input.  If the begin delimiter is
+ * seen, we discard all previous input, and require the end delimiter.  When
+ * the delimiters are present, any input after the end delimiter is discarded.
+ *
+ * Nesting of delimiters is not supported.
+ */
+enum {
+	OUTSIDE_BLOCK,
+	IN_BLOCK,
+	PAST_BLOCK
+};
 
 static errf_t *
 get_answer(GetLine *restrict gl, const char *prompt, custr_t **restrict answerp)
@@ -427,7 +455,11 @@ get_answer(GetLine *restrict gl, const char *prompt, custr_t **restrict answerp)
 	errf_t *ret = ERRF_OK;
 	custr_t *ans = NULL;
 	char *line = NULL;
+	int state = OUTSIDE_BLOCK;
+	regmatch_t match = { 0 };
 
+	*answerp = NULL;
+	assert_regex();
 	if ((ret = ecustr_alloc(&ans)) != ERRF_OK) {
 		return (ret);
 	}
@@ -435,20 +467,39 @@ get_answer(GetLine *restrict gl, const char *prompt, custr_t **restrict answerp)
 	(void) printf("%s:\n", prompt);
 
 	while ((line = gl_get_line(gl, "", NULL, -1)) != NULL) {
-		trim_whitespace(line, strlen(line));
+		switch (state) {
+		case OUTSIDE_BLOCK:
+			if (regexec(&rc_begin, line, 1, &match,
+			    REG_ICASE) == 0) {
+				custr_reset(ans);
+				state = IN_BLOCK;
+				continue;
+			}
+			break;
+		case IN_BLOCK:
+			if (regexec(&rc_end, line, 1, &match, REG_ICASE) == 0) {
+				state = PAST_BLOCK;
+				continue;
+			}
+		case PAST_BLOCK:
+			continue;
+		}
+
 		if ((ret = ecustr_append(ans, line)) != ERRF_OK) {
 			custr_free(ans);
 			return (ret);
 		}
 	}
 
-	if (ret != ERRF_OK) {
+	if (state == IN_BLOCK) {
+		ret = errf("InputError", NULL,
+		    "End delimiter missing in input");
 		custr_free(ans);
-		*answerp = NULL;
-	} else {
-		*answerp = ans;
+		return (ret);
 	}
 
+	strip_whitespace(ans);
+	*answerp = ans;
 	return (ret);
 }
 

@@ -497,6 +497,7 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 
 			if (errf_caused_by(ret, "NotFoundError")) {
 				errf_free(ret);
+				ret = ERRF_OK;
 
 				(void) bunyan_debug(tlog,
 				    "PIV token not present for part; trying "

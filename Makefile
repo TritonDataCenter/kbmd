@@ -30,7 +30,7 @@ STATIC_LIBS =	$(_STATIC_LIBS:%=out/%)
 
 PIVY_TARGETS =	pivy-tool pivy-box
 
-CPPFLAGS =	-I$(PROTOINC) -I$(PROTOINC)/PCSC -Icommon -I.
+CPPFLAGS =	-I$(PROTOINC) -Icommon -I.
 CFLAGS =	-g -msave-args -m64 -std=gnu99 -fstack-protector-all
 LDFLAGS =	-L$(DESTDIR)/lib/amd64 -L$(DESTDIR)/usr/lib/amd64
 LDLIBS =	out/common.a -lumem -lssp -lcustr -lnvpair -lsocket
@@ -85,7 +85,7 @@ KBMD_LIBS =		\
 	-lz		\
 	-lzfs		\
 	-lzfs_core	\
-	-lpcsclite
+	-lpcsc
 out/kbmd:	LDLIBS += $(KBMD_LIBS)
 # For flockfile and funlockfile
 out/kbmd:	CPPFLAGS += -D__EXTENSIONS__ -D_REENTRANT
@@ -166,8 +166,8 @@ pivy-stamp:
 	$(MAKE) -C pivy \
 	    CC=$(CC) \
 	    PROTO_AREA="$(DESTDIR)" \
-	    PCSC_CFLAGS="-I$(DESTDIR)/usr/include/PCSC" \
-	    PCSC_LIBS="-L$(DESTDIR)/usr/lib/amd64 -lpcsclite" \
+	    PCSC_CFLAGS="" \
+	    PCSC_LIBS="-L$(DESTDIR)/usr/lib/amd64 -lpcsc" \
 	    CRYPTO_FLAGS="-I$(DESTDIR)/usr/include" \
 	    CRYPTO_LIBS="$(LIBCRYPTO)" \
 	    LIBRESSL_INC="$(DESTDIR)/usr/include" \
