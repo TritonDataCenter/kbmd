@@ -19,6 +19,7 @@
 #include <strings.h>
 #include <sys/debug.h>
 #include <umem.h>
+#include "common.h"
 #include "envlist.h"
 #include "pivy/errf.h"
 
@@ -163,6 +164,67 @@ envlist_add_string_array(nvlist_t *nvl, const char *name, char * const *val,
 	return (NVERR(ret, "nvlist_add_string_array"));
 }
 
+static errf_t *
+add_errf(const errf_t *ef, nvlist_t **nvlp)
+{
+	errf_t *ret = ERRF_OK;
+	nvlist_t *nvl = NULL;
+
+	if ((ret = envlist_alloc(&nvl)) != ERRF_OK) {
+		return (ret);
+	}
+
+	if ((ret = envlist_add_string(nvl, "name", errf_name(ef))) != ERRF_OK ||
+	    (ret = envlist_add_string(nvl, "message",
+	    errf_message(ef))) != ERRF_OK ||
+	    (ret = envlist_add_int32(nvl, "errno",
+	    errf_errno(ef))) != ERRF_OK ||
+	    (ret = envlist_add_string(nvl, "function",
+	    errf_function(ef))) != ERRF_OK ||
+	    (ret = envlist_add_string(nvl, "file", errf_file(ef))) != ERRF_OK ||
+	    (ret = envlist_add_uint32(nvl, "line", errf_line(ef))) != ERRF_OK) {
+		nvlist_free(nvl);
+		return (ret);
+	}
+
+	*nvlp = nvl;
+	return (ERRF_OK);
+}
+
+errf_t *
+envlist_add_errf(nvlist_t *nvl, const char *name, const errf_t *ef)
+{
+	errf_t *ret = ERRF_OK;
+	const errf_t *e = ERRF_OK;
+	nvlist_t **nvls = NULL;
+	uint_t i, n_nvl;
+
+	n_nvl = 0;
+	for (e = ef; e != NULL; e = errf_cause(e))
+		n_nvl++;
+
+	if ((ret = ecalloc(n_nvl, sizeof (nvlist_t *), &nvls)) != ERRF_OK) {
+		return (ret);
+	}
+
+	i = 0;
+	for (e = ef; e != NULL; e = errf_cause(e)) {
+		if ((ret = add_errf(e, &nvls[i++])) != ERRF_OK) {
+			goto done;
+		}
+	}
+
+	ret = envlist_add_nvlist_array(nvl, name, nvls, n_nvl);
+
+done:
+	for (i = 0; i < n_nvl; i++) {
+		nvlist_free(nvls[i]);
+	}
+	free(nvls);
+
+	return (ret);
+}
+
 errf_t *
 envlist_lookup_int32(nvlist_t *nvl, const char *name, int32_t *valp)
 {
@@ -213,6 +275,68 @@ envlist_lookup_string_array(nvlist_t *nvl, const char *name, char ***sarp,
 {
 	int ret = nvlist_lookup_string_array(nvl, name, sarp, lenp);
 	return (NVERR(ret, "nvlist_lookup_string_array"));
+}
+
+static errf_t *
+nvl_to_errf(nvlist_t *nvl, errf_t *cause, errf_t **errp)
+{
+	errf_t *ret = ERRF_OK;
+	errf_t *val = ERRF_OK;
+	char *name = NULL;
+	char *msg = NULL;
+	char *func = NULL;
+	char *file = NULL;
+	uint32_t line = 0;
+	int32_t eno = 0;
+
+	*errp = NULL;
+
+	if ((ret = envlist_lookup_string(nvl, "name", &name)) != ERRF_OK ||
+	    (ret = envlist_lookup_string(nvl, "message", &msg)) != ERRF_OK ||
+	    (ret = envlist_lookup_int32(nvl, "errno", &eno)) != ERRF_OK ||
+	    (ret = envlist_lookup_string(nvl, "function", &func)) != ERRF_OK ||
+	    (ret = envlist_lookup_string(nvl, "file", &file)) != ERRF_OK ||
+	    (ret = envlist_lookup_uint32(nvl, "line", &line)) != ERRF_OK) {
+		return (ret);
+	}
+
+	if (eno != 0) {
+		val = _errfno(name, eno, func, file, line, "%s", msg);
+	} else {
+		val = _errf(name, cause, func, file, line, "%s", msg);
+	}
+
+	*errp = val;
+	return (ERRF_OK);
+}
+
+errf_t *
+envlist_lookup_errf(nvlist_t *nvl, const char *name, errf_t **errp)
+{
+	errf_t *ret = ERRF_OK;
+	errf_t *e = ERRF_OK;
+	errf_t *prev = ERRF_OK;
+	nvlist_t **nvls = NULL;
+	uint_t i, n_nvls = 0;
+
+	if ((ret = envlist_lookup_nvlist_array(nvl, name, &nvls,
+	    &n_nvls)) != ERRF_OK) {
+		return (ret);
+	}
+
+	for (i = n_nvls; i > 0; i--) {
+		nvlist_t *nvl = nvls[i - 1];
+
+		if ((ret = nvl_to_errf(nvl, prev, &e)) != ERRF_OK) {
+			errf_free(e);
+			*errp = NULL;
+			return (ret);
+		}
+		prev = e;
+	}
+
+	*errp = e;
+	return (ERRF_OK);
 }
 
 errf_t *
