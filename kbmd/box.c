@@ -27,7 +27,7 @@
 
 struct ebox *sys_box;
 
-static errf_t *
+errf_t *
 ezfs_open(libzfs_handle_t *hdl, const char *path, int types,
     zfs_handle_t **zhpp)
 {
@@ -206,7 +206,14 @@ kbmd_get_ebox(const char *dataset, struct ebox **eboxp)
 	zfs_handle_t *zhp = NULL;
 	errf_t *ret = ERRF_OK;
 
+	(void) bunyan_trace(tlog, "kbmd_get_ebox: enter",
+	    BUNYAN_T_STRING, "dataset", dataset,
+	    BUNYAN_T_END);
+
 	if (sys_box != NULL && strcmp(ebox_private(sys_box), dataset) == 0) {
+		(void) bunyan_trace(tlog, "using system ebox",
+		    BUNYAN_T_END);
+
 		*eboxp = sys_box;
 		return (ERRF_OK);
 	}
@@ -406,6 +413,8 @@ find_part_pivtoken(struct ebox_part *part, kbmd_token_t **ktp)
 	struct ebox_tpl_part *tpart = ebox_part_tpl(part);
 	enum piv_slotid slotid = piv_box_slot(box);
 
+	VERIFY(MUTEX_HELD(&piv_lock));
+
 	(void) bunyan_debug(tlog, "Searching for pivtoken for ebox part",
 	    BUNYAN_T_STRING, "box_part_name", ebox_tpl_part_name(tpart),
 	    BUNYAN_T_STRING, "box_guid", piv_box_guid_hex(box),
@@ -414,6 +423,15 @@ find_part_pivtoken(struct ebox_part *part, kbmd_token_t **ktp)
 	if (!piv_box_has_guidslot(box)) {
 		return (errf("NoGUIDSlot", NULL, "box does not have GUID "
 		    "and slot information, can't unlock with local hardware"));
+	}
+
+	/*
+	 * If a system token is set, try that one first
+	 */
+	if (kpiv != NULL &&
+	    bcmp(piv_token_guid(kpiv->kt_piv), guid, GUID_LEN) == 0) {
+		*ktp = kpiv;
+		return (ERRF_OK);
 	}
 
 	if ((ret = kbmd_find_byguid(guid, GUID_LEN, ktp)) != ERRF_OK ||
@@ -451,6 +469,7 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 		struct sshkey *cak = NULL;
 		struct piv_slot *slot = NULL;
 		struct piv_ecdh_box *dhbox = NULL;
+		char gstr[GUID_STR_LEN];
 
 		tconfig = ebox_config_tpl(config);
 		if (ebox_tpl_config_type(tconfig) != EBOX_PRIMARY)
@@ -465,6 +484,7 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 		if (tname == NULL) {
 			tname = "(not set)";
 		}
+		guidtohex(ebox_tpl_part_guid(tpart), gstr);
 
 		dhbox = ebox_part_box(part);
 
@@ -478,6 +498,7 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 
 		(void) bunyan_debug(tlog, "Trying part",
 		    BUNYAN_T_STRING, "partname", tname,
+		    BUNYAN_T_STRING, "guid", gstr,
 		    BUNYAN_T_END);
 
 		if (kt != NULL &&

@@ -20,9 +20,9 @@
 
 PIVYTOOL=/usr/sbin/pivy-tool
 CURL=/usr/bin/curl
-ENC=xxx
+OPENSSL=/usr/bin/openssl
 
 url="/pivtokens/$1/recover"
 date="$(date +"%a, %e %b %Y %T %Z")"
-sig="$(echo $date | $PIVYTOOL sign 9e | $enc)"
+sig="$(echo $date | $PIVYTOOL sign 9e | $OPENSSL enc -base64 -A)"
 

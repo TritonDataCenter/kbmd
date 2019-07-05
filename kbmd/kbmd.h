@@ -102,11 +102,15 @@ void kbmd_ret_nvlist(struct nvlist *) __NORETURN;
 void kbmd_ret_error(errf_t *) __NORETURN;
 
 void kbmd_zpool_create(struct nvlist *);
-void kbmd_recover_init(void);
+void kbmd_recover_init(int);
 void kbmd_recover_start(struct nvlist *, pid_t);
 void kbmd_recover_resp(struct nvlist *, pid_t);
 void kbmd_update_recovery(struct nvlist *);
 
+errf_t *ezfs_open(struct libzfs_handle *, const char *, int,
+    struct zfs_handle **);
+
+errf_t *get_dataset_status(const char *, boolean_t *, boolean_t *);
 errf_t *get_template(kbmd_token_t *, struct ebox_tpl **);
 errf_t *get_request_template(struct nvlist *restrict,
     struct ebox_tpl **restrict);

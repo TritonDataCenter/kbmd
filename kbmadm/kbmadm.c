@@ -115,8 +115,8 @@ main(int argc, char *argv[])
 		case 'r':
 			recovery = optarg;
 			break;
-		default:
-			errx(EXIT_FAILURE, "Unknown option -%c\n", c);
+		case '?':
+			return (1);
 		}
 	}
 
