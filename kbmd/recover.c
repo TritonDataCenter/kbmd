@@ -17,13 +17,13 @@
 #include <stddef.h>
 #include <string.h>
 #include <synch.h>
-#include <sys/list.h>
+#include <sys/refhash.h>
 #include "kbmd.h"
 #include "pivy/libssh/sshbuf.h"
 #include "pivy/words.h"
 
 typedef struct recovery {
-	list_node_t		r_node;
+	refhash_link_t		r_link;
 	uint32_t		r_id;
 	pid_t			r_pid;
 	struct ebox		*r_ebox;
@@ -53,10 +53,33 @@ struct config_question {
  * ever be needed is enforced to flag any potential bugs.
  */
 
+#define	BUCKET_COUNT 7
 #define	RECOVERY_MAX 16
 static mutex_t recovery_lock = ERRORCHECKMUTEX;
-static list_t recovery_list;
+static refhash_t *recovery_hash;
 static uint32_t recovery_count;
+
+static uint64_t
+rec_hash(const void *tp)
+{
+	const uint32_t *idp = tp;
+	return (*idp);
+}
+
+static int
+rec_cmp(const void *ta, const void *tb)
+{
+	const uint32_t *id_a = ta;
+	const uint32_t *id_b = tb;
+
+	if (*id_a < *id_b) {
+		return (-1);
+	}
+	if (*id_a > *id_b) {
+		return (1);
+	}
+	return (0);
+}
 
 static void
 recovery_free(void *a)
@@ -71,12 +94,17 @@ recovery_free(void *a)
 }
 
 void
-kbmd_recover_init(void)
+kbmd_recover_init(int dfd)
 {
 	mutex_enter(&recovery_lock);
-	list_create(&recovery_list, sizeof (recovery_t),
-	    offsetof (recovery_t, r_node));
+	recovery_hash = refhash_create(BUCKET_COUNT, rec_hash, rec_cmp,
+	    recovery_free, sizeof (recovery_t), offsetof(recovery_t, r_link),
+	    offsetof(recovery_t, r_id), 0);
 	mutex_exit(&recovery_lock);
+
+	if (recovery_hash == NULL) {
+		kbmd_dfatal(dfd, "failed to create recovery hash table");
+	}
 }
 
 static errf_t *
@@ -106,12 +134,17 @@ recovery_get(uint32_t id, pid_t pid)
 
 	ASSERT(MUTEX_HELD(&recovery_lock));
 
-	for (r = list_head(&recovery_list); r != NULL;
-	    r = list_next(&recovery_list, r)) {
-		if (r->r_id == id && r->r_pid == pid)
-			return (r);
+	r = refhash_lookup(recovery_hash, &id);
+	/*
+	 * While the id's are globally unique, we also currently restrict a
+	 * recovery instance to the process that originally created it.
+	 * A process trying to use another process's recovery id is ignored.
+	 */
+	if (r == NULL || r->r_pid != pid) {
+		return (NULL);
 	}
-	return (NULL);
+
+	return (r);
 }
 
 static void
@@ -120,10 +153,8 @@ recovery_exit_cb(pid_t pid, void *arg)
 	recovery_t *r = arg;
 
 	mutex_enter(&recovery_lock);
-	list_remove(&recovery_list, r);
+	refhash_remove(recovery_hash, r);
 	mutex_exit(&recovery_lock);
-
-	recovery_free(r);
 }
 
 /*
@@ -258,13 +289,15 @@ recovery_alloc(pid_t pid, struct ebox *ebox, recovery_t **rp)
 	}
 	VERIFY3U(n, ==, r->r_ncfg);
 
+	refhash_insert(recovery_hash, r);
+	recovery_count++;
+
+	refhash_hold(recovery_hash, r);
 	if ((ret = kbmd_watch_pid(pid, recovery_exit_cb, r)) != ERRF_OK) {
-		free(r);
+		refhash_remove(recovery_hash, r);
+		refhash_rele(recovery_hash, r);
 		return (ret);
 	}
-
-	list_insert_tail(&recovery_list, r);
-	recovery_count++;
 
 	*rp = r;
 	return (ERRF_OK);
@@ -602,16 +635,28 @@ post_recovery(recovery_t *r)
 	const char *dataset = NULL;
 	const uint8_t *key = NULL, *rtoken = NULL;
 	size_t keylen = 0, rtokenlen = 0;
+	boolean_t is_encrypted = B_TRUE, is_locked = B_TRUE;
+
+	if ((ret = ebox_recover(r->r_ebox, r->r_cfg)) != ERRF_OK &&
+	    !errf_caused_by(ret, "AlreadyUnlocked")) {
+		return (ret);
+	}
 
 	dataset = ebox_private(r->r_ebox);
-
 	key = ebox_key(r->r_ebox, &keylen);
 	rtoken = ebox_recovery_token(r->r_ebox, &rtokenlen);
 
 	VERIFY3P(rtoken, !=, NULL);
 	VERIFY3P(key, !=, NULL);
 
-	if ((ret = load_key(dataset, key, keylen)) != ERRF_OK) {
+	/*
+	 * If we can determine if the dataset key is already loaded,
+	 * we'll avoid re-loading the key.  If not, we'll still try.
+	 */
+	ret = get_dataset_status(dataset, &is_encrypted, &is_locked);
+	errf_free(ret);
+
+	if (is_locked && (ret = load_key(dataset, key, keylen)) != ERRF_OK) {
 		return (ret);
 	}
 
@@ -704,8 +749,7 @@ challenge(nvlist_t *restrict req, nvlist_t *restrict resp,
 		    "challenge threshold met; decrypting box",
 		    BUNYAN_T_END);
 
-		if ((ret = ebox_recover(r->r_ebox, r->r_cfg)) != ERRF_OK ||
-		    (ret = post_recovery(r)) != ERRF_OK) {
+		if ((ret = post_recovery(r)) != ERRF_OK) {
 			(void) bunyan_info(tlog, "Recovery failed",
 			    BUNYAN_T_STRING, "caused_by", errf_name(ret),
 			    BUNYAN_T_STRING, "errmsg", errf_message(ret),
@@ -734,8 +778,8 @@ challenge(nvlist_t *restrict req, nvlist_t *restrict resp,
 		(void) nvlist_add_boolean(resp, KBM_NV_RECOVERY_COMPLETE);
 
 		kbmd_unwatch_pid(r->r_pid);
-		list_remove(&recovery_list, r);
-		recovery_free(r);
+		refhash_remove(recovery_hash, r);
+		refhash_rele(recovery_hash, r);
 		return (ret);
 	}
 
@@ -1004,26 +1048,22 @@ kbmd_update_recovery(nvlist_t *req)
 		nvlist_free(resp);
 		kbmd_ret_error(ret);
 	}
+	piv_txn_end(kpiv->kt_piv);
 
 	if ((ret = kbmd_get_ebox(zones_dataset, &ebox_old)) != ERRF_OK ||
 	    (ret = kbmd_unlock_ebox(ebox_old, &kt)) != ERRF_OK) {
-		piv_txn_end(kpiv->kt_piv);
 		mutex_exit(&piv_lock);
 		nvlist_free(resp);
 		kbmd_ret_error(ret);
 	}
-	VERIFY3P(kt, ==, kpiv);
 	VERIFY0(strcmp(ebox_private(ebox_old), zones_dataset));
 
 	if ((ret = kbmd_ebox_clone(ebox_old, &ebox_new, tpl, kt)) != ERRF_OK) {
-		piv_txn_end(kpiv->kt_piv);
 		mutex_exit(&piv_lock);
 		nvlist_free(resp);
 		ebox_tpl_free(tpl);
 		kbmd_ret_error(ret);
 	}
-
-	piv_txn_end(kpiv->kt_piv);
 
 	if ((ret = kbmd_put_ebox(ebox_new)) != ERRF_OK) {
 		mutex_exit(&piv_lock);
@@ -1042,5 +1082,11 @@ kbmd_update_recovery(nvlist_t *req)
 
 	mutex_exit(&piv_lock);
 	ebox_tpl_free(tpl);
+	if ((ret = envlist_add_boolean_value(resp, KBM_NV_SUCCESS,
+	    B_TRUE)) != ERRF_OK) {
+		nvlist_free(resp);
+		kbmd_ret_error(ret);
+	}
+
 	kbmd_ret_nvlist(resp);
 }

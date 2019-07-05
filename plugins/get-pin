@@ -29,8 +29,7 @@ host=$(json -f /system/boot/networking.json datacenter_name dns_domain | \
 path="pivtokens/$1/pin"
 url="http://kbmapi.$host/$path"
 
-# XXX: Is this the correct format?
-date="$(date +"%a, %e %b %Y %T %Z")"
+date="$(LC_TIME=C TZ=GMT date +"%a, %d %b %Y %T %Z")"
 sig="$(echo $date | $PIVYTOOL sign 9e | $OPENSSL enc -base64 -A)"
 
 pin=$($CURL -sS \

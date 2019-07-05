@@ -78,7 +78,7 @@ KBMD_LIBS =		\
 	out/pivy.a	\
 	$(LIBCRYPTO)	\
 	-lbunyan	\
-	-lcmdutils	\
+	-lrefhash	\
 	-lscf		\
 	-lsmbios	\
 	-luuid		\

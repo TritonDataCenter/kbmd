@@ -37,8 +37,8 @@ load_key(const char *dataset, const uint8_t *key, size_t keylen)
 	 * lzc_load_key() returns EEXIST if the key is already loaded.
 	 * Don't treat EEXIST as a failure.
 	 */
-	if ((rc = lzc_load_key(dataset, B_FALSE, key, keylen)) != 0 &&
-	    rc != EEXIST) {
+	if ((rc = lzc_load_key(dataset, B_FALSE, (uint8_t *)key,
+	    keylen)) != 0 && rc != EEXIST) {
 		ret = errfno("lzc_load_key", rc,
 		    "failed to load key for %s dataset", dataset);
 	}
@@ -199,6 +199,51 @@ is_system_zpool(const char *dataset, boolean_t *valp)
 	return (ret);
 }
 
+errf_t *
+get_dataset_status(const char *dataset, boolean_t *restrict encryptedp,
+    boolean_t *restrict lockedp)
+{
+	errf_t *ret = ERRF_OK;
+	zfs_handle_t *zhp = NULL;
+
+	mutex_enter(&g_zfs_lock);
+	if ((ret = ezfs_open(g_zfs, dataset,
+	    ZFS_TYPE_FILESYSTEM|ZFS_TYPE_VOLUME, &zhp)) != ERRF_OK) {
+		mutex_exit(&g_zfs_lock);
+		ret = errf("ZfsError", ret,
+		    "unable to open dataset %s to check encryption status",
+		    dataset);
+		return (ret);
+	}
+
+	/*
+	 * If the dataset is not encrypted, we treat it as if the
+	 * key was loaded (unlocked).
+	 *
+	 * NOTE: This might not do the right thing for a child inheriting
+	 * the encryption status of its parent, however we shouldn't be
+	 * using this on such datasets.
+	 */
+	if (zfs_prop_get_int(zhp, ZFS_PROP_ENCRYPTION) == ZIO_CRYPT_OFF) {
+		*encryptedp = B_FALSE;
+		*lockedp = B_FALSE;
+		goto done;
+	}
+	*encryptedp = B_TRUE;
+
+	if (zfs_prop_get_int(zhp,
+	    ZFS_PROP_KEYSTATUS) == ZFS_KEYSTATUS_AVAILABLE) {
+		*lockedp = B_FALSE;
+	} else {
+		*lockedp = B_TRUE;
+	}
+
+done:
+	zfs_close(zhp);
+	mutex_exit(&g_zfs_lock);
+	return (ret);
+}
+
 void
 kbmd_zfs_unlock(nvlist_t *req)
 {
@@ -210,6 +255,7 @@ kbmd_zfs_unlock(nvlist_t *req)
 	const uint8_t *key = NULL;
 	size_t keylen = 0;
 	boolean_t is_syspool = B_FALSE;
+	boolean_t is_encrypted, is_unlocked;
 
 	mutex_enter(&piv_lock);
 
@@ -228,6 +274,23 @@ kbmd_zfs_unlock(nvlist_t *req)
 
 	if (dataset == NULL) {
 		dataset = "zones";
+	}
+
+	if ((ret = get_dataset_status(dataset, &is_encrypted,
+	    &is_unlocked)) != ERRF_OK) {
+		goto fail;
+	}
+
+	if (!is_encrypted) {
+		ret = errf("ArgumentError", NULL,
+		    "dataset %s does not appear to be encrypted", dataset);
+		goto fail;
+	}
+
+	if (is_unlocked) {
+		ret = errf("AlreadyUnlocked", NULL,
+		    "dataset %s's key is already loaded", dataset);
+		goto fail;
 	}
 
 	if ((ret = kbmd_get_ebox(dataset, &ebox)) != ERRF_OK ||
