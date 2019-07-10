@@ -53,6 +53,12 @@ CTASSERT(ROTATE_MIN + ROTATE_SPLAY <= UINT32_MAX);
 #define	PIN_MIN_LENGTH	6
 #define	PIN_MAX_LENGTH	8
 
+/*
+ * Is a dataset name the pool name?
+ *
+ * XXX: Might need to expand this to check for other special characters
+ * (e.g. '@' or '%').
+ */
 #define	IS_ZPOOL(_name) (strchr(_name, '/') == NULL)
 
 struct custr;
@@ -84,16 +90,12 @@ extern mutex_t g_zfs_lock;
 extern struct libzfs_handle *g_zfs;
 
 /*
- * piv_lock protects piv_ctx, kpiv, and sys_box
+ * piv_lock protects piv_ctx, and kpiv
  */
 extern mutex_t piv_lock;
 extern SCARDCONTEXT piv_ctx;
-extern kbmd_token_t *kpiv;
-extern struct ebox *sys_box;
-#define	IS_SYSTEM_TOKEN(_tok) ((kpiv != NULL) && ((_tok) == kpiv->kt_piv))
-
-const char *get_dc(void);
-const char *get_domain(void);
+extern kbmd_token_t *sys_piv;
+#define	IS_SYSTEM_TOKEN(_tok) ((sys_piv != NULL) && ((_tok) == sys_piv->kt_piv))
 
 void kbmd_dfatal(int, const char *, ...) __NORETURN;
 int kbmd_door_setup(const char *);
@@ -119,6 +121,7 @@ errf_t *add_supplied_template(struct nvlist *, struct ebox_tpl *,
 errf_t *create_piv_tpl_config(kbmd_token_t *,
     struct ebox_tpl_config **restrict);
 
+errf_t *set_box_name(struct ebox *, const char *);
 errf_t *kbmd_get_ebox(const char *restrict, struct ebox **restrict);
 errf_t *kbmd_put_ebox(struct ebox *);
 errf_t *ebox_to_str(struct ebox *restrct, char **restrict);

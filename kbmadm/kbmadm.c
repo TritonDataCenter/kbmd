@@ -643,12 +643,17 @@ fail:
 errf_t *
 check_error(nvlist_t *resp)
 {
+	errf_t *ef, *ret;
+
 	if (fnvlist_lookup_boolean_value(resp, KBM_NV_SUCCESS))
 		return (ERRF_OK);
 
-	char *msg = fnvlist_lookup_string(resp, KBM_NV_ERRMSG);
-	return (errf("InternalError", NULL, "kbmd returned an error: %s",
-	    msg));
+	if ((ret = envlist_lookup_errf(resp, KBM_NV_ERRMSG, &ef)) != ERRF_OK) {
+		return (errf("InternalError", ret,
+		    "failed to retrieve error data from kbmd"));
+	}
+
+	return (errf("KbmdError", ef, "kbmd returned an error"));
 }
 
 errf_t *

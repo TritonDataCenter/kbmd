@@ -175,8 +175,7 @@ main(int argc, char *argv[])
 	mutex_exit(&piv_lock);
 
 	kbmd_event_init(dfd);
-
-	kbmd_recover_init();
+	kbmd_recover_init(dfd);
 
 	errval = kbmd_door_setup(doorpath);
 	if (errval != 0)

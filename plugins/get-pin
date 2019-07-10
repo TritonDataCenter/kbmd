@@ -18,6 +18,18 @@
 # stderr output is discarded (until a better way of dealing with it in kbmd
 # is devised).
 
+VERSION="1"
+
+while getopts "v" opt; do
+    case "$opt" in
+        v)
+            echo "$VERSION"
+            exit 0
+            ;;
+    esac
+done
+shift OPTIND - 1
+
 PIVYTOOL=/usr/sbin/pivy-tool
 CURL=/usr/bin/curl
 # For base64 encoding in the GZ

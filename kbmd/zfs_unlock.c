@@ -337,17 +337,6 @@ kbmd_zfs_unlock(nvlist_t *req)
 			zones_dataset = strdup(dataset);
 
 		kbmd_set_token(kt);
-
-		/*
-		 * If we are called multiple times for the system dataset,
-		 * kbmd_get_ebox() may return the existing sys_box.  Only
-		 * replace it if we have a different one.
-		 */
-		if (sys_box != ebox) {
-			ebox_free(sys_box);
-			sys_box = ebox;
-			ebox = NULL;
-		}
 	} else if (ret != ERRF_OK) {
 		/*
 		 * If we successfully obtained and loaded the key for
@@ -377,11 +366,8 @@ kbmd_zfs_unlock(nvlist_t *req)
 	kbmd_ret_nvlist(resp);
 
 fail:
-	if (ebox != sys_box)
-		ebox_free(ebox);
-
+	ebox_free(ebox);
 	mutex_exit(&piv_lock);
-
 	nvlist_free(req);
 	nvlist_free(resp);
 	kbmd_ret_error(ret);

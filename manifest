@@ -1,4 +1,10 @@
 f usr/sbin/pivy-tool 0555 root bin
 f usr/sbin/pivy-box 0555 root bin
 f usr/sbin/kbmadm 0555 root bin
-f usr/lib/kbmd 0555 root bin
+d usr/lib/kbm 0755 root bin
+d usr/lib/kbm/plugins 0755 root sys
+f usr/lib/kbm/kbmd 0555 root bin
+f usr/lib/kbm/plugins/get-pin 0555 root bin
+f usr/lib/kbm/plugins/new-rtoken 0555 root bin
+f usr/lib/kbm/plugins/register-pivtoken 0555 root bin
+f usr/lib/kbm/plugins/replace-pivtoken 0555 root bin
