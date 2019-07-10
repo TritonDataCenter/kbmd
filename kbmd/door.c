@@ -149,12 +149,6 @@ kbmd_ret_nvlist(nvlist_t *resp)
 	if (fnvlist_lookup_boolean_value(resp, KBM_NV_SUCCESS)) {
 		(void) bunyan_debug(tlog, "Returning success",
 		    BUNYAN_T_END);
-	} else {
-		char *errmsg = fnvlist_lookup_string(resp, KBM_NV_ERRMSG);
-
-		(void) bunyan_debug(tlog, "Returning error",
-		    BUNYAN_T_STRING, "errmsg", errmsg,
-		    BUNYAN_T_END);
 	}
 
 	nvlist_free(resp);
@@ -181,6 +175,14 @@ kbmd_ret_error(errf_t *ef)
 	if ((ret = envlist_add_errf(nvret, KBM_NV_ERRMSG, ef)) != ERRF_OK) {
 		goto fail;
 	}
+
+	(void) bunyan_debug(tlog, "Returning error",
+	    BUNYAN_T_STRING, "err_name", errf_name(ef),
+	    BUNYAN_T_STRING, "err_msg", errf_message(ef),
+	    BUNYAN_T_STRING, "err_func", errf_function(ef),
+	    BUNYAN_T_STRING, "err_file", errf_file(ef),
+	    BUNYAN_T_UINT32, "err_line", errf_line(ef),
+	    BUNYAN_T_END);
 
 	kbmd_ret_nvlist(nvret);
 

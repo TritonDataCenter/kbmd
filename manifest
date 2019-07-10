@@ -1,3 +1,5 @@
+f lib/svc/manifest/system/kbmd.xml 0444 root bin
+f lib/svc/method/kbmd 0555 root bin
 f usr/sbin/pivy-tool 0555 root bin
 f usr/sbin/pivy-box 0555 root bin
 f usr/sbin/kbmadm 0555 root bin

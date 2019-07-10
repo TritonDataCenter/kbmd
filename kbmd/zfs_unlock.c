@@ -205,6 +205,7 @@ get_dataset_status(const char *dataset, boolean_t *restrict encryptedp,
 {
 	errf_t *ret = ERRF_OK;
 	zfs_handle_t *zhp = NULL;
+	int encryption, keystatus;
 
 	mutex_enter(&g_zfs_lock);
 	if ((ret = ezfs_open(g_zfs, dataset,
@@ -224,15 +225,26 @@ get_dataset_status(const char *dataset, boolean_t *restrict encryptedp,
 	 * the encryption status of its parent, however we shouldn't be
 	 * using this on such datasets.
 	 */
-	if (zfs_prop_get_int(zhp, ZFS_PROP_ENCRYPTION) == ZIO_CRYPT_OFF) {
+	encryption = zfs_prop_get_int(zhp, ZFS_PROP_ENCRYPTION);
+	(void) bunyan_trace(tlog, "Checking encryption status for dataset",
+	    BUNYAN_T_STRING, "dataset", dataset,
+	    BUNYAN_T_INT32, "encryption", encryption,
+	    BUNYAN_T_END);
+
+	if (encryption == ZIO_CRYPT_OFF) {
 		*encryptedp = B_FALSE;
 		*lockedp = B_FALSE;
 		goto done;
 	}
 	*encryptedp = B_TRUE;
 
-	if (zfs_prop_get_int(zhp,
-	    ZFS_PROP_KEYSTATUS) == ZFS_KEYSTATUS_AVAILABLE) {
+	keystatus = zfs_prop_get_int(zhp, ZFS_PROP_KEYSTATUS);
+	(void) bunyan_trace(tlog, "Checking dataset keystatus",
+	    BUNYAN_T_STRING, "dataset", dataset,
+	    BUNYAN_T_INT32, "keystatus", keystatus,
+	    BUNYAN_T_END);
+
+	if (keystatus == ZFS_KEYSTATUS_AVAILABLE) {
 		*lockedp = B_FALSE;
 	} else {
 		*lockedp = B_TRUE;
@@ -255,7 +267,7 @@ kbmd_zfs_unlock(nvlist_t *req)
 	const uint8_t *key = NULL;
 	size_t keylen = 0;
 	boolean_t is_syspool = B_FALSE;
-	boolean_t is_encrypted, is_unlocked;
+	boolean_t is_encrypted, is_locked;
 
 	mutex_enter(&piv_lock);
 
@@ -277,7 +289,7 @@ kbmd_zfs_unlock(nvlist_t *req)
 	}
 
 	if ((ret = get_dataset_status(dataset, &is_encrypted,
-	    &is_unlocked)) != ERRF_OK) {
+	    &is_locked)) != ERRF_OK) {
 		goto fail;
 	}
 
@@ -287,7 +299,7 @@ kbmd_zfs_unlock(nvlist_t *req)
 		goto fail;
 	}
 
-	if (is_unlocked) {
+	if (!is_locked) {
 		ret = errf("AlreadyUnlocked", NULL,
 		    "dataset %s's key is already loaded", dataset);
 		goto fail;
