@@ -81,7 +81,7 @@
 #define	PLUGIN_VERSION		"1"
 
 /* XXX: This path should change */
-#define	PLUGIN_PATH		"/usr/lib/kbmd/"
+#define	PLUGIN_PATH		"/usr/lib/kbm/plugins/"
 
 #define	GET_PIN_CMD		"get-pin"
 #define	REGISTER_TOK_CMD	"register-pivtoken"

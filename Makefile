@@ -224,7 +224,8 @@ install: all
 	    $(INSTALL) -m 0555 -f $(DESTDIR)/usr/lib/kbm/plugins	\
 	    plugins/$$plugin;						\
 	done
-	$(INSTALL) -m 0644 -f $(DESTDIR)/lib/svc/manifest kbmd.xml
+	$(INSTALL) -m 0644 -f $(DESTDIR)/lib/svc/manifest/system smf/kbmd.xml
+	$(INSTALL) -m 0555 -f $(DESTDIR)/lib/svc/method smf/kbmd
 
 manifest:
 	cp manifest $(DESTDIR)/$(DESTNAME)

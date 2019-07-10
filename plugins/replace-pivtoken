@@ -39,7 +39,7 @@ while getopts "v" opt; do
             ;;
     esac
 done
-shift OPTIND - 1
+shift $((OPTIND - 1))
 
 path="pivtokens/$1/recover"
 url="http://kbmapi.$host/$path"

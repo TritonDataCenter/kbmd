@@ -32,7 +32,7 @@ while getopts "v" opt; do
             ;;
     esac
 done
-shift OPTIND - 1
+shift $((OPTIND - 1))
 
 # XXX: This needs more work
 host=$(json -f /system/boot/networking.json datacenter_name dns_domain | \

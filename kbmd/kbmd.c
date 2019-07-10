@@ -159,23 +159,29 @@ main(int argc, char *argv[])
 	kbmd_log_setup(dfd, BUNYAN_L_DEBUG);
 #endif
 
+	(void) bunyan_debug(tlog, "Starting up", BUNYAN_T_END);
+
 	/*
 	 * XXX: Should a failure to get the CN UUID be fatal (i.e.
 	 * should we care about the return value?
 	 */
 	(void) kbmd_sys_uuid(sys_uuid);
 
+	(void) bunyan_trace(tlog, "Creating SCard context", BUNYAN_T_END);
+
 	mutex_enter(&piv_lock);
 	errval = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL,
 	    &piv_ctx);
 	if (errval != 0) {
-		kbmd_dfatal(dfd, "ccould not initialize libpcsc: %s",
+		kbmd_dfatal(dfd, "could not initialize libpcsc: %s",
 		    pcsc_stringify_error(errval));
 	}
 	mutex_exit(&piv_lock);
 
 	kbmd_event_init(dfd);
 	kbmd_recover_init(dfd);
+
+	(void) bunyan_trace(tlog, "Creating door server", BUNYAN_T_END);
 
 	errval = kbmd_door_setup(doorpath);
 	if (errval != 0)
@@ -437,7 +443,6 @@ static void
 kbmd_cleanup(void)
 {
 	kbmd_quit = B_TRUE;
-
 }
 
 static int
@@ -472,5 +477,6 @@ kbmd_sys_uuid(uuid_t uuid)
 
 	bcopy(s.smbs_uuid, uuid, sizeof (uuid_t));
 	smbios_close(shp);
-	return (errval);
+
+	return (0);
 }
