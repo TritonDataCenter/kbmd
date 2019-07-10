@@ -22,7 +22,23 @@ PIVYTOOL=/usr/sbin/pivy-tool
 CURL=/usr/bin/curl
 OPENSSL=/usr/bin/openssl
 
-url="/pivtokens/$1/recover"
-date="$(date +"%a, %e %b %Y %T %Z")"
-sig="$(echo $date | $PIVYTOOL sign 9e | $OPENSSL enc -base64 -A)"
+VERSION="1"
 
+while getopts "v" opt; do
+    case "$opt" in
+        v)
+            echo "$VERSION"
+            exit 0
+            ;;
+    esac
+done
+shift OPTIND - 1
+
+# XXX: This needs more work
+host=$(json -f /system/boot/networking.json datacenter_name dns_domain | \
+    sed 'N;s/\n/./')
+path="pivtokens/$1/recover"
+url="http://kbmapi.$host/$path"
+
+date="$(LC_TIME=C TZ=GMT date +"%a, %d %b %Y %T %Z")"
+sig="$(echo $date | $PIVYTOOL sign 9e | $OPENSSL enc -base64 -A)"

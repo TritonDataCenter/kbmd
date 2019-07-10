@@ -1029,7 +1029,12 @@ kbmd_update_recovery(nvlist_t *req)
 
 	mutex_enter(&piv_lock);
 
-	if (sys_box == NULL) {
+	/*
+	 * We must know which PIV is the system piv.  Currently the only
+	 * way to do that is to unlock the system zpool (as we assume/require
+	 * the system zpool to use the system PIV to protect its key)
+	 */
+	if (sys_piv == NULL) {
 		mutex_exit(&piv_lock);
 		nvlist_free(resp);
 		kbmd_ret_error(errf("UnlockError", NULL,
@@ -1038,17 +1043,17 @@ kbmd_update_recovery(nvlist_t *req)
 	}
 	VERIFY3P(zones_dataset, !=, NULL);
 
-	if ((ret = piv_txn_begin(kpiv->kt_piv)) != ERRF_OK ||
-	    (ret = piv_select(kpiv->kt_piv)) != ERRF_OK ||
-	    (ret = get_template(kpiv, &tpl)) != ERRF_OK ||
+	if ((ret = piv_txn_begin(sys_piv->kt_piv)) != ERRF_OK ||
+	    (ret = piv_select(sys_piv->kt_piv)) != ERRF_OK ||
+	    (ret = get_template(sys_piv, &tpl)) != ERRF_OK ||
 	    (ret = add_supplied_template(req, tpl, B_TRUE)) != ERRF_OK) {
-		piv_txn_end(kpiv->kt_piv);
+		piv_txn_end(sys_piv->kt_piv);
 		mutex_exit(&piv_lock);
 		ebox_tpl_free(tpl);
 		nvlist_free(resp);
 		kbmd_ret_error(ret);
 	}
-	piv_txn_end(kpiv->kt_piv);
+	piv_txn_end(sys_piv->kt_piv);
 
 	if ((ret = kbmd_get_ebox(zones_dataset, &ebox_old)) != ERRF_OK ||
 	    (ret = kbmd_unlock_ebox(ebox_old, &kt)) != ERRF_OK) {
@@ -1072,9 +1077,8 @@ kbmd_update_recovery(nvlist_t *req)
 		kbmd_ret_error(ret);
 	}
 
-	if (ebox_old == sys_box)
-		sys_box = ebox_new;
 	ebox_free(ebox_old);
+	ebox_free(ebox_new);
 	ebox_old = ebox_new;
 	ebox_new = NULL;
 

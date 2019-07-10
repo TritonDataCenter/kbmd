@@ -148,7 +148,7 @@ req_has_token(nvlist_t *restrict req, kbmd_token_t **restrict ktp)
 	uint_t guidlen = 0, rtoklen = 0;
 	char str[GUID_STR_LEN];
 
-	VERIFY3P(kpiv, ==, NULL);
+	VERIFY3P(sys_piv, ==, NULL);
 
 	if ((ret = envlist_lookup_uint8_array(req, KBM_NV_GUID, &guid,
 	    &guidlen)) != ERRF_OK ||
@@ -199,8 +199,8 @@ assert_token(nvlist_t *restrict req, kbmd_token_t **restrict ktp)
 	 * We can only use the cached PIV token if we also have the
 	 * recovery token.
 	 */
-	if (kpiv != NULL && kpiv->kt_rtoken != NULL) {
-		*ktp = kpiv;
+	if (sys_piv != NULL && sys_piv->kt_rtoken != NULL) {
+		*ktp = sys_piv;
 		return (ERRF_OK);
 	}
 
@@ -309,8 +309,6 @@ kbmd_zpool_create(nvlist_t *req)
 	    B_TRUE)) != ERRF_OK)
 		goto done;
 
-	sys_box = ebox;
-
 done:
 	if (kt != NULL && kt->kt_piv != NULL && piv_token_in_txn(kt->kt_piv))
 		piv_txn_end(kt->kt_piv);
@@ -318,6 +316,7 @@ done:
 	mutex_exit(&piv_lock);
 	freezero(key, keylen);
 	nvlist_free(req);
+	ebox_free(ebox);
 	ebox_tpl_free(tpl);
 
 	if (ret == ERRF_OK) {

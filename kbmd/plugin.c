@@ -54,15 +54,11 @@
  *	API call).  Writes out the base64-encoded recovery token value to
  *	stdout on success.
  *
- * replace-token <guid>
- *	Takes the recovery token for the piv token with the GUID <guid> on
- *	stdin (single line) followed by a JSON description of the replacement
- *	token (similart to register-token).  It's not the greatest interface,
- *	but essentially:
- *		recovery token
- *		{ Replacement token JSON
- *		...
- *		}
+ * replace-token <guid> <rtoken>
+ *	Takes a JSON blob for a PIV token to replace the previous system
+ *	token <guid> with the recovery token <rtoken> and replaces the
+ *	PIV token data in KBMAPI.
+ *
  *	Writes the new recovery token to stdout on success.  This is
  *	different from 'new-token' in that this uses the recovery token
  *	to authenticate and replace the PIV token (as well as generate
@@ -82,8 +78,10 @@
  * will be unable to use the PIV token if we keep it locked in a transaction.
  */
 
+#define	PLUGIN_VERSION		"1"
+
 /* XXX: This path should change */
-#define	PLUGIN_PATH		"/root/bin/"
+#define	PLUGIN_PATH		"/usr/lib/kbmd/"
 
 #define	GET_PIN_CMD		"get-pin"
 #define	REGISTER_TOK_CMD	"register-pivtoken"
@@ -113,6 +111,96 @@ extract_line(custr_t *cu)
 
 	idx = (size_t)(end - s);
 	VERIFY0(custr_trunc(cu, idx));
+}
+
+/*
+ * Remove leading and trailing whitespace
+ */
+static void
+trim_whitespace(custr_t *cu)
+{
+	const char *start = custr_cstr(cu);
+	const char *p;
+	size_t amt;
+
+	/* Remove leading whitespace */
+	if ((amt = strspn(start, " \t\n")) > 0) {
+		VERIFY0(custr_remove(cu, 0, amt));
+	}
+
+	/* Remove trailing whitespace */
+	start = custr_cstr(cu);
+	p = start + custr_len(cu) - 1;
+	amt = 0;
+	while (p > start) {
+		if (*p == ' ' || *p == '\t' || *p == '\n') {
+			amt++;
+		}
+		p--;
+	}
+
+	if (amt > 0) {
+		VERIFY0(custr_rtrunc(cu, amt - 1));
+	}
+}
+
+static errf_t *
+check_plugin_version(const char *cmd)
+{
+	errf_t *ret = ERRF_OK;
+	strarray_t args = STRARRAY_INIT;
+	int fds[3] = { -1, -1, -1 };
+	pid_t pid;
+
+	if ((ret = strarray_append(&args, "%s", cmd)) != ERRF_OK ||
+	    (ret = strarray_append(&args, "-v")) != ERRF_OK) {
+		return (errf("PluginError", ret, ""));
+	}
+
+	(void) bunyan_debug(tlog, "Checking plugin version",
+	    BUNYAN_T_STRING, "plugin", cmd,
+	    BUNYAN_T_END);
+
+	ret = spawn(cmd, args.sar_strs, _environ, &pid, fds);
+	strarray_fini(&args);
+	if (ret != ERRF_OK) {
+		return (errf("PluginError", ret, ""));
+	}
+
+	custr_t *data[2] = { 0 };
+	int exitval;
+
+	if ((ret = ecustr_alloc(&data[0])) != ERRF_OK ||
+	    (ret = ecustr_alloc(&data[1])) != ERRF_OK ||
+	    (ret = interact(pid, fds, NULL, 0, data, &exitval)) != ERRF_OK) {
+		custr_free(data[0]);
+		custr_free(data[1]);
+		return (errf("PluginError", ret, ""));
+	}
+
+	if (exitval != 0) {
+		(void) bunyan_warn(tlog, "Error checking plugin version",
+		    BUNYAN_T_STRING, "plugin", cmd,
+		    BUNYAN_T_INT32, "retval", exitval,
+		    BUNYAN_T_END);
+
+		ret = errf("PluginError", NULL,
+		    "Unexpected return value %d from version check on %s",
+		    exitval, cmd);
+	} else {
+		trim_whitespace(data[0]);
+
+		if (strcmp(custr_cstr(data[0]), PLUGIN_VERSION) != 0) {
+			ret = errf("PluginVersionError", NULL,
+			    "plugin version '%s' is incompatible",
+			    custr_cstr(data[0]));
+		}
+	}
+
+	custr_free(data[0]);
+	custr_free(data[1]);
+
+	return (ret);
 }
 
 errf_t *
@@ -536,31 +624,32 @@ kbmd_replace_pivtoken(const uint8_t *guid, size_t guidlen,
 {
 	errf_t *ret = ERRF_OK;
 	custr_t *input = NULL;
+	custr_t *rtok64 = NULL;
 	custr_t *new_rtoken = NULL;
 	strarray_t args = STRARRAY_INIT;
 
 	VERIFY(!piv_token_in_txn(kt->kt_piv));
 
-	if ((ret = ecustr_alloc(&input)) != ERRF_OK)
+	if ((ret = ecustr_alloc(&input)) != ERRF_OK ||
+	    (ret = ecustr_alloc(&rtok64)) != ERRF_OK) {
 		goto done;
+	}
+
+	if ((ret = ecustr_append_b64(rtok64, rtoken, rtokenlen)) != ERRF_OK) {
+		goto done;
+	}
 
 	if ((ret = strarray_append(&args, REPLACE_TOK_CMD)) != ERRF_OK ||
-	    (ret = strarray_append_guid(&args, guid)) != ERRF_OK)
+	    (ret = strarray_append_guid(&args, guid)) != ERRF_OK ||
+	    (ret = strarray_append(&args, "%s", custr_cstr(rtok64))) != ERRF_OK)
 		goto done;
 
 	/*
 	 * The input to the script is:
-	 *	<base64-encoded recovery token>
 	 *	{ <new token JSON...
 	 *	...
 	 *	}
-	 *
-	 * So prepend '<recovery token>\n' to the input data.
 	 */
-	if ((ret = ecustr_append_b64(input, rtoken, rtokenlen)) != ERRF_OK ||
-	    (ret = ecustr_appendc(input, '\n')) != ERRF_OK)
-		goto done;
-
 	if ((ret = plugin_pivtoken_common(kt->kt_piv, kt->kt_pin,
 	    REPLACE_TOK_PATH, args.sar_strs, input, &new_rtoken)) != ERRF_OK) {
 		goto done;
@@ -571,6 +660,7 @@ kbmd_replace_pivtoken(const uint8_t *guid, size_t guidlen,
 done:
 	strarray_fini(&args);
 	custr_free(input);
+	custr_free(rtok64);
 	custr_free(new_rtoken);
 	return (ret);
 }

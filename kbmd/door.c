@@ -168,39 +168,19 @@ void __NORETURN
 kbmd_ret_error(errf_t *ef)
 {
 	nvlist_t *nvret = NULL;
-	custr_t *cu = NULL;
 	errf_t *ret = ERRF_OK;
 
-	if ((ret = envlist_alloc(&nvret)) != ERRF_OK ||
-	    (ret = ecustr_alloc(&cu)) != ERRF_OK)
+	if ((ret = envlist_alloc(&nvret)) != ERRF_OK) {
 		goto fail;
-
-	if (nvlist_add_boolean_value(nvret, KBM_NV_SUCCESS, B_FALSE) != 0)
-		goto fail;
-
-	ret = ecustr_append_printf(cu, "%s: %s in %s() at %s:%d\n",
-	    errf_name(ef), errf_message(ef), errf_function(ef), errf_file(ef),
-	    errf_line(ef));
-	if (ret != ERRF_OK)
-		goto fail;
-
-	for (errf_t *cause = errf_cause(ef); cause != NULL;
-	    cause = errf_cause(cause)) {
-		ret = ecustr_append_printf(cu,
-		    "    Caused by %s: %s in %s() at %s:%d\n",
-		    errf_name(cause), errf_message(cause), errf_function(cause),
-		    errf_file(cause), errf_line(cause));
-
-		/*
-		 * If we fail, go with as much as we have as a last ditch
-		 * effort to report something.
-		 */
-		if (ret != ERRF_OK)
-			break;
 	}
 
-	if (nvlist_add_string(nvret, KBM_NV_ERRMSG, custr_cstr(cu)) < 0)
+	if (nvlist_add_boolean_value(nvret, KBM_NV_SUCCESS, B_FALSE) != 0) {
 		goto fail;
+	}
+
+	if ((ret = envlist_add_errf(nvret, KBM_NV_ERRMSG, ef)) != ERRF_OK) {
+		goto fail;
+	}
 
 	kbmd_ret_nvlist(nvret);
 
@@ -208,7 +188,6 @@ fail:
 	errf_free(ef);
 	errf_free(ret);
 	nvlist_free(nvret);
-	custr_free(cu);
 	door_return(generr, generr_sz, NULL, 0);
 	/* NOTREACHED */
 	abort();

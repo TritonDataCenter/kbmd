@@ -86,6 +86,12 @@ KBMD_LIBS =		\
 	-lzfs		\
 	-lzfs_core	\
 	-lpcsc
+KBMD_PLUGINS =			\
+	get-pin			\
+	new-rtoken		\
+	register-pivtoken	\
+	replace-pivtoken
+
 out/kbmd:	LDLIBS += $(KBMD_LIBS)
 # For flockfile and funlockfile
 out/kbmd:	CPPFLAGS += -D__EXTENSIONS__ -D_REENTRANT
@@ -209,10 +215,16 @@ out/kbmd: $(KBMD_OBJS) $(STATIC_LIBS)
 #
 .PHONY: install manifest
 install: all
+	-mkdir -m 0755 -p $(DESTDIR)/usr/lib/kbm/plugins
 	$(INSTALL) -m 0555 -f $(DESTDIR)/usr/sbin pivy/pivy-tool
 	$(INSTALL) -m 0555 -f $(DESTDIR)/usr/sbin pivy/pivy-box
 	$(INSTALL) -m 0555 -f $(DESTDIR)/usr/sbin out/kbmadm
-	$(INSTALL) -m 0555 -f $(DESTDIR)/usr/lib out/kbmd
+	$(INSTALL) -m 0555 -f $(DESTDIR)/usr/lib/kbm out/kbmd
+	for plugin in $(KBMD_PLUGINS); do				\
+	    $(INSTALL) -m 0555 -f $(DESTDIR)/usr/lib/kbm/plugins	\
+	    plugins/$$plugin;						\
+	done
+	$(INSTALL) -m 0644 -f $(DESTDIR)/lib/svc/manifest kbmd.xml
 
 manifest:
 	cp manifest $(DESTDIR)/$(DESTNAME)

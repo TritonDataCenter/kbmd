@@ -30,7 +30,7 @@
 
 #define	ADMIN_KEY_LENGTH 24
 
-kbmd_token_t *kpiv;
+kbmd_token_t *sys_piv;
 
 /*
  * The default values of a piv token that hasn't been setup.
@@ -756,10 +756,10 @@ kbmd_token_free(kbmd_token_t *kt)
 	if (kt == NULL)
 		return;
 
-	if (kt == kpiv) {
+	if (kt == sys_piv) {
 		VERIFY(MUTEX_HELD(&piv_lock));
-		if (kt == kpiv)
-			kpiv = NULL;
+		if (kt == sys_piv)
+			sys_piv = NULL;
 	}
 
 	explicit_bzero(kt->kt_pin, sizeof (kt->kt_pin));
@@ -772,11 +772,11 @@ kbmd_set_token(kbmd_token_t *kt)
 {
 	VERIFY(MUTEX_HELD(&piv_lock));
 
-	if (kt == kpiv)
+	if (kt == sys_piv)
 		return;
 
-	kbmd_token_free(kpiv);
-	kpiv = kt;
+	kbmd_token_free(sys_piv);
+	sys_piv = kt;
 }
 
 /*

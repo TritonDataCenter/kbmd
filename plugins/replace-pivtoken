@@ -9,9 +9,9 @@
 #
 # Args:
 #   $1 = GUID of the PIV token
+#   $2 = Recovery token (base64 encoded)
 #
 # Input:
-#   The recovery token (base64 encoded)
 #   JSON blob similar in format to register-pivtoken
 #
 # Output:
@@ -25,9 +25,39 @@
 
 PIVYTOOL=/usr/sbin/pivy-tool
 CURL=/usr/bin/curl
-ENC=xxx
+OPENSSL=/usr/bin/openssl
+OD=/usr/xpg4/bin/od
+SED=/usr/xpg4/bin/sed
 
-url="/pivtokens/$1/recover"
-date="$(date +"%a, %e %b %Y %T %Z")"
-sig="$(echo $date | $PIVYTOOL sign 9e | $enc)"
+VERSION="1"
 
+while getopts "v" opt; do
+    case "$opt" in
+        v)
+            echo "$VERSION"
+            exit 0
+            ;;
+    esac
+done
+shift OPTIND - 1
+
+path="pivtokens/$1/recover"
+url="http://kbmapi.$host/$path"
+
+date="$(date +"%a, %d %b %Y %T %Z")"
+
+rtoken="$2"
+# Somewhat roundabout, take base64 to raw to hex and strip whitespace from hex
+# as openssl requires the key to be in hex
+rtoken_hex=$(echo $rtoken | $OPENSSL enc -base64 -d | od -An -tx1 | \
+    $SED -e 'N;s/\n//' -e 's/ //g')
+
+sig="$(echo $date | $PIVYTOOL sign 9e | \
+    $OPENSSL dgst -sha512 -hmac -macopt hexkey:"$rtoken_hex")"
+
+new_rtoken=$(cat - | $CURL -sS \
+    -H "Date: $date" \
+    -H "Authorization: $sig" \
+    "$url") || exit 1
+
+echo "$new_rtoken"

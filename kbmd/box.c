@@ -428,9 +428,9 @@ find_part_pivtoken(struct ebox_part *part, kbmd_token_t **ktp)
 	/*
 	 * If a system token is set, try that one first
 	 */
-	if (kpiv != NULL &&
-	    bcmp(piv_token_guid(kpiv->kt_piv), guid, GUID_LEN) == 0) {
-		*ktp = kpiv;
+	if (sys_piv != NULL &&
+	    bcmp(piv_token_guid(sys_piv->kt_piv), guid, GUID_LEN) == 0) {
+		*ktp = sys_piv;
 		return (ERRF_OK);
 	}
 
@@ -504,7 +504,7 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 		if (kt != NULL &&
 		    bcmp(piv_token_guid(kt->kt_piv), piv_box_guid(dhbox),
 		    GUID_LEN) != 0) {
-			if (kt != kpiv)
+			if (kt != sys_piv)
 				kbmd_token_free(kt);
 			kt = NULL;
 
@@ -513,7 +513,7 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 
 		if (kt == NULL &&
 		    (ret = find_part_pivtoken(part, &kt)) != ERRF_OK) {
-			if (kt != kpiv)
+			if (kt != sys_piv)
 				kbmd_token_free(kt);
 
 			if (errf_caused_by(ret, "NotFoundError")) {
@@ -633,7 +633,7 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 	    "Cannot unlock box for %s; recovery is required", boxname);
 
 done:
-	if (kt != kpiv)
+	if (kt != sys_piv)
 		kbmd_token_free(kt);
 
 	return (ret);
