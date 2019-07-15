@@ -18,7 +18,7 @@ include		$(PWD)/../../../build.env
 STRAP_AREA =	$(PWD)/../../../proto.strap
 CC =		$(STRAP_AREA)/usr/bin/gcc
 AR =		/usr/bin/ar
-LIBCRYPTO =	$(DESTDIR)/lib/amd64/libsunw_crypto.a
+LIBCRYPTO =	$(DESTDIR)/.build/libsunw_crypto.a
 PROTOINC =	$(DESTDIR)/usr/include
 INSTALL =	/usr/sbin/install
 
