@@ -314,7 +314,7 @@ exitval(pid_t pid, int *valp)
 
 #define	READBUF_SZ 256
 static errf_t *
-read_fd(int fd, custr_t *restrict cu, size_t *restrict np)
+read_fd(int fd, custr_t *restrict cu, size_t *restrict np, boolean_t esc_nl)
 {
 	errf_t *ret;
 	char buf[READBUF_SZ] = { 0 };
@@ -328,13 +328,24 @@ read_fd(int fd, custr_t *restrict cu, size_t *restrict np)
 		return (errf("ReadError", ret, ""));
 	}
 
-	if (n > 0 && (ret = ecustr_append(cu, buf)) != ERRF_OK) {
-		explicit_bzero(buf, sizeof (buf));
-		return (errf("ReadError", ret, ""));
+	for (size_t i = 0; i < n; i++) {
+		char c = buf[i];
+
+		if (c == '\\n' && esc_nl) {
+			ret = ecustr_append(cu, "\\n");
+		} else {
+			ret = ecustr_appendc(cu, c);
+		}
+
+		if (ret != ERRF_OK) {
+			ret = errf("ReadError", ret, "");
+			break;
+		}
 	}
 
-	*np = n;
-	return (ERRF_OK);
+	explicit_bzero(buf, sizeof (buf));
+	*np = (ret == ERRF_OK) ? n : 0;
+	return (ret);
 }
 
 static errf_t *
@@ -361,7 +372,7 @@ write_fd(int fd, const void *data, size_t datalen, size_t offset,
 
 errf_t *
 interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
-    custr_t *output[restrict], int *restrict exitvalp)
+    custr_t *output[restrict], int *restrict exitvalp, boolean_t esc_stderr)
 {
 	bunyan_logger_t *ilog = NULL;
 	struct pollfd pfds[3]= { 0 };
@@ -440,7 +451,13 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
 			if (!(pfds[i].events & POLLIN))
 				continue;
 
-			ret = read_fd(pfds[i].fd, output[i - 1], &n);
+			boolean_t esc_nl = B_FALSE;
+
+			if (i == STDERR_FILENO && esc_stderr) {
+				esc_nl = B_TRUE;
+			}
+
+			ret = read_fd(pfds[i].fd, output[i - 1], &n, esc_nl);
 
 			if (n == 0 || ret != ERRF_OK) {
 				if (ret == ERRF_OK) {
