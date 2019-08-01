@@ -46,7 +46,7 @@ void strarray_fini(strarray_t *);
 struct errf *spawn(const char *restrict, char *const[restrict],
     char *const[restrict], pid_t *restrict, int [restrict]);
 struct errf *interact(pid_t, int [restrict], const void *, size_t,
-    struct custr *[restrict], int *restrict);
+    struct custr *[restrict], int *restrict, boolean_t);
 struct errf *exitval(pid_t, int *);
 
 #ifdef __cplusplus
