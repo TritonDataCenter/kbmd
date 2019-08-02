@@ -796,7 +796,7 @@ challenge(nvlist_t *restrict req, nvlist_t *restrict resp,
 	if ((ret = envlist_add_int32(resp, KBM_NV_ACTION,
 	    KBM_ACT_CHALLENGE)) != ERRF_OK ||
 	    (ret = envlist_add_uint32(resp, KBM_NV_REMAINING,
-	    r->r_m)) != ERRF_OK) {
+	    r->r_n)) != ERRF_OK) {
 		goto done;
 	}
 
