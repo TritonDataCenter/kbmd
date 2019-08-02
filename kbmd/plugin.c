@@ -172,7 +172,8 @@ check_plugin_version(const char *cmd)
 
 	if ((ret = ecustr_alloc(&data[0])) != ERRF_OK ||
 	    (ret = ecustr_alloc(&data[1])) != ERRF_OK ||
-	    (ret = interact(pid, fds, NULL, 0, data, &exitval)) != ERRF_OK) {
+	    (ret = interact(pid, fds, NULL, 0, data, &exitval,
+	    B_FALSE)) != ERRF_OK) {
 		custr_free(data[0]);
 		custr_free(data[1]);
 		return (errf("PluginError", ret, ""));
@@ -241,7 +242,8 @@ kbmd_get_pin(const uint8_t guid[restrict], custr_t **restrict pinp)
 
 	if ((ret = ecustr_alloc(&data[0])) != ERRF_OK ||
 	    (ret = ecustr_alloc(&data[1])) != ERRF_OK ||
-	    (ret = interact(pid, fds, NULL, 0, data, &exitval)) != ERRF_OK) {
+	    (ret = interact(pid, fds, NULL, 0, data, &exitval,
+	    B_FALSE)) != ERRF_OK) {
 		custr_free(data[0]);
 		custr_free(data[1]);
 		return (errf("PluginError", ret, ""));
@@ -516,7 +518,7 @@ plugin_pivtoken_common(struct piv_token *restrict pt, const char *restrict pin,
 
 	if ((ret = spawn(cmd, args, _environ, &pid, fds)) != ERRF_OK ||
 	    (ret = interact(pid, fds, custr_cstr(data[0]), custr_len(data[0]),
-	    &data[1], &exitval)) != ERRF_OK) {
+	    &data[1], &exitval, B_FALSE)) != ERRF_OK) {
 		goto done;
 	}
 
@@ -703,7 +705,8 @@ kbmd_new_recovery_token(kbmd_token_t *restrict kt, uint8_t **restrict rtokenp,
 
 	if ((ret = ecustr_alloc(&data[0])) != ERRF_OK ||
 	    (ret = ecustr_alloc(&data[1])) != ERRF_OK ||
-	    (ret = interact(pid, fds, NULL, 0, data, &exitval)) != ERRF_OK) {
+	    (ret = interact(pid, fds, NULL, 0, data, &exitval,
+	    B_FALSE)) != ERRF_OK) {
 		custr_free(data[0]);
 		custr_free(data[1]);
 		return (errf("PluginError", ret, ""));
