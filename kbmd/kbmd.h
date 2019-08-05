@@ -108,6 +108,7 @@ void kbmd_recover_init(int);
 void kbmd_recover_start(struct nvlist *, pid_t);
 void kbmd_recover_resp(struct nvlist *, pid_t);
 void kbmd_update_recovery(struct nvlist *);
+void kbmd_show_recovery(struct nvlist *);
 
 errf_t *ezfs_open(struct libzfs_handle *, const char *, int,
     struct zfs_handle **);
