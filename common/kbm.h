@@ -50,6 +50,8 @@ extern "C" {
 #define	KBM_NV_NAME		"name"		/* string */
 #define	KBM_NV_CHALLENGE	"challenge"	/* string */
 #define	KBM_NV_WORDS		"words"		/* string array */
+#define	KBM_NV_SLOT		"slot"		/* int32_t */
+#define	KBM_NV_PUBKEY		"pubkey"	/* string */
 
 #define	KBM_NV_RESP_QUIT	"quit"		/* boolean */
 #define	KBM_NV_RECOVERY_COMPLETE	"recovery-complete"	/* boolean */
@@ -134,6 +136,7 @@ typedef enum kbm_cmd {
 	KBM_CMD_RECOVER_START,
 	KBM_CMD_RECOVER_RESP,
 	KBM_CMD_UPDATE_RECOVERY, /* XXX: Only for testing */
+	KBM_CMD_SHOW_RECOVERY,
 } kbm_cmd_t;
 
 typedef enum kbm_act {

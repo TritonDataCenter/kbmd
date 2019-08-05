@@ -49,6 +49,7 @@ static errf_t *run_zpool_cmd(char **, const uint8_t *, size_t);
 static errf_t *do_create_zpool(int, char **);
 static errf_t *do_unlock(int, char **);
 static errf_t *do_update_recovery(int, char **);
+static errf_t *do_show_recovery(int, char **);
 errf_t *do_recover(int, char **);
 
 static struct {
@@ -59,6 +60,7 @@ static struct {
 	{ "recover", do_recover },
 	{ "unlock", do_unlock },
 	{ "update-recovery", do_update_recovery },
+	{ "show-recovery", do_show_recovery }
 };
 
 static void __NORETURN
@@ -401,7 +403,8 @@ run_zpool_cmd(char **argv, const uint8_t *key, size_t keylen)
 	size_t written = 0;
 
 	if ((ret = spawn(ZPOOL_CMD, argv, _environ, &pid, fds)) != ERRF_OK ||
-	    (ret = interact(pid, fds, key, keylen, out, &status)) != ERRF_OK)
+	    (ret = interact(pid, fds, key, keylen, out, &status,
+	    B_FALSE)) != ERRF_OK)
 		return (ret);
 
 	if (status != 0) {
@@ -507,6 +510,76 @@ done:
 	free(tpl);
 	return (ret);
 
+}
+
+static errf_t *
+do_show_recovery(int argc __unused, char **argv __unused)
+{
+	errf_t *ret = ERRF_OK;
+	nvlist_t *req = NULL;
+	nvlist_t *resp = NULL;
+	nvlist_t **cfgs = NULL;
+	uint_t ncfgs = 0;
+	int fd = -1;
+
+	/*  XXX: add -v flag to show pubkey */
+	if ((ret = req_new(KBM_CMD_SHOW_RECOVERY, &req)) != ERRF_OK)
+		return (ret);
+
+	if ((ret = open_door(&fd)) != ERRF_OK ||
+	    (ret = nv_door_call(fd, req, &resp)) != ERRF_OK) {
+		goto done;
+	}
+
+	if ((ret = check_error(resp)) != ERRF_OK) {
+		goto done;
+	}
+
+	if ((ret = envlist_lookup_nvlist_array(resp, KBM_NV_CONFIGS, &cfgs,
+	    &ncfgs)) != ERRF_OK) {
+		goto done;
+	}
+
+	for (size_t i = 0; i < ncfgs; i++) {
+		nvlist_t **parts = NULL;
+		uint_t nparts = 0;
+
+		if ((ret = envlist_lookup_nvlist_array(cfgs[i], KBM_NV_PARTS,
+		    &parts, &nparts)) != ERRF_OK) {
+			goto done;
+		}
+
+		(void) printf("CONFIG #%zu\n", i + 1);
+		(void) printf("\t%-16s %-4s %s\n", "GUID", "SLOT", "NAME");
+
+		for (size_t j = 0; j < nparts; j++) {
+			uint8_t *guid = NULL;
+			char gstr[GUID_STR_LEN] = { 0 };
+			char *name = NULL;
+			int32_t slot = 0;
+			uint_t guid_len = 0;
+
+			if ((ret = envlist_lookup_uint8_array(parts[i],
+			    KBM_NV_GUID, &guid, &guid_len)) != ERRF_OK ||
+			    (ret = envlist_lookup_string(parts[i],
+			    KBM_NV_NAME, &name)) != ERRF_OK ||
+			    (ret = envlist_lookup_int32(parts[i],
+			    KBM_NV_SLOT, &slot)) != ERRF_OK) {
+				goto done;
+			}
+
+			guidtohex(guid, gstr);
+			(void) printf("\t%16s %4x %s\n", gstr, slot,
+			    (name == NULL) ? "" : name);
+		}
+
+		(void) fputc('\n', stdout);
+	}
+
+done:
+	nvlist_free(req);
+	nvlist_free(resp);
+	return (ret);
 }
 
 static errf_t *

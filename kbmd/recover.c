@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2019, Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 
 #include <errno.h>
@@ -20,6 +20,8 @@
 #include <sys/refhash.h>
 #include "kbmd.h"
 #include "pivy/libssh/sshbuf.h"
+#include "pivy/libssh/ssherr.h"
+#include "pivy/libssh/sshkey.h"
 #include "pivy/words.h"
 
 typedef struct recovery {
@@ -1093,4 +1095,171 @@ kbmd_update_recovery(nvlist_t *req)
 	}
 
 	kbmd_ret_nvlist(resp);
+}
+
+static errf_t *
+show_add_part(nvlist_t **nvlp, struct ebox_tpl_part *tpart)
+{
+	errf_t *ret = ERRF_OK;
+	nvlist_t *nvl = NULL;
+	struct sshkey *pubkey = NULL;
+	struct sshbuf *buf = NULL;
+	const uint8_t *guid = NULL;
+	const char *name = NULL;
+	enum piv_slotid slotid;
+	int rc;
+
+	if ((ret = envlist_alloc(&nvl)) != ERRF_OK) {
+		goto done;
+	}
+
+	if ((buf = sshbuf_new()) == NULL) {
+		ret = errfno("sshbuf_new", ENOMEM, "failed to allocate sshbuf");
+		goto done;
+	}
+
+	pubkey = ebox_tpl_part_pubkey(tpart);
+	guid = ebox_tpl_part_guid(tpart);
+	name = ebox_tpl_part_name(tpart);
+	slotid = ebox_tpl_part_slot(tpart);
+
+	if ((rc = sshkey_format_text(pubkey,  buf)) != 0) {
+		ret = ssherrf("sshkey_format_text", rc,
+		    "failed to convert public key");
+		goto done;
+	}
+
+	if ((ret = envlist_add_uint8_array(nvl, KBM_NV_GUID, guid,
+	    GUID_LEN)) != ERRF_OK ||
+	    (ret = envlist_add_int32(nvl, KBM_NV_SLOT, slotid)) != ERRF_OK ||
+	    (ret = envlist_add_string(nvl, KBM_NV_PUBKEY,
+	     sshbuf_ptr(buf))) != ERRF_OK) {
+		goto done;
+	}
+
+	if (name != NULL &&
+	   (ret = envlist_add_string(nvl, KBM_NV_NAME, name)) != ERRF_OK) {
+		goto done;
+	}
+
+	*nvlp = nvl;
+
+done:
+	sshbuf_free(buf);
+	if (ret != ERRF_OK) {
+		nvlist_free(nvl);
+	}
+
+	return (ret);
+}
+
+static errf_t *
+show_add_config(nvlist_t **nvlp, struct ebox_tpl_config *tcfg)
+{
+	errf_t *ret = ERRF_OK;
+	nvlist_t *nvl = NULL;
+	nvlist_t **nvl_parts = NULL;
+	struct ebox_tpl_part *tpart = NULL;
+	uint_t npart = 0;
+
+	while ((tpart = ebox_tpl_config_next_part(tcfg, tpart)) != NULL) {
+		npart++;
+	}
+
+	if ((ret = envlist_alloc(&nvl)) != ERRF_OK ||
+	    (ret = ecalloc(npart, sizeof (nvlist_t *),
+	    &nvl_parts)) != ERRF_OK) {
+		nvlist_free(nvl);
+		return (ret);
+	}
+
+	tpart = NULL;
+	for (size_t i = 0; i < npart; i++) {
+		tpart = ebox_tpl_config_next_part(tcfg, tpart);
+		if ((ret = show_add_part(&nvl_parts[i], tpart)) != ERRF_OK) {
+			goto done;
+		}
+	}
+
+	if ((ret = envlist_add_nvlist_array(nvl, KBM_NV_PARTS, nvl_parts,
+	    npart)) != ERRF_OK) {
+		goto done;
+	}
+
+	*nvlp = nvl;
+
+done:
+	for (size_t i = 0; i < npart; i++) {
+		nvlist_free(nvl_parts[i]);
+	}
+	free(nvl_parts);
+
+	if (ret != ERRF_OK) {
+		nvlist_free(nvl);
+	}
+
+	return (ret);
+}
+
+void
+kbmd_show_recovery(nvlist_t *req)
+{
+	errf_t *ret = ERRF_OK;
+	nvlist_t *resp = NULL;
+	nvlist_t **nvl_cfgs = NULL;
+	struct ebox *ebox = NULL;
+	struct ebox_tpl *tpl = NULL;
+	struct ebox_tpl_config *tcfg  = NULL;
+	uint_t ncfg = 0;
+
+	if ((ret = envlist_alloc(&resp)) != ERRF_OK) {
+		kbmd_ret_error(ret);
+	}
+
+	if ((ret = kbmd_get_ebox(zones_dataset, &ebox)) != ERRF_OK) {
+		goto done;
+	}
+
+	tpl = ebox_tpl(ebox);
+	if (tpl == NULL) {
+		ret = errf("EboxError",  NULL,
+		    "ebox does not seem to contain a template");
+		goto done;
+	}
+
+	while ((tcfg = ebox_tpl_next_config(tpl, tcfg)) != NULL) {
+		ncfg++;
+	}
+
+	tcfg = NULL;
+	if ((ret = ecalloc(ncfg, sizeof (nvlist_t *), &nvl_cfgs)) != NULL) {
+		goto done;
+	}
+
+	tcfg = NULL;
+	for (size_t i = 0; i < ncfg; i++) {
+		tcfg = ebox_tpl_next_config(tpl, tcfg);
+
+		if ((ret = show_add_config(&nvl_cfgs[i], tcfg)) != ERRF_OK) {
+			goto done;
+		}
+	}
+
+	ret = envlist_add_nvlist_array(resp, KBM_NV_CONFIGS, nvl_cfgs, ncfg);
+
+done:
+	if (nvl_cfgs != NULL) {
+		for (size_t i = 0; i < ncfg; i++) {
+			nvlist_free(nvl_cfgs[i]);
+		}
+		free(nvl_cfgs);
+	}
+	ebox_free(ebox);
+
+	if (ret != ERRF_OK) {
+		kbmd_ret_nvlist(resp);
+	}
+
+	nvlist_free(resp);
+	kbmd_ret_error(ret);
 }
