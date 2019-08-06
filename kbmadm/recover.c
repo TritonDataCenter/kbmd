@@ -69,7 +69,7 @@ create_gl(GetLine **glp)
 }
 
 errf_t *
-do_recover(int argc, char **argv)
+do_recover(int argc, char **argv, nvlist_t **respp)
 {
 	errf_t *ret = ERRF_OK;
 	nvlist_t *req = NULL, *resp = NULL;
@@ -138,7 +138,7 @@ done:
 	if (fd >= 0)
 		(void) close(fd);
 	nvlist_free(req);
-	nvlist_free(resp);
+	*respp = resp;
 	return (ret);
 }
 
