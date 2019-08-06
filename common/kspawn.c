@@ -331,7 +331,7 @@ read_fd(int fd, custr_t *restrict cu, size_t *restrict np, boolean_t esc_nl)
 	for (size_t i = 0; i < n; i++) {
 		char c = buf[i];
 
-		if (c == '\\n' && esc_nl) {
+		if (c == '\n' && esc_nl) {
 			ret = ecustr_append(cu, "\\n");
 		} else {
 			ret = ecustr_appendc(cu, c);
