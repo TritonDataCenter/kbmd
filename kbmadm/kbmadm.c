@@ -46,15 +46,26 @@ static errf_t *parse_guid(const char *, uint8_t guid[GUID_LEN]);
 static errf_t *read_template_file(const char *, char **);
 static errf_t *read_template_stdin(char **);
 static errf_t *run_zpool_cmd(char **, const uint8_t *, size_t);
-static errf_t *do_create_zpool(int, char **);
-static errf_t *do_unlock(int, char **);
-static errf_t *do_update_recovery(int, char **);
-static errf_t *do_show_recovery(int, char **);
-errf_t *do_recover(int, char **);
+
+/*
+ * Unfortunately, errf_t's assume that the file and func values are
+ * string pointers to static strings (e.g. __FILE__ or __func__).  However,
+ * this breaks down when sending errf_ts over a door.  Since the lifetime
+ * of both the function and file strings must be at least as long as the
+ * errf_t, we pass back the nvlist_t response which contains the strings
+ * so that it can be freed after we do any processing on the errf_t.
+ * In the case of errx, we end up leaking the nvlist_t, but only because
+ * we end up exiting before we have a chance to explicitly free the nvlist_t.
+ */
+static errf_t *do_create_zpool(int, char **, nvlist_t **);
+static errf_t *do_unlock(int, char **, nvlist_t **);
+static errf_t *do_update_recovery(int, char **, nvlist_t **);
+static errf_t *do_show_recovery(int, char **, nvlist_t **);
+errf_t *do_recover(int, char **, nvlist_t **);
 
 static struct {
 	const char *name;
-	errf_t *(*cmd)(int, char **);
+	errf_t *(*cmd)(int, char **, nvlist_t **);
 } cmd_tbl[] = {
 	{ "create-zpool", do_create_zpool },
 	{ "recover", do_recover },
@@ -82,6 +93,7 @@ int
 main(int argc, char *argv[])
 {
 	errf_t *ret = ERRF_OK;
+	nvlist_t *resp = NULL;
 	size_t i;
 	int c;
 
@@ -140,7 +152,7 @@ main(int argc, char *argv[])
 
 	for (i = 0; i < ARRAY_SIZE(cmd_tbl); i++) {
 		if (strcmp(argv[1], cmd_tbl[i].name) == 0) {
-			ret = cmd_tbl[i].cmd(argc - 1, argv + 1);
+			ret = cmd_tbl[i].cmd(argc - 1, argv + 1, &resp);
 			break;
 		}
 	}
@@ -153,6 +165,7 @@ main(int argc, char *argv[])
 	if (ret != ERRF_OK)
 		errfx(EXIT_FAILURE, ret, "%s command failed", cmd_tbl[i].name);
 
+	nvlist_free(resp);
 	return (0);
 }
 
@@ -297,7 +310,7 @@ done:
 }
 
 static errf_t *
-do_create_zpool(int argc, char **argv)
+do_create_zpool(int argc, char **argv, nvlist_t **respp)
 {
 	errf_t *ret = ERRF_OK;
 	nvlist_t *req = NULL;
@@ -386,9 +399,9 @@ do_create_zpool(int argc, char **argv)
 done:
 	if (fd >= 0)
 		(void) close(fd);
-	nvlist_free(resp);
 	nvlist_free(req);
 	strarray_fini(&args);
+	*respp = resp;
 	return (ret);
 }
 
@@ -432,7 +445,7 @@ unlock_dataset(int fd, const char *dataset)
 }
 
 static errf_t *
-do_unlock(int argc, char **argv)
+do_unlock(int argc, char **argv, nvlist_t **respp)
 {
 	errf_t *ret;
 	nvlist_t *req = NULL, *resp = NULL;
@@ -451,12 +464,12 @@ done:
 	if (fd >= 0)
 		(void) close(fd);
 	nvlist_free(req);
-	nvlist_free(resp);
+	*respp = resp;
 	return (ret);
 }
 
 static errf_t *
-do_update_recovery(int argc, char **argv)
+do_update_recovery(int argc, char **argv, nvlist_t **respp)
 {
 	const char *dataset = "zones";
 	errf_t *ret = ERRF_OK;
@@ -506,14 +519,14 @@ do_update_recovery(int argc, char **argv)
 
 done:
 	nvlist_free(req);
-	nvlist_free(resp);
 	free(tpl);
+	*respp = resp;
 	return (ret);
 
 }
 
 static errf_t *
-do_show_recovery(int argc __unused, char **argv __unused)
+do_show_recovery(int argc __unused, char **argv __unused, nvlist_t **respp)
 {
 	errf_t *ret = ERRF_OK;
 	nvlist_t *req = NULL;
@@ -578,7 +591,7 @@ do_show_recovery(int argc __unused, char **argv __unused)
 
 done:
 	nvlist_free(req);
-	nvlist_free(resp);
+	*respp = resp;
 	return (ret);
 }
 
