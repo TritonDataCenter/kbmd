@@ -142,6 +142,94 @@ done:
 	return (ret);
 }
 
+errf_t *
+show_configs(nvlist_t **cfgs, uint_t ncfgs, boolean_t verbose)
+{
+	errf_t *ret = ERRF_OK;
+
+	for (size_t i = 0; i < ncfgs; i++) {
+		nvlist_t **parts = NULL;
+		uint_t m = 0;
+		uint32_t n = 0;
+		int namewidth = 16;
+
+		if ((ret = envlist_lookup_nvlist_array(cfgs[i], KBM_NV_PARTS,
+		    &parts, &m)) != ERRF_OK ||
+		    (ret = envlist_lookup_uint32(cfgs[i], KBM_NV_N,
+		    &n)) != ERRF_OK) {
+			ret = errf("InternalError", ret,
+			    "kbmd returned config %zu with bad data", i + 1);
+			return (ret);
+		}
+
+		for (size_t j = 0; j < m; j++) {
+			char *name = NULL;
+			size_t len;
+
+			if ((ret = envlist_lookup_string(parts[j], KBM_NV_NAME,
+			    &name)) != ERRF_OK) {
+				continue;
+			}
+
+			len = strlen(name);
+			if (len > INT_MAX) {
+				ret = errf("InternalError", NULL,
+				    "kbmd returned a name longer than INT_MAX "
+				    "(%zu bytes)", len);
+				return (ret);
+			}
+
+			if (len > namewidth) {
+				namewidth = len;
+			}
+		}
+
+		(void) printf("CONFIG #%zu\n", i + 1);
+		(void) printf("\tN = %" PRIu32 "\n", n);
+		(void) printf("\t%-32s %-4s %*s%s\n", "GUID", "SLOT",
+		    namewidth, "NAME", verbose ? " PUBKEY" : "");
+
+		for (size_t j = 0; j < m; j++) {
+			uint8_t *guid = NULL;
+			char gstr[GUID_STR_LEN] = { 0 };
+			char *name = NULL;
+			char *pubkey = NULL;
+			int32_t slot = 0;
+			uint_t guid_len = 0;
+
+			if ((ret = envlist_lookup_uint8_array(parts[j],
+			    KBM_NV_GUID, &guid, &guid_len)) != ERRF_OK ||
+			    (ret = envlist_lookup_string(parts[j],
+			    KBM_NV_PUBKEY, &pubkey)) != ERRF_OK ||
+			    (ret = envlist_lookup_int32(parts[j],
+			    KBM_NV_SLOT, &slot)) != ERRF_OK) {
+				ret = errf("InternalError", ret,
+				    "kbmd return config %zu part %zu with bad "
+				    "data", i + 1, j + 1);
+				return (ret);
+			}
+
+			if ((ret = envlist_lookup_string(parts[j],
+			    KBM_NV_NAME, &name)) != ERRF_OK) {
+				/*
+				 * The name is optional, so just ignore
+				 * any errors with it.
+				 */
+				errf_free(ret);
+			}
+
+			guidtohex(guid, gstr);
+			(void) printf("\t%32s %4x %*s%s%s\n", gstr, slot,
+			    namewidth, (name == NULL) ? "" : name,
+			    verbose ? " " : "", verbose ? pubkey : "");
+		}
+
+		(void) fputc('\n', stdout);
+	}
+
+	return (ERRF_OK);
+}
+
 static errf_t *
 select_config(nvlist_t *restrict q, nvlist_t *restrict req)
 {
@@ -153,15 +241,14 @@ select_config(nvlist_t *restrict q, nvlist_t *restrict req)
 	uint_t ncfg = 0;
 	int c;
 
-	if ((ret  = create_gl(&gl)) != ERRF_OK) {
-		return (ret);
-	}
-
 	if ((ret = envlist_lookup_nvlist_array(q, KBM_NV_CONFIGS, &cfg,
 	    &ncfg)) != ERRF_OK) {
 		ret = errf("InternalError", ret,
 		    "response is missing '%s' value", KBM_NV_CONFIGS);
-		del_GetLine(gl);
+		return (ret);
+	}
+
+	if ((ret = create_gl(&gl)) != ERRF_OK) {
 		return (ret);
 	}
 

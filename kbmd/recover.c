@@ -918,10 +918,6 @@ recover_common(nvlist_t *restrict req, recovery_t *restrict r)
 	ret = challenge(req, resp, r);
 
 done:
-	if (ret == ERRF_OK) {
-		ret = envlist_add_boolean_value(resp, KBM_NV_SUCCESS, B_TRUE);
-	}
-
 	nvlist_free(req);
 	mutex_exit(&recovery_lock);
 	(void) bunyan_key_remove(tlog, "recover_id");
@@ -1025,6 +1021,8 @@ kbmd_update_recovery(nvlist_t *req)
 	struct ebox *ebox_old = NULL, *ebox_new = NULL;
 	struct ebox_tpl *tpl = NULL;
 
+	(void) bunyan_trace(tlog, "kbmd_update_recovery: enter", BUNYAN_T_END);
+
 	if ((ret = envlist_alloc(&resp)) != ERRF_OK) {
 		kbmd_ret_error(ret);
 	}
@@ -1088,12 +1086,6 @@ kbmd_update_recovery(nvlist_t *req)
 
 	mutex_exit(&piv_lock);
 	ebox_tpl_free(tpl);
-	if ((ret = envlist_add_boolean_value(resp, KBM_NV_SUCCESS,
-	    B_TRUE)) != ERRF_OK) {
-		nvlist_free(resp);
-		kbmd_ret_error(ret);
-	}
-
 	kbmd_ret_nvlist(resp);
 }
 
@@ -1109,12 +1101,9 @@ show_add_part(nvlist_t **nvlp, struct ebox_tpl_part *tpart)
 	enum piv_slotid slotid;
 	int rc;
 
-	if ((ret = envlist_alloc(&nvl)) != ERRF_OK) {
-		goto done;
-	}
+	(void) bunyan_trace(tlog, "show_add_part: enter", BUNYAN_T_END);
 
-	if ((buf = sshbuf_new()) == NULL) {
-		ret = errfno("sshbuf_new", ENOMEM, "failed to allocate sshbuf");
+	if ((ret = envlist_alloc(&nvl)) != ERRF_OK) {
 		goto done;
 	}
 
@@ -1123,17 +1112,37 @@ show_add_part(nvlist_t **nvlp, struct ebox_tpl_part *tpart)
 	name = ebox_tpl_part_name(tpart);
 	slotid = ebox_tpl_part_slot(tpart);
 
-	if ((rc = sshkey_format_text(pubkey,  buf)) != 0) {
-		ret = ssherrf("sshkey_format_text", rc,
-		    "failed to convert public key");
-		goto done;
+	{
+		char gstr[GUID_STR_LEN] = { 0 };
+		guidtohex(guid, gstr);
+
+		(void) bunyan_trace(tlog, "Returning part",
+		    BUNYAN_T_STRING, "guid", gstr,
+		    BUNYAN_T_UINT32, "slot", (uint32_t)slotid,
+		    BUNYAN_T_STRING, "name", (name != NULL) ? name : "(none)",
+		    BUNYAN_T_END);
 	}
 
 	if ((ret = envlist_add_uint8_array(nvl, KBM_NV_GUID, guid,
 	    GUID_LEN)) != ERRF_OK ||
-	    (ret = envlist_add_int32(nvl, KBM_NV_SLOT, slotid)) != ERRF_OK ||
-	    (ret = envlist_add_string(nvl, KBM_NV_PUBKEY,
-	     sshbuf_ptr(buf))) != ERRF_OK) {
+	    (ret = envlist_add_int32(nvl, KBM_NV_SLOT, slotid)) != ERRF_OK)
+		goto done;
+
+	if ((buf = sshbuf_new()) == NULL) {
+		ret = errfno("sshbuf_new", ENOMEM, "failed to allocate sshbuf");
+		goto done;
+	}
+
+	if ((rc = sshkey_format_text(pubkey,  buf)) != 0) {
+		ret = ssherrf("sshkey_format_text", rc,
+		    "failed to convert public key");
+		sshbuf_free(buf);
+		goto done;
+	}
+
+	ret = envlist_add_string(nvl, KBM_NV_PUBKEY, sshbuf_ptr(buf));
+	sshbuf_free(buf);
+	if (ret != ERRF_OK) {
 		goto done;
 	}
 
@@ -1145,7 +1154,6 @@ show_add_part(nvlist_t **nvlp, struct ebox_tpl_part *tpart)
 	*nvlp = nvl;
 
 done:
-	sshbuf_free(buf);
 	if (ret != ERRF_OK) {
 		nvlist_free(nvl);
 	}
@@ -1161,6 +1169,9 @@ show_add_config(nvlist_t **nvlp, struct ebox_tpl_config *tcfg)
 	nvlist_t **nvl_parts = NULL;
 	struct ebox_tpl_part *tpart = NULL;
 	uint_t npart = 0;
+	uint_t n = 0;
+
+	(void) bunyan_trace(tlog, "show_add_config: enter", BUNYAN_T_END);
 
 	while ((tpart = ebox_tpl_config_next_part(tcfg, tpart)) != NULL) {
 		npart++;
@@ -1171,6 +1182,11 @@ show_add_config(nvlist_t **nvlp, struct ebox_tpl_config *tcfg)
 	    &nvl_parts)) != ERRF_OK) {
 		nvlist_free(nvl);
 		return (ret);
+	}
+
+	n = ebox_tpl_config_n(tcfg);
+	if ((ret = envlist_add_uint32(nvl, KBM_NV_N, (uint32_t)n)) != ERRF_OK) {
+		goto done;
 	}
 
 	tpart = NULL;
@@ -1211,6 +1227,9 @@ kbmd_show_recovery(nvlist_t *req)
 	struct ebox_tpl *tpl = NULL;
 	struct ebox_tpl_config *tcfg  = NULL;
 	uint_t ncfg = 0;
+	size_t i;
+
+	(void) bunyan_trace(tlog, "kbmd_show_recovery: enter", BUNYAN_T_END);
 
 	if ((ret = envlist_alloc(&resp)) != ERRF_OK) {
 		kbmd_ret_error(ret);
@@ -1228,19 +1247,30 @@ kbmd_show_recovery(nvlist_t *req)
 	}
 
 	while ((tcfg = ebox_tpl_next_config(tpl, tcfg)) != NULL) {
+		if (ebox_tpl_config_type(tcfg) != EBOX_RECOVERY) {
+			continue;
+		}
+
 		ncfg++;
 	}
 
-	tcfg = NULL;
+	(void) bunyan_trace(tlog, "Recovery configs",
+	    BUNYAN_T_UINT32, "ncfgs", (uint32_t)ncfg,
+	    BUNYAN_T_END);
+
 	if ((ret = ecalloc(ncfg, sizeof (nvlist_t *), &nvl_cfgs)) != NULL) {
 		goto done;
 	}
 
 	tcfg = NULL;
-	for (size_t i = 0; i < ncfg; i++) {
+	i = 0;
+	while ((tcfg = ebox_tpl_next_config(tpl, tcfg)) != NULL) {
 		tcfg = ebox_tpl_next_config(tpl, tcfg);
+		if (ebox_tpl_config_type(tcfg) != EBOX_RECOVERY) {
+			continue;
+		}
 
-		if ((ret = show_add_config(&nvl_cfgs[i], tcfg)) != ERRF_OK) {
+		if ((ret = show_add_config(&nvl_cfgs[i++], tcfg)) != ERRF_OK) {
 			goto done;
 		}
 	}
@@ -1256,7 +1286,7 @@ done:
 	}
 	ebox_free(ebox);
 
-	if (ret != ERRF_OK) {
+	if (ret == ERRF_OK) {
 		kbmd_ret_nvlist(resp);
 	}
 
