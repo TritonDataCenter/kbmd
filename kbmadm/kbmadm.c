@@ -62,6 +62,7 @@ static errf_t *do_unlock(int, char **, nvlist_t **);
 static errf_t *do_update_recovery(int, char **, nvlist_t **);
 static errf_t *do_show_recovery(int, char **, nvlist_t **);
 errf_t *do_recover(int, char **, nvlist_t **);
+errf_t *show_configs(nvlist_t **, uint_t, boolean_t);
 
 static struct {
 	const char *name;
@@ -526,7 +527,7 @@ done:
 }
 
 static errf_t *
-do_show_recovery(int argc __unused, char **argv __unused, nvlist_t **respp)
+do_show_recovery(int argc, char **argv, nvlist_t **respp)
 {
 	errf_t *ret = ERRF_OK;
 	nvlist_t *req = NULL;
@@ -534,8 +535,20 @@ do_show_recovery(int argc __unused, char **argv __unused, nvlist_t **respp)
 	nvlist_t **cfgs = NULL;
 	uint_t ncfgs = 0;
 	int fd = -1;
+	int c;
+	boolean_t opt_v = B_FALSE;
 
-	/*  XXX: add -v flag to show pubkey */
+	while ((c = getopt(argc, argv, "v")) != -1) {
+		switch (c) {
+		case 'v':
+			opt_v = B_TRUE;
+			break;
+		default:
+			(void) fprintf(stderr, "Invalid flag -%c\n", optopt);
+			usage();
+		}
+	}
+
 	if ((ret = req_new(KBM_CMD_SHOW_RECOVERY, &req)) != ERRF_OK)
 		return (ret);
 
@@ -544,7 +557,7 @@ do_show_recovery(int argc __unused, char **argv __unused, nvlist_t **respp)
 		goto done;
 	}
 
-	if ((ret = check_error(resp)) != ERRF_OK) {
+	if (resp == NULL || (ret = check_error(resp)) != ERRF_OK) {
 		goto done;
 	}
 
@@ -553,41 +566,7 @@ do_show_recovery(int argc __unused, char **argv __unused, nvlist_t **respp)
 		goto done;
 	}
 
-	for (size_t i = 0; i < ncfgs; i++) {
-		nvlist_t **parts = NULL;
-		uint_t nparts = 0;
-
-		if ((ret = envlist_lookup_nvlist_array(cfgs[i], KBM_NV_PARTS,
-		    &parts, &nparts)) != ERRF_OK) {
-			goto done;
-		}
-
-		(void) printf("CONFIG #%zu\n", i + 1);
-		(void) printf("\t%-16s %-4s %s\n", "GUID", "SLOT", "NAME");
-
-		for (size_t j = 0; j < nparts; j++) {
-			uint8_t *guid = NULL;
-			char gstr[GUID_STR_LEN] = { 0 };
-			char *name = NULL;
-			int32_t slot = 0;
-			uint_t guid_len = 0;
-
-			if ((ret = envlist_lookup_uint8_array(parts[i],
-			    KBM_NV_GUID, &guid, &guid_len)) != ERRF_OK ||
-			    (ret = envlist_lookup_string(parts[i],
-			    KBM_NV_NAME, &name)) != ERRF_OK ||
-			    (ret = envlist_lookup_int32(parts[i],
-			    KBM_NV_SLOT, &slot)) != ERRF_OK) {
-				goto done;
-			}
-
-			guidtohex(guid, gstr);
-			(void) printf("\t%16s %4x %s\n", gstr, slot,
-			    (name == NULL) ? "" : name);
-		}
-
-		(void) fputc('\n', stdout);
-	}
+	ret = show_configs(cfgs, ncfgs, opt_v);
 
 done:
 	nvlist_free(req);
@@ -709,20 +688,11 @@ open_door(int *fdp)
 {
 	int fd;
 
-	if ((fd = open(KBM_DOOR_PATH, O_RDONLY|O_CLOEXEC)) >= 0) {
+	if ((fd = open(KBMD_DOOR_PATH, O_RDONLY|O_CLOEXEC)) >= 0) {
 		*fdp = fd;
 		return (ERRF_OK);
 	}
 
-	if (errno != ENOENT)
-		goto fail;
-
-	if ((fd = open(KBM_ALT_DOOR_PATH, O_RDONLY|O_CLOEXEC)) >= 0) {
-		*fdp = fd;
-		return (ERRF_OK);
-	}
-
-fail:
 	return (errfno("open", errno, "Error opening kbmd door"));
 }
 
@@ -730,9 +700,22 @@ errf_t *
 check_error(nvlist_t *resp)
 {
 	errf_t *ef, *ret;
+	boolean_t success;
 
-	if (fnvlist_lookup_boolean_value(resp, KBM_NV_SUCCESS))
+	if (resp == NULL) {
+		return (errf("InternalError", NULL,
+		    "kbmd did not return any data"));
+	}
+
+	if ((ret = envlist_lookup_boolean_value(resp, KBM_NV_SUCCESS,
+	    &success)) != ERRF_OK) {
+		return (errf("InternalError", NULL,
+		    "kbmd is missing request result"));
+	}
+
+	if (success) {
 		return (ERRF_OK);
+	}
 
 	if ((ret = envlist_lookup_errf(resp, KBM_NV_ERRMSG, &ef)) != ERRF_OK) {
 		return (errf("InternalError", ret,
@@ -780,7 +763,11 @@ nv_door_call(int fd, nvlist_t *in, nvlist_t **out)
 	if ((ret = edoor_call(fd, &da)) != ERRF_OK)
 		goto done;
 
-	ret = envlist_unpack(da.rbuf, da.rsize, out);
+	if (da.rbuf != NULL) {
+		ret = envlist_unpack(da.rbuf, da.rsize, out);
+	} else {
+		*out = NULL;
+	}
 
 done:
 	if (da.rbuf != NULL) {

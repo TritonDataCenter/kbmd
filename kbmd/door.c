@@ -105,15 +105,31 @@ retbuf_free(void *p)
 }
 
 /*
- * Packs and returns the given nvlist to the door caller.
+ * Packs and returns the given nvlist to the door caller.  resp may be NULL
+ * if there is no data to return to the caller.
  * Note: the nvlist is freed by kbmd_ret_nvlist, and the request log instance
  * is freed.
  */
 void __NORETURN
 kbmd_ret_nvlist(nvlist_t *resp)
 {
+	errf_t *ret = ERRF_OK;
 	struct retbuf *b = NULL;
 	size_t nvlen;
+
+	/*
+	 * Even if there is no data to return, we want to indicate
+	 * success.
+	 */
+	if (resp == NULL && (ret = envlist_alloc(&resp)) != ERRF_OK) {
+		kbmd_ret_error(ret);
+	}
+
+	if ((ret = envlist_add_boolean_value(resp, KBM_NV_SUCCESS,
+	    B_TRUE)) != ERRF_OK) {
+		nvlist_free(resp);
+		kbmd_ret_error(ret);
+	}
 
 	flockfile(stderr);
 	fprintf(stderr, "Response:\n");
@@ -146,10 +162,7 @@ kbmd_ret_nvlist(nvlist_t *resp)
 	VERIFY0(nvlist_xpack(resp, &b->rt_buf, &b->rt_len, NV_ENCODE_NATIVE,
 	    &b->rt_nvalloc));
 
-	if (fnvlist_lookup_boolean_value(resp, KBM_NV_SUCCESS)) {
-		(void) bunyan_debug(tlog, "Returning success",
-		    BUNYAN_T_END);
-	}
+	(void) bunyan_debug(tlog, "Returning success", BUNYAN_T_END);
 
 	nvlist_free(resp);
 	session_log_end();

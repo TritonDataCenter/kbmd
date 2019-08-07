@@ -25,8 +25,14 @@
 extern "C" {
 #endif
 
-#define	KBM_DOOR_PATH		"/var/run/kbm_door"
-#define	KBM_ALT_DOOR_PATH	"/etc/svc/volatile/.kbm_door"
+/*
+ * For most daemons, we'd set their equivalent of KBMD_RUNDIR to /var/run/xxx.
+ * However, kbmd starts early enough in the boot process that /var/run isn't
+ * mounted yet.  Similar to dladm and ipadm (and likely for similar reasons),
+ * we use /etc/svc/volatile instead.
+ */
+#define	KBMD_RUNDIR		"/etc/svc/volatile/kbmd"
+#define	KBMD_DOOR_PATH		KBMD_RUNDIR "/kbmd_door"
 
 /* nvlist keys shared between kbmd and kbmadm */
 #define	KBM_NV_CMD		"command"	/* int32_t */
@@ -52,6 +58,7 @@ extern "C" {
 #define	KBM_NV_WORDS		"words"		/* string array */
 #define	KBM_NV_SLOT		"slot"		/* int32_t */
 #define	KBM_NV_PUBKEY		"pubkey"	/* string */
+#define	KBM_NV_N		"n"		/* uint32_t */
 
 #define	KBM_NV_RESP_QUIT	"quit"		/* boolean */
 #define	KBM_NV_RECOVERY_COMPLETE	"recovery-complete"	/* boolean */

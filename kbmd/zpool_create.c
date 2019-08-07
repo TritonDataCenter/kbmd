@@ -304,10 +304,7 @@ kbmd_zpool_create(nvlist_t *req)
 		goto done;
 	}
 
-	if ((ret = add_create_data(resp, ebox, key, keylen)) != ERRF_OK ||
-	    (ret = envlist_add_boolean_value(resp, KBM_NV_SUCCESS,
-	    B_TRUE)) != ERRF_OK)
-		goto done;
+	ret = add_create_data(resp, ebox, key, keylen);
 
 done:
 	if (kt != NULL && kt->kt_piv != NULL && piv_token_in_txn(kt->kt_piv))

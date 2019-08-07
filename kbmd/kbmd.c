@@ -46,9 +46,6 @@
 #define	KBMD_PG		"kbmd"
 #define	KBMD_PROP_INC	"include_path" /* XXX: module path instead? */
 
-#define	KBMD_RUNDIR	"/var/run/kbmd"
-#define	KBMD_DOOR	KBMD_RUNDIR "/door"
-
 static kbmlog_t kbmlog = {
 	.kbmlog_lock = ERRORCHECKMUTEX,
 	.kbmlog_fd = STDOUT_FILENO
@@ -85,7 +82,7 @@ static int kbmd_sys_uuid(uuid_t);
 int
 main(int argc, char *argv[])
 {
-	const char *doorpath = KBM_DOOR_PATH;
+	const char *doorpath = KBMD_DOOR_PATH;
 	int dirfd, dfd, errval, c;
 	sigset_t set;
 	struct sigaction act;

@@ -260,7 +260,6 @@ void
 kbmd_zfs_unlock(nvlist_t *req)
 {
 	errf_t *ret = ERRF_OK;
-	nvlist_t *resp = NULL;
 	char *dataset = NULL;
 	struct ebox *ebox = NULL;
 	kbmd_token_t *kt = NULL;
@@ -368,19 +367,13 @@ kbmd_zfs_unlock(nvlist_t *req)
 		errf_free(ret);
 	}
 
-	if ((ret = envlist_alloc(&resp)) != ERRF_OK ||
-	    (ret = envlist_add_boolean_value(resp, KBM_NV_SUCCESS,
-	    B_TRUE)) != ERRF_OK)
-		goto fail;
-
 	mutex_exit(&piv_lock);
 	nvlist_free(req);
-	kbmd_ret_nvlist(resp);
+	kbmd_ret_nvlist(NULL);
 
 fail:
 	ebox_free(ebox);
 	mutex_exit(&piv_lock);
 	nvlist_free(req);
-	nvlist_free(resp);
 	kbmd_ret_error(ret);
 }
