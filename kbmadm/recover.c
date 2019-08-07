@@ -149,6 +149,7 @@ show_configs(nvlist_t **cfgs, uint_t ncfgs, boolean_t verbose)
 
 	for (size_t i = 0; i < ncfgs; i++) {
 		nvlist_t **parts = NULL;
+		char *answer = NULL;
 		uint_t m = 0;
 		uint32_t n = 0;
 		int namewidth = 16;
@@ -160,6 +161,11 @@ show_configs(nvlist_t **cfgs, uint_t ncfgs, boolean_t verbose)
 			ret = errf("InternalError", ret,
 			    "kbmd returned config %zu with bad data", i + 1);
 			return (ret);
+		}
+
+		if ((ret = envlist_lookup_string(cfgs[i], KBM_NV_ANSWER,
+		    &answer)) != ERRF_OK) {
+			errf_free(ret);
 		}
 
 		for (size_t j = 0; j < m; j++) {
@@ -184,7 +190,12 @@ show_configs(nvlist_t **cfgs, uint_t ncfgs, boolean_t verbose)
 			}
 		}
 
-		(void) printf("CONFIG #%zu\n", i + 1);
+		if (answer != NULL) {
+			(void) printf("CONFIG %s\n", answer);
+		} else {
+			(void) printf("CONFIG #%zu\n", i + 1);
+		}
+
 		(void) printf("\tN = %" PRIu32 "\n", n);
 		(void) printf("\t%-32s %-4s %*s%s\n", "GUID", "SLOT",
 		    namewidth, "NAME", verbose ? " PUBKEY" : "");
@@ -259,19 +270,9 @@ select_config(nvlist_t *restrict q, nvlist_t *restrict req)
 
 	(void) printf("Select recovery configuration:\n");
 
-	for (uint_t i = 0; i < ncfg; i++) {
-		char *ans = NULL;
-		char *desc = NULL;
-
-		if ((ret = envlist_lookup_string(cfg[i], KBM_NV_DESC,
-		    &desc)) != ERRF_OK ||
-		    (ret = envlist_lookup_string(cfg[i], KBM_NV_ANSWER,
-		    &ans)) != ERRF_OK) {
-			del_GetLine(gl);
-			return (ret);
-		}
-
-		(void) printf("%s. %s\n", ans, desc);
+	if ((ret = show_configs(cfg, ncfg, B_FALSE)) != ERRF_OK) {
+		del_GetLine(gl);
+		return (ret);
 	}
 
 	prompt = get_prompt(q, "> ");

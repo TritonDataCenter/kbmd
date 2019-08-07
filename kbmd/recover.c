@@ -42,8 +42,12 @@ enum part_state {
 
 struct config_question {
 	struct ebox_config *cq_cfg;
-	char	cq_desc[128];
 	char	cq_answer[16];
+};
+
+struct add_data {
+	nvlist_t **ad_nvls;
+	size_t ad_i;
 };
 
 /*
@@ -149,9 +153,8 @@ make_config_question(struct ebox_config *cfg, size_t idx)
 	}
 
 	cq->cq_cfg = cfg;
-	(void) snprintf(cq->cq_answer, sizeof (cq->cq_answer), "%u", idx + 1);
+	(void) snprintf(cq->cq_answer, sizeof (cq->cq_answer), "%zu", idx + 1);
 
-	/* TODO */
 	return (ERRF_OK);
 }
 
@@ -183,6 +186,120 @@ recovery_exit_cb(pid_t pid, void *arg)
 	mutex_enter(&recovery_lock);
 	refhash_remove(recovery_hash, r);
 	mutex_exit(&recovery_lock);
+}
+
+static errf_t *
+add_part(struct ebox_tpl *tpl __unused, struct ebox_tpl_config *tcfg __unused,
+    struct ebox_tpl_part *tpart, void *arg)
+{
+	errf_t *ret = ERRF_OK;
+	struct add_data *data = arg;
+	nvlist_t *nvl = NULL;
+	struct sshkey *pubkey = NULL;
+	struct sshbuf *buf = NULL;
+	const uint8_t *guid = NULL;
+	const char *name = NULL;
+	enum piv_slotid slotid;
+	int rc;
+
+	if ((ret = envlist_alloc(&nvl)) != ERRF_OK) {
+		goto done;
+	}
+
+	pubkey = ebox_tpl_part_pubkey(tpart);
+	guid = ebox_tpl_part_guid(tpart);
+	name = ebox_tpl_part_name(tpart);
+	slotid = ebox_tpl_part_slot(tpart);
+
+	if ((ret = envlist_add_uint8_array(nvl, KBM_NV_GUID, guid,
+	    GUID_LEN)) != ERRF_OK ||
+	    (ret = envlist_add_int32(nvl, KBM_NV_SLOT, slotid)) != ERRF_OK)
+		goto done;
+
+	if ((buf = sshbuf_new()) == NULL) {
+		ret = errfno("sshbuf_new", ENOMEM, "failed to allocate sshbuf");
+		goto done;
+	}
+
+	if ((rc = sshkey_format_text(pubkey,  buf)) != 0) {
+		ret = ssherrf("sshkey_format_text", rc,
+		    "failed to convert public key");
+		sshbuf_free(buf);
+		goto done;
+	}
+
+	ret = envlist_add_string(nvl, KBM_NV_PUBKEY, sshbuf_ptr(buf));
+	sshbuf_free(buf);
+	if (ret != ERRF_OK) {
+		goto done;
+	}
+
+	if (name != NULL &&
+	   (ret = envlist_add_string(nvl, KBM_NV_NAME, name)) != ERRF_OK) {
+		goto done;
+	}
+
+	data->ad_nvls[data->ad_i++] = nvl;
+
+done:
+	if (ret != ERRF_OK) {
+		nvlist_free(nvl);
+	}
+
+	return (ret);
+}
+
+static errf_t *
+add_config(struct ebox_tpl *tpl, struct ebox_tpl_config *tcfg, void *arg)
+{
+	errf_t *ret = ERRF_OK;
+	struct add_data *cfgdata = arg;
+	struct add_data part_data = { 0 };
+	nvlist_t *nvl = NULL;
+	size_t nparts = 0;
+	uint_t n = 0;
+
+	if (ebox_tpl_config_type(tcfg) != EBOX_RECOVERY) {
+		return (ERRF_OK);
+	}
+
+	VERIFY0(ebox_tpl_foreach_part(tpl, tcfg, count_parts, &nparts));
+
+	if ((ret = envlist_alloc(&nvl)) != ERRF_OK ||
+	    (ret = ecalloc(nparts, sizeof (nvlist_t *),
+	    &part_data.ad_nvls)) != ERRF_OK) {
+		nvlist_free(nvl);
+		return (ret);
+	}
+
+	n = ebox_tpl_config_n(tcfg);
+	if ((ret = envlist_add_uint32(nvl, KBM_NV_N, (uint32_t)n)) != ERRF_OK) {
+		goto done;
+	}
+
+	if ((ret = ebox_tpl_foreach_part(tpl, tcfg, add_part,
+	    &part_data)) != ERRF_OK) {
+		goto done;
+	}
+
+	if ((ret = envlist_add_nvlist_array(nvl, KBM_NV_PARTS,
+	    part_data.ad_nvls, nparts)) != ERRF_OK) {
+		goto done;
+	}
+
+	cfgdata->ad_nvls[cfgdata->ad_i++] = nvl;
+
+done:
+	for (size_t i = 0; i < nparts; i++) {
+		nvlist_free(part_data.ad_nvls[i]);
+	}
+	free(part_data.ad_nvls);
+
+	if (ret != ERRF_OK) {
+		nvlist_free(nvl);
+	}
+
+	return (ret);
 }
 
 /*
@@ -231,7 +348,7 @@ recovery_alloc(pid_t pid, struct ebox *ebox, recovery_t **rp)
 	recovery_t *r;
 	struct ebox_tpl_config *tcfg = NULL;
 	struct ebox_config *cfg = NULL;
-	size_t n = 0;
+	size_t ncfg = 0;
 
 	ASSERT(MUTEX_HELD(&recovery_lock));
 
@@ -243,9 +360,9 @@ recovery_alloc(pid_t pid, struct ebox *ebox, recovery_t **rp)
 	}
 
 	VERIFY0(ebox_tpl_foreach_cfg(ebox_tpl(ebox), count_recovery_configs,
-	    &n));
+	    &ncfg));
 
-	if (n == 0) {
+	if (ncfg == 0) {
 		return (errf("RecoveryFailure", NULL,
 		    "ebox does not have any recovery configurations"));
 	}
@@ -257,7 +374,7 @@ recovery_alloc(pid_t pid, struct ebox *ebox, recovery_t **rp)
 
 	r->r_pid = pid;
 	r->r_ebox = ebox;
-	r->r_ncfg = n;
+	r->r_ncfg = ncfg;
 
 	/*
 	 * Pick a random id and make sure it's unique.  Zero is also explicitly
@@ -271,7 +388,7 @@ recovery_alloc(pid_t pid, struct ebox *ebox, recovery_t **rp)
 			continue;
 	} while (recovery_get(r->r_id, pid) != NULL);
 
-	n = 0;
+	ncfg = 0;
 	while ((cfg = ebox_next_config(ebox, cfg)) != NULL) {
 		tcfg = ebox_config_tpl(cfg);
 
@@ -289,19 +406,19 @@ recovery_alloc(pid_t pid, struct ebox *ebox, recovery_t **rp)
 				return (errf("RecoveryFailure", ret,
 				    "failed to initialize recovery instance"));
 			}
-			n++;
+			ncfg++;
 			break;
 		}
 
-		if ((ret = make_config_question(cfg, n)) != ERRF_OK) {
+		if ((ret = make_config_question(cfg, ncfg)) != ERRF_OK) {
 			free(r);
 			return (errf("RecoveryFailure", ret,
 			    "failed to select a recovery instance"));
 		}
 
-		n++;
+		ncfg++;
 	}
-	VERIFY3U(n, ==, r->r_ncfg);
+	VERIFY3U(ncfg, ==, r->r_ncfg);
 
 	refhash_insert(recovery_hash, r);
 	recovery_count++;
@@ -355,30 +472,26 @@ get_config_response(recovery_t *restrict r, nvlist_t *restrict resp)
 	return (arg.gcrp_cfg);
 }
 
-struct select_config_data {
-	nvlist_t	**scd_nvls;
-	size_t		scd_i;
-};
-
 static errf_t *
-select_config_cb(struct ebox_tpl *tpl __unused,
-    struct ebox_tpl_config *tcfg, void *arg)
+select_config_cb(struct ebox_tpl *tpl, struct ebox_tpl_config *tcfg, void *arg)
 {
 	errf_t *ret = ERRF_OK;
-	struct select_config_data *data = arg;
+	struct add_data *data = arg;
 	struct config_question *cq = ebox_tpl_config_private(tcfg);
 	nvlist_t *nvl = NULL;
 
-	if ((ret = envlist_alloc(&nvl)) != ERRF_OK ||
-	    (ret = envlist_add_string(nvl, KBM_NV_DESC,
-	    cq->cq_desc)) != ERRF_OK ||
-	    (ret = envlist_add_string(nvl, KBM_NV_ANSWER,
-	    cq->cq_answer)) != ERRF_OK) {
-		nvlist_free(nvl);
+	if ((ret = add_config(tpl, tcfg, arg)) != ERRF_OK) {
 		return (ret);
 	}
 
-	data->scd_nvls[data->scd_i++] = nvl;
+	VERIFY3U(data->ad_i, >, 0);
+	nvl = data->ad_nvls[data->ad_i - 1];
+
+	if ((ret = envlist_add_string(nvl, KBM_NV_ANSWER,
+	    cq->cq_answer)) != ERRF_OK) {
+		return (ret);
+	}
+
 	return (ERRF_OK);
 }
 
@@ -388,15 +501,15 @@ select_config(nvlist_t *restrict req, nvlist_t *restrict resp,
 {
 	errf_t *ret = ERRF_OK;
 	struct ebox_config *cfg;
-	struct select_config_data arg = { 0 };
+	struct add_data arg = { 0 };
 
 	ASSERT(MUTEX_HELD(&recovery_lock));
 
 	if ((cfg = get_config_response(r, resp)) != NULL)
 		return (start_recovery(r, cfg));
 
-	if ((arg.scd_nvls = calloc(r->r_ncfg, sizeof (nvlist_t *))) == NULL) {
-		ret = errfno("calloc", errno, "");
+	if ((ret = ecalloc(r->r_ncfg, sizeof (nvlist_t *),
+	    &arg.ad_nvls)) != ERRF_OK) {
 		return (ret);
 	}
 
@@ -409,17 +522,17 @@ select_config(nvlist_t *restrict req, nvlist_t *restrict resp,
 	    "Select recovery configuration")) != ERRF_OK)
 		goto done;
 
-	if ((ret = envlist_add_nvlist_array(resp, KBM_NV_CONFIGS, arg.scd_nvls,
+	if ((ret = envlist_add_nvlist_array(resp, KBM_NV_CONFIGS, arg.ad_nvls,
 	    r->r_ncfg)) != ERRF_OK)
 		goto done;
 
 	ret = envlist_add_int32(resp, KBM_NV_ACTION, (int32_t)KBM_ACT_CONFIG);
 
 done:
-	if (arg.scd_nvls != NULL) {
+	if (arg.ad_nvls != NULL) {
 		for (size_t i = 0; i < r->r_ncfg; i++)
-			nvlist_free(arg.scd_nvls[i]);
-		free(arg.scd_nvls);
+			nvlist_free(arg.ad_nvls[i]);
+		free(arg.ad_nvls);
 	}
 
 	return (ret);
@@ -1099,125 +1212,6 @@ kbmd_update_recovery(nvlist_t *req)
 	mutex_exit(&piv_lock);
 	ebox_tpl_free(tpl);
 	kbmd_ret_nvlist(resp);
-}
-
-struct add_data {
-	nvlist_t **ad_nvls;
-	size_t ad_i;
-};
-
-static errf_t *
-add_part(struct ebox_tpl *tpl __unused, struct ebox_tpl_config *tcfg __unused,
-    struct ebox_tpl_part *tpart, void *arg)
-{
-	errf_t *ret = ERRF_OK;
-	struct add_data *data = arg;
-	nvlist_t *nvl = NULL;
-	struct sshkey *pubkey = NULL;
-	struct sshbuf *buf = NULL;
-	const uint8_t *guid = NULL;
-	const char *name = NULL;
-	enum piv_slotid slotid;
-	int rc;
-
-	if ((ret = envlist_alloc(&nvl)) != ERRF_OK) {
-		goto done;
-	}
-
-	pubkey = ebox_tpl_part_pubkey(tpart);
-	guid = ebox_tpl_part_guid(tpart);
-	name = ebox_tpl_part_name(tpart);
-	slotid = ebox_tpl_part_slot(tpart);
-
-	if ((ret = envlist_add_uint8_array(nvl, KBM_NV_GUID, guid,
-	    GUID_LEN)) != ERRF_OK ||
-	    (ret = envlist_add_int32(nvl, KBM_NV_SLOT, slotid)) != ERRF_OK)
-		goto done;
-
-	if ((buf = sshbuf_new()) == NULL) {
-		ret = errfno("sshbuf_new", ENOMEM, "failed to allocate sshbuf");
-		goto done;
-	}
-
-	if ((rc = sshkey_format_text(pubkey,  buf)) != 0) {
-		ret = ssherrf("sshkey_format_text", rc,
-		    "failed to convert public key");
-		sshbuf_free(buf);
-		goto done;
-	}
-
-	ret = envlist_add_string(nvl, KBM_NV_PUBKEY, sshbuf_ptr(buf));
-	sshbuf_free(buf);
-	if (ret != ERRF_OK) {
-		goto done;
-	}
-
-	if (name != NULL &&
-	   (ret = envlist_add_string(nvl, KBM_NV_NAME, name)) != ERRF_OK) {
-		goto done;
-	}
-
-	data->ad_nvls[data->ad_i++] = nvl;
-
-done:
-	if (ret != ERRF_OK) {
-		nvlist_free(nvl);
-	}
-
-	return (ret);
-}
-
-static errf_t *
-add_config(struct ebox_tpl *tpl, struct ebox_tpl_config *tcfg, void *arg)
-{
-	errf_t *ret = ERRF_OK;
-	struct add_data *cfgdata = arg;
-	struct add_data part_data = { 0 };
-	nvlist_t *nvl = NULL;
-	size_t nparts = 0;
-	uint_t n = 0;
-
-	if (ebox_tpl_config_type(tcfg) != EBOX_RECOVERY) {
-		return (ERRF_OK);
-	}
-
-	VERIFY0(ebox_tpl_foreach_part(tpl, tcfg, count_parts, &nparts));
-
-	if ((ret = envlist_alloc(&nvl)) != ERRF_OK ||
-	    (ret = ecalloc(nparts, sizeof (nvlist_t *),
-	    &part_data.ad_nvls)) != ERRF_OK) {
-		nvlist_free(nvl);
-		return (ret);
-	}
-
-	n = ebox_tpl_config_n(tcfg);
-	if ((ret = envlist_add_uint32(nvl, KBM_NV_N, (uint32_t)n)) != ERRF_OK) {
-		goto done;
-	}
-
-	if ((ret = ebox_tpl_foreach_part(tpl, tcfg, add_part,
-	    &part_data)) != ERRF_OK) {
-		goto done;
-	}
-
-	if ((ret = envlist_add_nvlist_array(nvl, KBM_NV_PARTS,
-	    part_data.ad_nvls, nparts)) != ERRF_OK) {
-		goto done;
-	}
-
-	cfgdata->ad_nvls[cfgdata->ad_i++] = nvl;
-
-done:
-	for (size_t i = 0; i < nparts; i++) {
-		nvlist_free(part_data.ad_nvls[i]);
-	}
-	free(part_data.ad_nvls);
-
-	if (ret != ERRF_OK) {
-		nvlist_free(nvl);
-	}
-
-	return (ret);
 }
 
 void
