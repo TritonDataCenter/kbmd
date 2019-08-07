@@ -83,6 +83,12 @@ envlist_alloc(nvlist_t **nvlp)
 }
 
 #define	NVERR(_rc, _fn) ((_rc) == 0) ? ERRF_OK : errfno(_fn, (_rc), "")
+#define ADDERR(_rc, _fn, _name) \
+	((_rc) == 0) ? ERRF_OK : errfno(_fn, (_rc), "failed to add %s value", \
+	(_name))
+#define	LOOKUPERR(_rc, _fn, _name) \
+	((_rc) == 0) ? ERRF_OK : errfno(_fn, (_rc), \
+	"failed to lookup %s value", (_name))
 
 errf_t *
 envlist_pack(nvlist_t *nvl, char **bufp, size_t *buflenp)
@@ -102,35 +108,35 @@ errf_t *
 envlist_add_string(nvlist_t *nvl, const char *name, const char *val)
 {
 	int ret = nvlist_add_string(nvl, name, val);
-	return (NVERR(ret, "nvlist_add_string"));
+	return (ADDERR(ret, "nvlist_add_string", name));
 }
 
 errf_t *
 envlist_add_boolean(nvlist_t *nvl, const char *name)
 {
 	int ret = nvlist_add_boolean(nvl, name);
-	return (NVERR(ret, "nvlist_add_boolean"));
+	return (ADDERR(ret, "nvlist_add_boolean", name));
 }
 
 errf_t *
 envlist_add_boolean_value(nvlist_t *nvl, const char *name, boolean_t val)
 {
 	int ret = nvlist_add_boolean_value(nvl, name, val);
-	return (NVERR(ret, "nvlist_add_boolean_value"));
+	return (ADDERR(ret, "nvlist_add_boolean_value", name));
 }
 
 errf_t *
 envlist_add_int32(nvlist_t *nvl, const char *name, int32_t val)
 {
 	int ret = nvlist_add_int32(nvl, name, val);
-	return (NVERR(ret, "nvlsit_add_int32"));
+	return (ADDERR(ret, "nvlist_add_int32", name));
 }
 
 errf_t *
 envlist_add_uint32(nvlist_t *nvl, const char *name, uint32_t val)
 {
 	int ret = nvlist_add_uint32(nvl, name, val);
-	return (NVERR(ret, "nvlsit_add_uint32"));
+	return (ADDERR(ret, "nvlist_add_uint32", name));
 }
 
 errf_t *
@@ -138,14 +144,14 @@ envlist_add_uint8_array(nvlist_t *nvl, const char *name, const uint8_t *val,
     uint_t len)
 {
 	int ret = nvlist_add_uint8_array(nvl, name, (uint8_t *)val, len);
-	return (NVERR(ret, "nvlist_add_uint8_array"));
+	return (ADDERR(ret, "nvlist_add_uint8_array", name));
 }
 
 errf_t *
 envlist_add_nvlist(nvlist_t *nvl, const char *name, const nvlist_t *toadd)
 {
 	int ret = nvlist_add_nvlist(nvl, name, (nvlist_t *)toadd);
-	return (NVERR(ret, "nvlist_add_nvlist"));
+	return (ADDERR(ret, "nvlist_add_nvlist", name));
 }
 
 errf_t *
@@ -153,7 +159,7 @@ envlist_add_nvlist_array(nvlist_t *nvl, const char *name, nvlist_t * const *val,
     uint_t len)
 {
 	int ret = nvlist_add_nvlist_array(nvl, name, (nvlist_t **)val, len);
-	return (NVERR(ret, "nvlist_add_uint8_array"));
+	return (ADDERR(ret, "nvlist_add_uint8_array", name));
 }
 
 errf_t *
@@ -161,7 +167,7 @@ envlist_add_string_array(nvlist_t *nvl, const char *name, char * const *val,
     uint_t nelem)
 {
 	int ret = nvlist_add_string_array(nvl, name, val, nelem);
-	return (NVERR(ret, "nvlist_add_string_array"));
+	return (ADDERR(ret, "nvlist_add_string_array", name));
 }
 
 static errf_t *
@@ -226,31 +232,38 @@ done:
 }
 
 errf_t *
+envlist_lookup_boolean_value(nvlist_t *nvl, const char *name, boolean_t *valp)
+{
+	int ret = nvlist_lookup_boolean_value(nvl, name, valp);
+	return (LOOKUPERR(ret, "nvlist_lookup_boolean_value", name));
+}
+
+errf_t *
 envlist_lookup_int32(nvlist_t *nvl, const char *name, int32_t *valp)
 {
 	int ret = nvlist_lookup_int32(nvl, name, valp);
-	return (NVERR(ret, "nvlist_lookup_int32"));
+	return (LOOKUPERR(ret, "nvlist_lookup_int32", name));
 }
 
 errf_t *
 envlist_lookup_uint32(nvlist_t *nvl, const char *name, uint32_t *valp)
 {
 	int ret = nvlist_lookup_uint32(nvl, name, valp);
-	return (NVERR(ret, "nvlist_lookup_uint32"));
+	return (LOOKUPERR(ret, "nvlist_lookup_uint32", name));
 }
 
 errf_t *
 envlist_lookup_string(nvlist_t *nvl, const char *name, char **valp)
 {
 	int ret = nvlist_lookup_string(nvl, name, valp);
-	return (NVERR(ret, "nvlist_lookup_string"));
+	return (LOOKUPERR(ret, "nvlist_lookup_string", name));
 }
 
 errf_t *
 envlist_lookup_nvlist(nvlist_t *nvl, const char *name, nvlist_t **valp)
 {
 	int ret = nvlist_lookup_nvlist(nvl, name, valp);
-	return (NVERR(ret, "nvlist_lookup_nvlist"));
+	return (LOOKUPERR(ret, "nvlist_lookup_nvlist", name));
 }
 
 errf_t *
@@ -258,7 +271,7 @@ envlist_lookup_nvlist_array(nvlist_t *nvl, const char *name, nvlist_t ***valp,
     uint_t *lenp)
 {
 	int ret = nvlist_lookup_nvlist_array(nvl, name, valp, lenp);
-	return (NVERR(ret, "nvlist_lookup_nvlist_array"));
+	return (LOOKUPERR(ret, "nvlist_lookup_nvlist_array", name));
 }
 
 errf_t *
@@ -266,7 +279,7 @@ envlist_lookup_uint8_array(nvlist_t *nvl, const char *name, uint8_t **valp,
     uint_t *lenp)
 {
 	int ret = nvlist_lookup_uint8_array(nvl, name, valp, lenp);
-	return (NVERR(ret, "nvlist_lookup_uint8_array"));
+	return (LOOKUPERR(ret, "nvlist_lookup_uint8_array", name));
 }
 
 errf_t *
@@ -274,7 +287,7 @@ envlist_lookup_string_array(nvlist_t *nvl, const char *name, char ***sarp,
     uint_t *lenp)
 {
 	int ret = nvlist_lookup_string_array(nvl, name, sarp, lenp);
-	return (NVERR(ret, "nvlist_lookup_string_array"));
+	return (LOOKUPERR(ret, "nvlist_lookup_string_array", name));
 }
 
 static errf_t *
