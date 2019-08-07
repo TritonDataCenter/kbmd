@@ -169,8 +169,12 @@ errf_t *kbmd_rotate_zfs_ebox(const char *);
 
 typedef errf_t *(ebox_tpl_cb_t)(struct ebox_tpl *,
     struct ebox_tpl_config *, void *);
+typedef errf_t *(ebox_tpl_part_cb_t)(struct ebox_tpl *,
+    struct ebox_tpl_config *, struct ebox_tpl_part *, void *);
 
 errf_t *ebox_tpl_foreach_cfg(struct ebox_tpl *, ebox_tpl_cb_t, void *);
+errf_t *ebox_tpl_foreach_part(struct ebox_tpl *, struct ebox_tpl_config *,
+    ebox_tpl_part_cb_t, void *);
 
 /* zfs_unlock.c */
 errf_t *load_key(const char *, const uint8_t *, size_t);
