@@ -110,6 +110,32 @@ kbmd_recover_init(int dfd)
 }
 
 static errf_t *
+count_parts(struct ebox_tpl *tpl __unused,
+    struct ebox_tpl_config *tcfg __unused,
+    struct ebox_tpl_part *tpart __unused,
+    void *arg)
+{
+	size_t *np = arg;
+
+	(*np)++;
+	return (ERRF_OK);
+}
+
+static errf_t *
+count_recovery_configs(struct ebox_tpl *tpl __unused,
+    struct ebox_tpl_config *tcfg, void *arg)
+{
+	size_t *np = arg;
+
+	if (ebox_tpl_config_type(tcfg) != EBOX_RECOVERY) {
+		return (ERRF_OK);
+	}
+
+	(*np)++;
+	return (ERRF_OK);
+}
+
+static errf_t *
 make_config_question(struct ebox_config *cfg, size_t idx)
 {
 	errf_t *ret;
@@ -199,26 +225,13 @@ start_recovery(recovery_t *restrict r, struct ebox_config *restrict cfg)
 }
 
 static errf_t *
-recovery_alloc_cb(struct ebox_tpl *tpl __unused,
-    struct ebox_tpl_config *tcfg, void *arg)
-{
-	size_t *np = arg;
-
-	if (ebox_tpl_config_type(tcfg) == EBOX_RECOVERY) {
-		(*np)++;
-	}
-
-	return (ERRF_OK);
-}
-
-static errf_t *
 recovery_alloc(pid_t pid, struct ebox *ebox, recovery_t **rp)
 {
 	errf_t *ret = ERRF_OK;
 	recovery_t *r;
 	struct ebox_tpl_config *tcfg = NULL;
 	struct ebox_config *cfg = NULL;
-	size_t n;
+	size_t n = 0;
 
 	ASSERT(MUTEX_HELD(&recovery_lock));
 
@@ -229,8 +242,7 @@ recovery_alloc(pid_t pid, struct ebox *ebox, recovery_t **rp)
 		return (ret);
 	}
 
-	n = 0;
-	VERIFY0(ebox_tpl_foreach_cfg(ebox_tpl(ebox), recovery_alloc_cb,
+	VERIFY0(ebox_tpl_foreach_cfg(ebox_tpl(ebox), count_recovery_configs,
 	    &n));
 
 	if (n == 0) {
@@ -1089,10 +1101,17 @@ kbmd_update_recovery(nvlist_t *req)
 	kbmd_ret_nvlist(resp);
 }
 
+struct add_data {
+	nvlist_t **ad_nvls;
+	size_t ad_i;
+};
+
 static errf_t *
-show_add_part(nvlist_t **nvlp, struct ebox_tpl_part *tpart)
+add_part(struct ebox_tpl *tpl __unused, struct ebox_tpl_config *tcfg __unused,
+    struct ebox_tpl_part *tpart, void *arg)
 {
 	errf_t *ret = ERRF_OK;
+	struct add_data *data = arg;
 	nvlist_t *nvl = NULL;
 	struct sshkey *pubkey = NULL;
 	struct sshbuf *buf = NULL;
@@ -1100,8 +1119,6 @@ show_add_part(nvlist_t **nvlp, struct ebox_tpl_part *tpart)
 	const char *name = NULL;
 	enum piv_slotid slotid;
 	int rc;
-
-	(void) bunyan_trace(tlog, "show_add_part: enter", BUNYAN_T_END);
 
 	if ((ret = envlist_alloc(&nvl)) != ERRF_OK) {
 		goto done;
@@ -1111,17 +1128,6 @@ show_add_part(nvlist_t **nvlp, struct ebox_tpl_part *tpart)
 	guid = ebox_tpl_part_guid(tpart);
 	name = ebox_tpl_part_name(tpart);
 	slotid = ebox_tpl_part_slot(tpart);
-
-	{
-		char gstr[GUID_STR_LEN] = { 0 };
-		guidtohex(guid, gstr);
-
-		(void) bunyan_trace(tlog, "Returning part",
-		    BUNYAN_T_STRING, "guid", gstr,
-		    BUNYAN_T_UINT32, "slot", (uint32_t)slotid,
-		    BUNYAN_T_STRING, "name", (name != NULL) ? name : "(none)",
-		    BUNYAN_T_END);
-	}
 
 	if ((ret = envlist_add_uint8_array(nvl, KBM_NV_GUID, guid,
 	    GUID_LEN)) != ERRF_OK ||
@@ -1151,7 +1157,7 @@ show_add_part(nvlist_t **nvlp, struct ebox_tpl_part *tpart)
 		goto done;
 	}
 
-	*nvlp = nvl;
+	data->ad_nvls[data->ad_i++] = nvl;
 
 done:
 	if (ret != ERRF_OK) {
@@ -1162,24 +1168,24 @@ done:
 }
 
 static errf_t *
-show_add_config(nvlist_t **nvlp, struct ebox_tpl_config *tcfg)
+add_config(struct ebox_tpl *tpl, struct ebox_tpl_config *tcfg, void *arg)
 {
 	errf_t *ret = ERRF_OK;
+	struct add_data *cfgdata = arg;
+	struct add_data part_data = { 0 };
 	nvlist_t *nvl = NULL;
-	nvlist_t **nvl_parts = NULL;
-	struct ebox_tpl_part *tpart = NULL;
-	uint_t npart = 0;
+	size_t nparts = 0;
 	uint_t n = 0;
 
-	(void) bunyan_trace(tlog, "show_add_config: enter", BUNYAN_T_END);
-
-	while ((tpart = ebox_tpl_config_next_part(tcfg, tpart)) != NULL) {
-		npart++;
+	if (ebox_tpl_config_type(tcfg) != EBOX_RECOVERY) {
+		return (ERRF_OK);
 	}
 
+	VERIFY0(ebox_tpl_foreach_part(tpl, tcfg, count_parts, &nparts));
+
 	if ((ret = envlist_alloc(&nvl)) != ERRF_OK ||
-	    (ret = ecalloc(npart, sizeof (nvlist_t *),
-	    &nvl_parts)) != ERRF_OK) {
+	    (ret = ecalloc(nparts, sizeof (nvlist_t *),
+	    &part_data.ad_nvls)) != ERRF_OK) {
 		nvlist_free(nvl);
 		return (ret);
 	}
@@ -1189,26 +1195,23 @@ show_add_config(nvlist_t **nvlp, struct ebox_tpl_config *tcfg)
 		goto done;
 	}
 
-	tpart = NULL;
-	for (size_t i = 0; i < npart; i++) {
-		tpart = ebox_tpl_config_next_part(tcfg, tpart);
-		if ((ret = show_add_part(&nvl_parts[i], tpart)) != ERRF_OK) {
-			goto done;
-		}
-	}
-
-	if ((ret = envlist_add_nvlist_array(nvl, KBM_NV_PARTS, nvl_parts,
-	    npart)) != ERRF_OK) {
+	if ((ret = ebox_tpl_foreach_part(tpl, tcfg, add_part,
+	    &part_data)) != ERRF_OK) {
 		goto done;
 	}
 
-	*nvlp = nvl;
+	if ((ret = envlist_add_nvlist_array(nvl, KBM_NV_PARTS,
+	    part_data.ad_nvls, nparts)) != ERRF_OK) {
+		goto done;
+	}
+
+	cfgdata->ad_nvls[cfgdata->ad_i++] = nvl;
 
 done:
-	for (size_t i = 0; i < npart; i++) {
-		nvlist_free(nvl_parts[i]);
+	for (size_t i = 0; i < nparts; i++) {
+		nvlist_free(part_data.ad_nvls[i]);
 	}
-	free(nvl_parts);
+	free(part_data.ad_nvls);
 
 	if (ret != ERRF_OK) {
 		nvlist_free(nvl);
@@ -1222,11 +1225,10 @@ kbmd_show_recovery(nvlist_t *req)
 {
 	errf_t *ret = ERRF_OK;
 	nvlist_t *resp = NULL;
-	nvlist_t **nvl_cfgs = NULL;
+	struct add_data data = { 0 };
 	struct ebox *ebox = NULL;
 	struct ebox_tpl *tpl = NULL;
-	struct ebox_tpl_config *tcfg  = NULL;
-	uint_t ncfg = 0;
+	size_t ncfg = 0;
 	size_t i;
 
 	(void) bunyan_trace(tlog, "kbmd_show_recovery: enter", BUNYAN_T_END);
@@ -1246,43 +1248,25 @@ kbmd_show_recovery(nvlist_t *req)
 		goto done;
 	}
 
-	while ((tcfg = ebox_tpl_next_config(tpl, tcfg)) != NULL) {
-		if (ebox_tpl_config_type(tcfg) != EBOX_RECOVERY) {
-			continue;
-		}
+	VERIFY0(ebox_tpl_foreach_cfg(tpl, count_recovery_configs, &ncfg));
 
-		ncfg++;
-	}
-
-	(void) bunyan_trace(tlog, "Recovery configs",
-	    BUNYAN_T_UINT32, "ncfgs", (uint32_t)ncfg,
-	    BUNYAN_T_END);
-
-	if ((ret = ecalloc(ncfg, sizeof (nvlist_t *), &nvl_cfgs)) != NULL) {
+	if ((ret = ecalloc(ncfg, sizeof (nvlist_t *), &data.ad_nvls)) != NULL) {
 		goto done;
 	}
 
-	tcfg = NULL;
-	i = 0;
-	while ((tcfg = ebox_tpl_next_config(tpl, tcfg)) != NULL) {
-		tcfg = ebox_tpl_next_config(tpl, tcfg);
-		if (ebox_tpl_config_type(tcfg) != EBOX_RECOVERY) {
-			continue;
-		}
-
-		if ((ret = show_add_config(&nvl_cfgs[i++], tcfg)) != ERRF_OK) {
-			goto done;
-		}
+	if ((ret = ebox_tpl_foreach_cfg(tpl, add_config, &data)) != ERRF_OK) {
+		goto done;
 	}
 
-	ret = envlist_add_nvlist_array(resp, KBM_NV_CONFIGS, nvl_cfgs, ncfg);
+	ret = envlist_add_nvlist_array(resp, KBM_NV_CONFIGS, data.ad_nvls,
+	    ncfg);
 
 done:
-	if (nvl_cfgs != NULL) {
+	if (data.ad_nvls != NULL) {
 		for (size_t i = 0; i < ncfg; i++) {
-			nvlist_free(nvl_cfgs[i]);
+			nvlist_free(data.ad_nvls[i]);
 		}
-		free(nvl_cfgs);
+		free(data.ad_nvls);
 	}
 	ebox_free(ebox);
 

@@ -292,6 +292,24 @@ done:
 
 
 errf_t *
+ebox_tpl_foreach_part(struct ebox_tpl *tpl, struct ebox_tpl_config *tcfg,
+    ebox_tpl_part_cb_t cb, void *arg)
+{
+	errf_t *ret = ERRF_OK;
+	struct ebox_tpl_part *tpart = NULL, *next = NULL;
+
+	for (tpart = ebox_tpl_config_next_part(tcfg, NULL); tpart != NULL;
+	    tpart = next) {
+		next = ebox_tpl_config_next_part(tcfg, tpart);
+		if ((ret = cb(tpl, tcfg, tpart, arg)) != ERRF_OK) {
+			return ((ret == FOREACH_STOP) ? ERRF_OK : ret);
+		}
+	}
+
+	return (ERRF_OK);
+}
+
+errf_t *
 ebox_tpl_foreach_cfg(struct ebox_tpl *tpl, ebox_tpl_cb_t cb, void *arg)
 {
 	errf_t *ret = ERRF_OK;
