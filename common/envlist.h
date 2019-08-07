@@ -45,6 +45,8 @@ struct errf *envlist_add_errf(nvlist_t *, const char *, const struct errf *);
 
 struct errf *envlist_dump_json(nvlist_t *, char **);
 
+struct errf *envlist_lookup_boolean_value(nvlist_t *, const char *,
+    boolean_t *);
 struct errf *envlist_lookup_int32(nvlist_t *, const char *, int32_t *);
 struct errf *envlist_lookup_uint32(nvlist_t *, const char *, uint32_t *);
 struct errf *envlist_lookup_string(nvlist_t *, const char *, char **);
