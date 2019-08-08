@@ -84,7 +84,8 @@ usage(void)
 	    "Usage: %1$s create-zpool <zpool create args>...\n"
 	    "       %1$s recover\n"
 	    "       %1$s unlock [dataset...]\n"
-	    "       %1$s update-recovery [-d dataset] [-f template file]\n",
+	    "       %1$s update-recovery [-d dataset] [-f template file]\n"
+	    "       %1$s show=recovery\n",
 	    name);
 
 	exit(EXIT_FAILURE);
@@ -301,7 +302,6 @@ add_debug_args(nvlist_t *req)
 
 	ret = add_b64(req, KBM_NV_TEMPLATE, buf);
 
-done:
 	/*
 	 * A recovery template is essentially public information, so
 	 * freezero() is not needed here
@@ -317,9 +317,8 @@ do_create_zpool(int argc, char **argv, nvlist_t **respp)
 	nvlist_t *req = NULL;
 	nvlist_t *resp = NULL;
 	uint8_t *key = NULL;
-	char **params = NULL;
 	const char *dataset = NULL;
-	uint_t keylen = 0, nparams = 0;
+	uint_t keylen = 0;
 	int fd = -1;
 	int c;
 	strarray_t args = STRARRAY_INIT;
@@ -414,7 +413,6 @@ run_zpool_cmd(char **argv, const uint8_t *key, size_t keylen)
 	int fds[3] = { -1, STDOUT_FILENO, STDERR_FILENO };
 	int status;
 	pid_t pid;
-	size_t written = 0;
 
 	if ((ret = spawn(ZPOOL_CMD, argv, _environ, &pid, fds)) != ERRF_OK ||
 	    (ret = interact(pid, fds, key, keylen, out, &status,

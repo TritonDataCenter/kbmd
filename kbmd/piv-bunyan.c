@@ -161,8 +161,10 @@ bunyan_log(enum bunyan_log_level lvl, const char *msg, ...)
 				if (i > 0 && custr_appendc(bh, ' ') != 0)
 					goto done;
 
-				if (custr_appendc(bh, hexdigits[i >> 4]) != 0 ||
-				    custr_appendc(bh, hexdigits[i & 0xF]) != 0)
+				if (custr_appendc(bh,
+				    hexdigits[byte >> 4]) != 0 ||
+				    custr_appendc(bh,
+				    hexdigits[byte & 0xF]) != 0)
 					goto done;
 			}
 

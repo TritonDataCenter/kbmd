@@ -46,11 +46,6 @@
 #define	KBMD_PG		"kbmd"
 #define	KBMD_PROP_INC	"include_path" /* XXX: module path instead? */
 
-static kbmlog_t kbmlog = {
-	.kbmlog_lock = ERRORCHECKMUTEX,
-	.kbmlog_fd = STDOUT_FILENO
-};
-
 bunyan_logger_t *blog;
 
 /*
@@ -74,7 +69,6 @@ static int kbmd_daemonize(int);
 static void kbmd_fd_setup(void);
 static int kbmd_dir_setup(void);
 static void kbmd_log_setup(int, bunyan_level_t);
-static int kbmd_stream_log(nvlist_t *, const char *, void *);
 static void kbmd_cleanup(void);
 static void kbmd_load_smf(int);
 static int kbmd_sys_uuid(uuid_t);

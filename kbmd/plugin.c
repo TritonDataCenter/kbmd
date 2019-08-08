@@ -378,11 +378,11 @@ add_keys(struct piv_token *restrict pt, nvlist_t *restrict pubkeys,
 {
 	errf_t *ret = ERRF_OK;
 
-	for (uint_t i = 0x9A; i < 0x9F; i++) {
+	for (enum piv_slotid i = PIV_SLOT_9A; i <= PIV_SLOT_9E; i++) {
 		struct piv_slot *cert = NULL;
-		char slotstr[3] = { 0 };
+		char slotstr[5] = { 0 };
 
-		(void) snprintf(slotstr, sizeof (slotstr), "0x02X", i);
+		(void) snprintf(slotstr, sizeof (slotstr), "0x%02hhX", i);
 
 		ret = piv_read_cert(pt, i);
 		cert = piv_get_slot(pt, i);
@@ -672,7 +672,6 @@ kbmd_new_recovery_token(kbmd_token_t *restrict kt, uint8_t **restrict rtokenp,
     size_t *restrict rtokenlenp)
 {
 	errf_t *ret = ERRF_OK;
-	uint8_t *buf = NULL;
 	strarray_t args = STRARRAY_INIT;
 	int fds[3] = { -1, -1, -1 };
 	pid_t pid;

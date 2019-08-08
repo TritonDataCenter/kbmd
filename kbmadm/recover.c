@@ -14,6 +14,7 @@
  */
 
 #include <ctype.h>
+#include <err.h>
 #include <errno.h>
 #include <libtecla.h>
 #include <limits.h>
@@ -47,8 +48,9 @@ static errf_t *get_answer(GetLine *restrict, const char *, custr_t **restrict);
 static errf_t *select_config(nvlist_t *restrict, nvlist_t *restrict);
 static errf_t *challenge(nvlist_t *restrict, nvlist_t *restrict);
 static boolean_t recovery_complete(nvlist_t *);
-static errf_t *readline(GetLine *restrict, const char *, char **restrict);
+static errf_t *readline(GetLine *restrict, const char *, custr_t *);
 static void printwrap(FILE *, const char *, size_t);
+static void strip_whitespace(custr_t *);
 
 static errf_t *
 create_gl(GetLine **glp)
@@ -74,7 +76,30 @@ do_recover(int argc, char **argv, nvlist_t **respp)
 	errf_t *ret = ERRF_OK;
 	nvlist_t *req = NULL, *resp = NULL;
 	uint32_t id;
+	ulong_t cfgnum = 0;
 	int fd = -1;
+	int c;
+
+	while ((c = getopt(argc, argv, "c:")) != -1) {
+		switch (c) {
+		case 'c':
+			errno = 0;
+			cfgnum = strtoul(optarg, NULL, 10);
+			if (cfgnum != 0 || cfgnum != ULONG_MAX) {
+				break;
+			}
+			if (errno != 0) {
+				err(EXIT_FAILURE,
+				    "could not parse '%s' as a number", optarg);
+			}
+			if (cfgnum > UINT32_MAX) {
+				err(EXIT_FAILURE, "%lu is too large\n");
+			}
+			break;
+		default:
+			errx(EXIT_FAILURE, "Invalid option %-c", optopt);
+		}
+	}
 
 	if (isatty(STDIN_FILENO) == 0) {
 		if (errno != ENOTTY) {
@@ -87,11 +112,20 @@ do_recover(int argc, char **argv, nvlist_t **respp)
 		return (ret);
 	}
 
-	if ((ret = req_new(KBM_CMD_RECOVER_START, &req)) != ERRF_OK ||
-	    (ret = open_door(&fd)) != ERRF_OK ||
-	    (ret = nv_door_call(fd, req, &resp)) != ERRF_OK ||
-	    (ret = check_error(resp)) != ERRF_OK)
+	if ((ret = req_new(KBM_CMD_RECOVER_START, &req)) != ERRF_OK) {
 		goto done;
+	}
+
+	if (cfgnum > 0 && (ret = envlist_add_uint32(req, KBM_NV_CONFIG_NUM,
+	    (uint32_t)cfgnum)) != ERRF_OK) {
+		goto done;
+	}
+
+	if ((ret = open_door(&fd)) != ERRF_OK ||
+	    (ret = nv_door_call(fd, req, &resp)) != ERRF_OK ||
+	    (ret = check_error(resp)) != ERRF_OK) {
+		goto done;
+	}
 
 	if ((ret = envlist_lookup_uint32(resp, KBM_NV_RECOVER_ID,
 	    &id)) != ERRF_OK) {
@@ -149,7 +183,6 @@ show_configs(nvlist_t **cfgs, uint_t ncfgs, boolean_t verbose)
 
 	for (size_t i = 0; i < ncfgs; i++) {
 		nvlist_t **parts = NULL;
-		char *answer = NULL;
 		uint_t m = 0;
 		uint32_t n = 0;
 		int namewidth = 16;
@@ -161,11 +194,6 @@ show_configs(nvlist_t **cfgs, uint_t ncfgs, boolean_t verbose)
 			ret = errf("InternalError", ret,
 			    "kbmd returned config %zu with bad data", i + 1);
 			return (ret);
-		}
-
-		if ((ret = envlist_lookup_string(cfgs[i], KBM_NV_ANSWER,
-		    &answer)) != ERRF_OK) {
-			errf_free(ret);
 		}
 
 		for (size_t j = 0; j < m; j++) {
@@ -190,12 +218,7 @@ show_configs(nvlist_t **cfgs, uint_t ncfgs, boolean_t verbose)
 			}
 		}
 
-		if (answer != NULL) {
-			(void) printf("CONFIG %s\n", answer);
-		} else {
-			(void) printf("CONFIG #%zu\n", i + 1);
-		}
-
+		(void) printf("CONFIG #%zu\n", i + 1);
 		(void) printf("\tN = %" PRIu32 "\n", n);
 		(void) printf("\t%-32s %-4s %*s%s\n", "GUID", "SLOT",
 		    namewidth, "NAME", verbose ? " PUBKEY" : "");
@@ -247,10 +270,9 @@ select_config(nvlist_t *restrict q, nvlist_t *restrict req)
 	errf_t *ret = ERRF_OK;
 	GetLine *gl = NULL;
 	const char *prompt = NULL;
-	char *response = NULL;
+	custr_t *response = NULL;
 	nvlist_t **cfg = NULL;
 	uint_t ncfg = 0;
-	int c;
 
 	if ((ret = envlist_lookup_nvlist_array(q, KBM_NV_CONFIGS, &cfg,
 	    &ncfg)) != ERRF_OK) {
@@ -263,6 +285,11 @@ select_config(nvlist_t *restrict q, nvlist_t *restrict req)
 		return (ret);
 	}
 
+	if ((ret = ecustr_alloc(&response)) != ERRF_OK) {
+		del_GetLine(gl);
+		return (ret);
+	}
+
 	/*
 	 * If no prompt was given, we use a default value
 	 */
@@ -271,19 +298,22 @@ select_config(nvlist_t *restrict q, nvlist_t *restrict req)
 	(void) printf("Select recovery configuration:\n");
 
 	if ((ret = show_configs(cfg, ncfg, B_FALSE)) != ERRF_OK) {
+		custr_free(response);
 		del_GetLine(gl);
 		return (ret);
 	}
 
 	prompt = get_prompt(q, "> ");
 
-	if ((ret = readline(gl, prompt, &response)) != ERRF_OK) {
+	if ((ret = readline(gl, prompt, response)) != ERRF_OK) {
+		custr_free(response);
 		del_GetLine(gl);
 		return (ret);
 	}
+	strip_whitespace(response);
 
-	ret = envlist_add_string(req, KBM_NV_ANSWER, response);
-	free(response);
+	ret = envlist_add_string(req, KBM_NV_ANSWER, custr_cstr(response));
+	custr_free(response);
 	del_GetLine(gl);
 
 	return (ret);
@@ -329,21 +359,22 @@ challenge(nvlist_t *restrict q, nvlist_t *restrict req)
 
 		if (nvlist_lookup_uint8_array(parts[i], KBM_NV_GUID,
 		    &guid, &guidlen) != 0) {
-			(void) printf("WARNING: part %u missing GUID\n\n", i);
+			(void) printf("WARNING: part %zu missing GUID\n\n", i);
 			continue;
 		}
 		guidtohex(guid, gstr);
 
 		if (nvlist_lookup_string_array(parts[i], KBM_NV_WORDS,
 		    &words, &nwords) != 0) {
-			(void) printf("WARNING: part %u missing verification "
+			(void) printf("WARNING: part %zu missing verification "
 			    "words\n\n", i);
 			continue;
 		}
 
 		if (nvlist_lookup_string(parts[i], KBM_NV_CHALLENGE,
 		    &challenge) != 0) {
-			(void) printf("WARNING: part %u missing challenge\n\n");
+			(void) printf("WARNING: part %zu missing challenge\n\n",
+			    i);
 			continue;
 		}
 
@@ -444,15 +475,18 @@ recovery_complete(nvlist_t *resp)
 }
 
 static errf_t *
-readline(GetLine *restrict gl, const char *prompt, char **restrict linep)
+readline(GetLine *restrict gl, const char *prompt, custr_t *line)
 {
-	char *line;
+	errf_t *ret = ERRF_OK;
+	char *strline;
 
-	line = gl_get_line(gl, (prompt == NULL) ? "" : prompt, NULL, -1);
+	strline = gl_get_line(gl, (prompt == NULL) ? "" : prompt, NULL, -1);
 
-	if (line != NULL) {
-		if ((*linep = strdup(line)) == NULL)
-			return (errfno("strdup", errno, ""));
+	if (strline != NULL) {
+		custr_reset(line);
+		if ((ret = ecustr_append(line, strline)) != ERRF_OK) {
+			return (ret);
+		}
 		return (ERRF_OK);
 	}
 
