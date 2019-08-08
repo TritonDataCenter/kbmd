@@ -687,7 +687,6 @@ kbmd_setup_token(kbmd_token_t **ktp)
 {
 	errf_t *ret = ERRF_OK;
 	struct piv_token *pk = NULL;
-	custr_t *recovery = NULL;
 	uint8_t guid[GUID_LEN] = { 0 };
 
 	ASSERT(MUTEX_HELD(&piv_lock));
@@ -864,7 +863,6 @@ kbmd_assert_pin(kbmd_token_t *kt)
 errf_t *
 kbmd_verify_pin(kbmd_token_t *kt)
 {
-	errf_t *ret = ERRF_OK;
 	enum piv_pin pin_auth;
 	size_t pinlen = strlen(kt->kt_pin);
 

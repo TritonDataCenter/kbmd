@@ -190,8 +190,6 @@ static errf_t *
 assert_token(nvlist_t *restrict req, kbmd_token_t **restrict ktp)
 {
 	errf_t *ret;
-	uint8_t *guid = NULL, *rtok = NULL;
-	uint_t guidlen = 0, rlen = 0;
 
 	ASSERT(MUTEX_HELD(&piv_lock));
 
@@ -240,8 +238,6 @@ kbmd_zpool_create(nvlist_t *req)
 	struct ebox *ebox = NULL;
 	kbmd_token_t *kt = NULL;
 	char *dataset = NULL;
-	char *buf = NULL;
-	size_t datasetlen = 0;
 	uint8_t *key = NULL;
 	size_t keylen = 0;
 
@@ -256,7 +252,6 @@ kbmd_zpool_create(nvlist_t *req)
 		    "request is missing dataset name");
 		goto done;
 	}
-	datasetlen = strlen(dataset);
 
 	if ((ret = envlist_alloc(&resp)) != ERRF_OK)
 		goto done;

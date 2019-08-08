@@ -102,7 +102,6 @@ ebox_to_str(struct ebox *restrict ebox, char **restrict strp)
 	errf_t *ret = ERRF_OK;
 	struct sshbuf *boxbuf = NULL;
 	char *str = NULL;
-	int rc;
 
 	VERIFY3P(dsname, !=, NULL);
 
@@ -290,10 +289,14 @@ done:
 	return (ret);
 }
 
-
+/*
+ * These allow for iterating ebox configs and config parts, while allowing
+ * for removal of the given config or part during iteration without
+ * invalidating the iteration.
+ */
 errf_t *
-ebox_tpl_foreach_part(struct ebox_tpl *tpl, struct ebox_tpl_config *tcfg,
-    ebox_tpl_part_cb_t cb, void *arg)
+ebox_tpl_foreach_part(struct ebox_tpl_config *tcfg, ebox_tpl_part_cb_t cb,
+    void *arg)
 {
 	errf_t *ret = ERRF_OK;
 	struct ebox_tpl_part *tpart = NULL, *next = NULL;
@@ -301,7 +304,7 @@ ebox_tpl_foreach_part(struct ebox_tpl *tpl, struct ebox_tpl_config *tcfg,
 	for (tpart = ebox_tpl_config_next_part(tcfg, NULL); tpart != NULL;
 	    tpart = next) {
 		next = ebox_tpl_config_next_part(tcfg, tpart);
-		if ((ret = cb(tpl, tcfg, tpart, arg)) != ERRF_OK) {
+		if ((ret = cb(tpart, arg)) != ERRF_OK) {
 			return ((ret == FOREACH_STOP) ? ERRF_OK : ret);
 		}
 	}
@@ -317,7 +320,7 @@ ebox_tpl_foreach_cfg(struct ebox_tpl *tpl, ebox_tpl_cb_t cb, void *arg)
 
 	for (cfg = ebox_tpl_next_config(tpl, NULL); cfg != NULL; cfg = next) {
 		next = ebox_tpl_next_config(tpl, cfg);
-		if ((ret = cb(tpl, cfg, arg)) != ERRF_OK) {
+		if ((ret = cb(cfg, arg)) != ERRF_OK) {
 			return ((ret == FOREACH_STOP) ? ERRF_OK : ret);
 		}
 	}
@@ -732,18 +735,22 @@ done:
 	return (ret);
 }
 
+struct move_data {
+	struct ebox_tpl *md_src;
+	struct ebox_tpl *md_dst;
+};
+
 static errf_t *
-move_recovery(struct ebox_tpl *tpl, struct ebox_tpl_config *cfg,
-    void *arg)
+move_recovery(struct ebox_tpl_config *cfg, void *arg)
 {
-	struct ebox_tpl *dst_tpl = arg;
+	struct move_data *data = arg;
 
 	if (ebox_tpl_config_type(cfg) == EBOX_RECOVERY) {
 		(void) bunyan_debug(tlog, "Adding recovery template",
 		    BUNYAN_T_END);
 
-		ebox_tpl_remove_config(tpl, cfg);
-		ebox_tpl_add_config(dst_tpl, cfg);
+		ebox_tpl_remove_config(data->md_src, cfg);
+		ebox_tpl_add_config(data->md_dst, cfg);
 	}
 	return (ERRF_OK);
 }
@@ -757,21 +764,22 @@ add_supplied_template(nvlist_t *restrict nvl, struct ebox_tpl *restrict tpl,
     boolean_t required)
 {
 	errf_t *ret = ERRF_OK;
-	struct ebox_tpl *reqtpl = NULL;
-	struct ebox_tpl_config *cfg = NULL, *nextcfg = NULL;
+	struct move_data data = {
+		.md_dst = tpl
+	};
 
 	/*
 	 * This function is just for testing, if we fail, we just act
 	 * like the template isn't there.
 	 */
-	if ((ret = get_request_template(nvl, &reqtpl)) != ERRF_OK) {
+	if ((ret = get_request_template(nvl, &data.md_src)) != ERRF_OK) {
 		if (required)
 			return (ret);
 		errf_free(ret);
 		return (ERRF_OK);
 	}
 
-	ebox_tpl_foreach_cfg(reqtpl, move_recovery, tpl);
-	ebox_tpl_free(reqtpl);
+	ebox_tpl_foreach_cfg(data.md_src, move_recovery, &data);
+	ebox_tpl_free(data.md_src);
 	return (ERRF_OK);
 }

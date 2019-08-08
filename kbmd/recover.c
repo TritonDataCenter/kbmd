@@ -14,6 +14,7 @@
  */
 
 #include <errno.h>
+#include <openssl/sha.h>
 #include <stddef.h>
 #include <string.h>
 #include <synch.h>
@@ -114,10 +115,7 @@ kbmd_recover_init(int dfd)
 }
 
 static errf_t *
-count_parts(struct ebox_tpl *tpl __unused,
-    struct ebox_tpl_config *tcfg __unused,
-    struct ebox_tpl_part *tpart __unused,
-    void *arg)
+count_parts(struct ebox_tpl_part *tpart __unused, void *arg)
 {
 	size_t *np = arg;
 
@@ -126,8 +124,16 @@ count_parts(struct ebox_tpl *tpl __unused,
 }
 
 static errf_t *
-count_recovery_configs(struct ebox_tpl *tpl __unused,
-    struct ebox_tpl_config *tcfg, void *arg)
+count_configs(struct ebox_tpl_config *tcfg __unused, void *arg)
+{
+	size_t *np = arg;
+
+	(*np)++;
+	return (ERRF_OK);
+}
+
+static errf_t *
+count_recovery_configs(struct ebox_tpl_config *tcfg, void *arg)
 {
 	size_t *np = arg;
 
@@ -136,6 +142,16 @@ count_recovery_configs(struct ebox_tpl *tpl __unused,
 	}
 
 	(*np)++;
+	return (ERRF_OK);
+}
+
+static errf_t *
+strip_primary_cb(struct ebox_tpl_config *tcfg, void *arg)
+{
+	struct ebox_tpl *tpl = arg;
+	if (ebox_tpl_config_type(tcfg) == EBOX_PRIMARY) {
+		ebox_tpl_remove_config(tpl, tcfg);
+	}
 	return (ERRF_OK);
 }
 
@@ -189,8 +205,45 @@ recovery_exit_cb(pid_t pid, void *arg)
 }
 
 static errf_t *
-add_part(struct ebox_tpl *tpl __unused, struct ebox_tpl_config *tcfg __unused,
-    struct ebox_tpl_part *tpart, void *arg)
+template_hash(struct ebox_tpl *tpl, uint8_t **hashp, size_t *lenp)
+{
+	errf_t *ret = ERRF_OK;
+	struct sshbuf *buf = NULL;
+
+	*hashp = NULL;
+	*lenp = 0;
+
+	if ((buf = sshbuf_new()) == NULL) {
+		ret = errfno("sshbuf_new", errno, "cannot create sshbuf");
+		goto done;
+	}
+
+	/*
+	 * Serialize the template and then hash the serialized form.
+	 */
+	if ((ret = sshbuf_put_ebox_tpl(buf, tpl)) != ERRF_OK) {
+		goto done;
+	}
+
+	if ((ret = zalloc(SHA512_DIGEST_LENGTH, hashp)) != ERRF_OK) {
+		goto done;
+	}
+	*lenp = SHA512_DIGEST_LENGTH;
+
+	/*
+	 * SHA512() returns a pointer to the buffer containing the hash.
+	 * Since we supply our own buffer, we don't need to worry about the
+	 * return value.
+	 */
+	(void) SHA512(sshbuf_ptr(buf), sshbuf_len(buf), *hashp);
+
+done:
+	sshbuf_free(buf);
+	return (ret);
+}
+
+static errf_t *
+add_part(struct ebox_tpl_part *tpart, void *arg)
 {
 	errf_t *ret = ERRF_OK;
 	struct add_data *data = arg;
@@ -228,7 +281,8 @@ add_part(struct ebox_tpl *tpl __unused, struct ebox_tpl_config *tcfg __unused,
 		goto done;
 	}
 
-	ret = envlist_add_string(nvl, KBM_NV_PUBKEY, sshbuf_ptr(buf));
+	ret = envlist_add_string(nvl, KBM_NV_PUBKEY,
+	    (const char *)sshbuf_ptr(buf));
 	sshbuf_free(buf);
 	if (ret != ERRF_OK) {
 		goto done;
@@ -250,7 +304,7 @@ done:
 }
 
 static errf_t *
-add_config(struct ebox_tpl *tpl, struct ebox_tpl_config *tcfg, void *arg)
+add_config(struct ebox_tpl_config *tcfg, void *arg)
 {
 	errf_t *ret = ERRF_OK;
 	struct add_data *cfgdata = arg;
@@ -263,7 +317,7 @@ add_config(struct ebox_tpl *tpl, struct ebox_tpl_config *tcfg, void *arg)
 		return (ERRF_OK);
 	}
 
-	VERIFY0(ebox_tpl_foreach_part(tpl, tcfg, count_parts, &nparts));
+	VERIFY0(ebox_tpl_foreach_part(tcfg, count_parts, &nparts));
 
 	if ((ret = envlist_alloc(&nvl)) != ERRF_OK ||
 	    (ret = ecalloc(nparts, sizeof (nvlist_t *),
@@ -277,7 +331,7 @@ add_config(struct ebox_tpl *tpl, struct ebox_tpl_config *tcfg, void *arg)
 		goto done;
 	}
 
-	if ((ret = ebox_tpl_foreach_part(tpl, tcfg, add_part,
+	if ((ret = ebox_tpl_foreach_part(tcfg, add_part,
 	    &part_data)) != ERRF_OK) {
 		goto done;
 	}
@@ -440,8 +494,7 @@ struct get_config_resp_data {
 };
 
 static errf_t *
-get_config_resp_cb(struct ebox_tpl *tpl, struct ebox_tpl_config *tcfg,
- void *arg)
+get_config_resp_cb(struct ebox_tpl_config *tcfg, void *arg)
 {
 	struct get_config_resp_data *data = arg;
 	struct config_question *cq = ebox_tpl_config_private(tcfg);
@@ -452,6 +505,10 @@ get_config_resp_cb(struct ebox_tpl *tpl, struct ebox_tpl_config *tcfg,
 	}
 
 	if (strcmp(data->gcrp_answer, cq->cq_answer) == 0) {
+		(void) bunyan_debug(tlog, "Recovery configuration selected",
+		    BUNYAN_T_STRING, "cfgnum", cq->cq_answer,
+		    BUNYAN_T_END);
+
 		data->gcrp_cfg = cq->cq_cfg;
 		return (FOREACH_STOP);
 	}
@@ -473,14 +530,14 @@ get_config_response(recovery_t *restrict r, nvlist_t *restrict resp)
 }
 
 static errf_t *
-select_config_cb(struct ebox_tpl *tpl, struct ebox_tpl_config *tcfg, void *arg)
+select_config_cb(struct ebox_tpl_config *tcfg, void *arg)
 {
 	errf_t *ret = ERRF_OK;
 	struct add_data *data = arg;
 	struct config_question *cq = ebox_tpl_config_private(tcfg);
 	nvlist_t *nvl = NULL;
 
-	if ((ret = add_config(tpl, tcfg, arg)) != ERRF_OK) {
+	if ((ret = add_config(tcfg, arg)) != ERRF_OK) {
 		return (ret);
 	}
 
@@ -644,16 +701,6 @@ done:
 	return (ret);
 }
 
-static errf_t *
-strip_primary_cb(struct ebox_tpl *tpl, struct ebox_tpl_config *tcfg,
-    void *arg __unused)
-{
-	if (ebox_tpl_config_type(tcfg) == EBOX_PRIMARY) {
-		ebox_tpl_remove_config(tpl, tcfg);
-	}
-	return (ERRF_OK);
-}
-
 /*
  * Combine an EBOX_PRIMARY config for kt and the EBOX_RECOVERY config(s)
  * from oldtpl into *newtplp.
@@ -681,7 +728,7 @@ create_replacement_tpl(kbmd_token_t *kt, struct ebox_tpl *oldtpl,
 		return (ret);
 	}
 
-	VERIFY0(ebox_tpl_foreach_cfg(newtpl, strip_primary_cb, NULL));
+	VERIFY0(ebox_tpl_foreach_cfg(newtpl, strip_primary_cb, newtpl));
 	ebox_tpl_add_config(newtpl, newpri);
 	*newtplp = newtpl;
 	return (ERRF_OK);
@@ -694,7 +741,7 @@ struct update_data {
 };
 
 static errf_t *
-piv_update_cb(struct ebox_tpl *tpl, struct ebox_tpl_config *tcfg, void *arg)
+piv_update_cb(struct ebox_tpl_config *tcfg, void *arg)
 {
 	errf_t *ret = ERRF_OK;
 	struct update_data *data = arg;
@@ -706,9 +753,11 @@ piv_update_cb(struct ebox_tpl *tpl, struct ebox_tpl_config *tcfg, void *arg)
 
 	/*
 	 * Since this is an EBOX_PRIMARY config, we assume a single
-	 * template part.
+	 * template part.  We also shouldn't have been able to create an
+	 * ebox without an EBOX_PRIMARY config without a part.
 	 */
 	tpart = ebox_tpl_config_next_part(tcfg, NULL);
+	VERIFY3P(tpart, !=, NULL);
 
 	if ((ret = kbmd_replace_pivtoken(ebox_tpl_part_guid(tpart), GUID_LEN,
 	    data->ud_rtoken, data->ud_rtokenlen, data->ud_tok)) == ERRF_OK) {
@@ -723,7 +772,6 @@ static errf_t *
 do_piv_update(struct ebox *ebox, kbmd_token_t *newkt, const uint8_t *rtoken,
     size_t rtokenlen)
 {
-	errf_t *ret = ERRF_OK;
 	struct update_data data = {
 		.ud_tok = newkt,
 		.ud_rtoken = rtoken,
@@ -1036,8 +1084,8 @@ recover_common(nvlist_t *restrict req, recovery_t *restrict r)
 	 * configuration, and shouldn't attempt to start the challenge yet.
 	 */
 	if (r->r_cfg == NULL &&
-	   (ret = select_config(req, resp, r)) != ERRF_OK ||
-	   r->r_cfg == NULL)
+	   ((ret = select_config(req, resp, r)) != ERRF_OK ||
+	   r->r_cfg == NULL))
 		goto done;
 
 	ret = challenge(req, resp, r);
@@ -1060,6 +1108,7 @@ kbmd_recover_start(nvlist_t *req, pid_t pid)
 	errf_t *ret = ERRF_OK;
 	struct ebox *ebox = NULL;
 	recovery_t *r = NULL;
+	uint32_t cfgnum = 0;
 
 	(void) bunyan_trace(tlog, "kbmd_recover_start: enter",
 	    BUNYAN_T_END);
@@ -1074,18 +1123,66 @@ kbmd_recover_start(nvlist_t *req, pid_t pid)
 		mutex_exit(&recovery_lock);
 		goto fail;
 	}
-	ebox = NULL;
+
+	if ((ret = envlist_lookup_uint32(req, KBM_NV_CONFIG_NUM,
+	    &cfgnum)) != ERRF_OK) {
+		/*
+		 * If the operator does not specify a specific configuration
+		 * at the start of recovery, we just prompt them to select
+		 * a configuration (instead of erroring out).
+		 */
+		errf_free(ret);
+	} else {
+		if (cfgnum == 0 || cfgnum > r->r_ncfg) {
+			(void) bunyan_info(tlog,
+			    "Operator requested recovery with non-existent "
+			    "recovery config",
+			    BUNYAN_T_UINT32, "cfgnum", cfgnum,
+			    BUNYAN_T_UINT32, "ncfg", r->r_ncfg,
+			    BUNYAN_T_END);
+			cfgnum = 0;
+		} else if (r->r_cfg != NULL) {
+			struct ebox_config *cfg = NULL;
+			size_t i = 1;
+
+			while ((cfg = ebox_next_config(ebox, cfg)) != NULL) {
+				if (i == cfgnum) {
+					break;
+				}
+
+				i++;
+			}
+			r->r_cfg = cfg;
+
+			if ((ret = start_recovery(r, cfg)) != ERRF_OK) {
+				goto fail;
+			}
+
+		}
+	}
 
 	(void) bunyan_info(tlog, "Recovery started",
 	    BUNYAN_T_UINT32, "recover_id", r->r_id,
+	    (cfgnum > 0) ? BUNYAN_T_UINT32 : BUNYAN_T_END, "cfgnum", cfgnum,
 	    BUNYAN_T_END);
 
 	return (recover_common(req, r));
 
 fail:
-	if (ebox != NULL)
+	if (r != NULL) {
+		kbmd_unwatch_pid(pid);
+		refhash_remove(recovery_hash, r);
+		refhash_rele(recovery_hash, r);
+	} else {
+		/*
+		 * The recovery_t instance takes ownership of the ebox we
+		 * created.  If there is no recovery instance, then we
+		 * might still have an allocated ebox to dispose of.
+		 */
 		ebox_free(ebox);
+	}
 	nvlist_free(req);
+	mutex_exit(&recovery_lock);
 	kbmd_ret_error(ret);
 }
 
@@ -1223,7 +1320,6 @@ kbmd_show_recovery(nvlist_t *req)
 	struct ebox *ebox = NULL;
 	struct ebox_tpl *tpl = NULL;
 	size_t ncfg = 0;
-	size_t i;
 
 	(void) bunyan_trace(tlog, "kbmd_show_recovery: enter", BUNYAN_T_END);
 

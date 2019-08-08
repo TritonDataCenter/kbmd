@@ -135,7 +135,6 @@ kbm_stream_log(nvlist_t *nvl, const char *js, void *arg)
 errf_t *
 init_log(bunyan_level_t level)
 {
-	errf_t *ret = ERRF_OK;
 	int rc;
 
 	rc = bunyan_init(getprogname(), &blog);
