@@ -30,19 +30,24 @@ extern "C" {
 
 struct errf;
 struct nvlist;
+struct libzfs_handle;
 
 /*
- * XXX: These 3 symbols are for testing only
+ * XXX: These 4 symbols are for testing only
  */
 extern char *guidstr;
 extern char *recovery;
 extern char *template_f;
 extern uint8_t guid[];
 
+
+extern struct libzfs_handle *g_zfs;
+
 struct errf *req_new(kbm_cmd_t, struct nvlist **);
-struct errf *open_door(int *);
+struct errf *assert_door(int *);
 struct errf *nv_door_call(int, struct nvlist *, struct nvlist **);
 struct errf *check_error(struct nvlist *);
+struct errf *assert_libzfs(void);
 
 #ifdef __cplusplus
 }

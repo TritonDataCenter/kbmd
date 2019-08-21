@@ -121,7 +121,7 @@ do_recover(int argc, char **argv, nvlist_t **respp)
 		goto done;
 	}
 
-	if ((ret = open_door(&fd)) != ERRF_OK ||
+	if ((ret = assert_door(&fd)) != ERRF_OK ||
 	    (ret = nv_door_call(fd, req, &resp)) != ERRF_OK ||
 	    (ret = check_error(resp)) != ERRF_OK) {
 		goto done;
@@ -167,6 +167,8 @@ do_recover(int argc, char **argv, nvlist_t **respp)
 		    (ret = check_error(resp)) != ERRF_OK)
 			goto done;
 	}
+
+	// XXX: mount zpool
 
 done:
 	if (fd >= 0)

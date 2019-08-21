@@ -65,6 +65,7 @@ extern "C" {
 #define	KBM_NV_RECOVERY_COMPLETE	"recovery-complete"	/* boolean */
 
 #define	KBM_NV_TEMPLATE		"template"	/* uint8_t array */
+#define	KBM_NV_SYSPOOL		"syspool"	/* string */
 
 /*
  * A request looks similar to the following:
@@ -143,8 +144,10 @@ typedef enum kbm_cmd {
 	KBM_CMD_ZPOOL_CREATE,
 	KBM_CMD_RECOVER_START,
 	KBM_CMD_RECOVER_RESP,
-	KBM_CMD_UPDATE_RECOVERY, /* XXX: Only for testing */
+	KBM_CMD_UPDATE_RECOVERY,
 	KBM_CMD_SHOW_RECOVERY,
+	KBM_CMD_SET_SYSPOOL,
+	KBM_CMD_SET_SYSTOKEN,
 } kbm_cmd_t;
 
 typedef enum kbm_act {

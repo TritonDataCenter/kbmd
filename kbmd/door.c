@@ -36,7 +36,7 @@ struct retbuf {
 	nv_alloc_t	rt_nvalloc;
 };
 
-int door_fd = -1;
+static int door_fd = -1;
 static thread_key_t retkey = THR_ONCE_KEY;
 
 /*
@@ -215,7 +215,7 @@ kbmd_door_server(void *cookie, char *argp, size_t arg_size, door_desc_t *dp,
 	door_cred_t dcred;
 	nvlist_t *req;
 	errf_t *ret = ERRF_OK;
-	int rc, cmdval;
+	int rc;
 
 	rc = door_cred(&dcred);
 	if (rc != 0) {
@@ -239,52 +239,7 @@ kbmd_door_server(void *cookie, char *argp, size_t arg_size, door_desc_t *dp,
 		door_return(generr, generr_sz, NULL, 0);
 	}
 
-	flockfile(stderr);
-	fprintf(stderr, "Request:\n");
-	nvlist_print(stderr, req);
-	fputc('\n', stderr);
-	funlockfile(stderr);
-
-	ret = envlist_lookup_int32(req, KBM_NV_CMD, &cmdval);
-	if (ret != ERRF_OK) {
-		(void) bunyan_info(tlog, "Unable to obtain command",
-		    BUNYAN_T_INT32, "errno", errf_errno(ret),
-		    BUNYAN_T_STRING, "errmsg", errf_message(ret),
-		    BUNYAN_T_END);
-		nvlist_free(req);
-		kbmd_ret_error(errf("InvalidCommand", ret,
-		    "Unable to retrieve command value"));
-	}
-
-	switch ((kbm_cmd_t)cmdval) {
-	case KBM_CMD_ZFS_UNLOCK:
-		kbmd_zfs_unlock(req);
-		break;
-	case KBM_CMD_ZPOOL_CREATE:
-		kbmd_zpool_create(req);
-		break;
-	case KBM_CMD_RECOVER_START:
-		kbmd_recover_start(req, dcred.dc_pid);
-		break;
-	case KBM_CMD_RECOVER_RESP:
-		kbmd_recover_resp(req, dcred.dc_pid);
-		break;
-	case KBM_CMD_UPDATE_RECOVERY:
-		kbmd_update_recovery(req);
-		break;
-	case KBM_CMD_SHOW_RECOVERY:
-		kbmd_show_recovery(req);
-		break;
-	default:
-		(void) bunyan_info(tlog, "Unrecognized command",
-		    BUNYAN_T_INT32, "cmdval", (int32_t)cmdval,
-		    BUNYAN_T_END);
-		nvlist_free(req);
-
-		kbmd_ret_error(errf("InvalidCommand", NULL,
-		    "Invalid command value %d", cmdval));
-		break;
-	}
+	dispatch_request(req, dcred.dc_pid);
 }
 
 static void

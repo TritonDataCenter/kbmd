@@ -59,11 +59,12 @@ _KBMADM_SRCS =		\
 	recover.c
 KBMADM_SRCS = $(_KBMADM_SRCS:%=kbmadm/%)
 KBMADM_OBJS = $(KBMADM_SRCS:%.c=%.o) pivy/libssh/base64.o
-KBMADM_LIBS = -lbunyan -ltecla
+KBMADM_LIBS = -lbunyan -ltecla -lzfs
 out/kbmadm:	LDLIBS += $(KBMADM_LIBS)
 
 _KBMD_SRCS =		\
 	box.c		\
+	cmds.c		\
 	door.c		\
 	event.c		\
 	kbmd.c		\
@@ -71,7 +72,6 @@ _KBMD_SRCS =		\
 	piv-bunyan.c	\
 	plugin.c	\
 	recover.c	\
-	zfs_unlock.c	\
 	zpool_create.c
 KBMD_SRCS =	$(_KBMD_SRCS:%=kbmd/%)
 KBMD_OBJS =	$(KBMD_SRCS:%.c=%.o)

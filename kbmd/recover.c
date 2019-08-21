@@ -835,10 +835,6 @@ post_recovery(recovery_t *r)
 		return (ret);
 	}
 
-	if (IS_ZPOOL(dataset)) {
-		kbmd_mount_zpool(dataset, NULL);
-	}
-
 	mutex_enter(&piv_lock);
 
 	if ((ret = kbmd_setup_token(&kt)) != ERRF_OK) {
@@ -1113,7 +1109,7 @@ kbmd_recover_start(nvlist_t *req, pid_t pid)
 	(void) bunyan_trace(tlog, "kbmd_recover_start: enter",
 	    BUNYAN_T_END);
 
-	if ((ret = kbmd_get_ebox(zones_dataset, &ebox)) != ERRF_OK)
+	if ((ret = kbmd_get_ebox(sys_pool, &ebox)) != ERRF_OK)
 		goto fail;
 
 	mutex_enter(&recovery_lock);
@@ -1263,7 +1259,7 @@ kbmd_update_recovery(nvlist_t *req)
 		    "system zpool dataset must be unlocked before updating "
 		    "its recovery template"));
 	}
-	VERIFY3P(zones_dataset, !=, NULL);
+	VERIFY3P(sys_pool, !=, NULL);
 
 	if ((ret = piv_txn_begin(sys_piv->kt_piv)) != ERRF_OK ||
 	    (ret = piv_select(sys_piv->kt_piv)) != ERRF_OK ||
@@ -1277,13 +1273,13 @@ kbmd_update_recovery(nvlist_t *req)
 	}
 	piv_txn_end(sys_piv->kt_piv);
 
-	if ((ret = kbmd_get_ebox(zones_dataset, &ebox_old)) != ERRF_OK ||
+	if ((ret = kbmd_get_ebox(sys_pool, &ebox_old)) != ERRF_OK ||
 	    (ret = kbmd_unlock_ebox(ebox_old, &kt)) != ERRF_OK) {
 		mutex_exit(&piv_lock);
 		nvlist_free(resp);
 		kbmd_ret_error(ret);
 	}
-	VERIFY0(strcmp(ebox_private(ebox_old), zones_dataset));
+	VERIFY0(strcmp(ebox_private(ebox_old), sys_pool));
 
 	if ((ret = kbmd_ebox_clone(ebox_old, &ebox_new, tpl, kt)) != ERRF_OK) {
 		mutex_exit(&piv_lock);
@@ -1327,7 +1323,7 @@ kbmd_show_recovery(nvlist_t *req)
 		kbmd_ret_error(ret);
 	}
 
-	if ((ret = kbmd_get_ebox(zones_dataset, &ebox)) != ERRF_OK) {
+	if ((ret = kbmd_get_ebox(sys_pool, &ebox)) != ERRF_OK) {
 		goto done;
 	}
 

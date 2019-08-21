@@ -45,15 +45,11 @@
 
 #define	KBMD_PG		"kbmd"
 #define	KBMD_PROP_INC	"include_path" /* XXX: module path instead? */
+#define	DEFAULT_SYSPOOL	"zones"
 
 bunyan_logger_t *blog;
 
-/*
- * XXX: I think bootparams can specify an alternate pool name for the
- * main dataset.  If so, we'll need to include code to look for that
- * and override the default.
- */
-char *zones_dataset = "zones";
+char *sys_pool;
 
 mutex_t g_zfs_lock = ERRORCHECKMUTEX;
 libzfs_handle_t *g_zfs;
@@ -64,7 +60,6 @@ SCARDCONTEXT piv_ctx;
 uuid_t sys_uuid;
 volatile boolean_t kbmd_quit = B_FALSE;
 
-static void *kbmd_event_loop(void *);
 static int kbmd_daemonize(int);
 static void kbmd_fd_setup(void);
 static int kbmd_dir_setup(void);
@@ -167,6 +162,12 @@ main(int argc, char *argv[])
 		kbmd_dfatal(dfd, "could not initialize libpcsc: %s",
 		    pcsc_stringify_error(errval));
 	}
+
+	if ((sys_pool = strdup(DEFAULT_SYSPOOL)) == NULL) {
+		kbmd_dfatal(dfd, "could not set default system pool: %s",
+		    strerror(errno));
+	}
+
 	mutex_exit(&piv_lock);
 
 	kbmd_event_init(dfd);
@@ -192,24 +193,6 @@ main(int argc, char *argv[])
 
 	kbmd_event_fini();
 	return (0);
-}
-
-static void *
-kbmd_rotate_thread(void *arg __unused)
-{
-	for (;;) {
-		errf_t *ret = ERRF_OK;
-		uint32_t interval;
-
-		interval = arc4random_uniform(ROTATE_SPLAY) + ROTATE_MIN;
-		sleep(interval);
-
-		ret = kbmd_rotate_zfs_ebox(zones_dataset);
-		errf_free(ret);
-	}
-
-	/* NOTREACHED */
-	return (NULL);
 }
 
 /*

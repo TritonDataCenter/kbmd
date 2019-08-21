@@ -82,19 +82,18 @@ typedef struct kbmd_token {
 	size_t			kt_rtoklen;	/* Recovery token len */
 } kbmd_token_t;
 
-extern int door_fd;
 extern uuid_t sys_uuid;
-extern char *zones_dataset;
 
 extern mutex_t g_zfs_lock;
 extern struct libzfs_handle *g_zfs;
 
 /*
- * piv_lock protects piv_ctx, and kpiv
+ * piv_lock protects piv_ctx, sys_piv, and sys_pool
  */
 extern mutex_t piv_lock;
 extern SCARDCONTEXT piv_ctx;
 extern kbmd_token_t *sys_piv;
+extern char *sys_pool;
 #define	IS_SYSTEM_TOKEN(_tok) ((sys_piv != NULL) && ((_tok) == sys_piv->kt_piv))
 
 void kbmd_dfatal(int, const char *, ...) __NORETURN;
@@ -103,12 +102,15 @@ int kbmd_door_setup(const char *);
 void kbmd_ret_nvlist(struct nvlist *) __NORETURN;
 void kbmd_ret_error(errf_t *) __NORETURN;
 
+void dispatch_request(struct nvlist *, pid_t);
 void kbmd_zpool_create(struct nvlist *);
 void kbmd_recover_init(int);
 void kbmd_recover_start(struct nvlist *, pid_t);
 void kbmd_recover_resp(struct nvlist *, pid_t);
 void kbmd_update_recovery(struct nvlist *);
 void kbmd_show_recovery(struct nvlist *);
+void kbmd_set_syspool(struct nvlist *);
+void kbmd_set_systoken(struct nvlist *);
 
 errf_t *ezfs_open(struct libzfs_handle *, const char *, int,
     struct zfs_handle **);

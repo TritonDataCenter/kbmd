@@ -20,11 +20,13 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <libzfs.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/debug.h>
+#include <sys/mnttab.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
@@ -35,17 +37,30 @@
 #include "pivy/errf.h"
 #include "pivy/libssh/sshbuf.h"
 
-#define	ZPOOL_CMD	"zpool"
+#define	ZPOOL_CMD		"zpool"
+#define	SYSTEM_POOL_MARKER	".system_pool"
+
+/*
+ * Is a dataset name the pool name?
+ *
+ * XXX: Might need to expand this to check for other special characters
+ * (e.g. '@' or '%').
+ */
+#define	IS_ZPOOL(_name) (strchr(_name, '/') == NULL)
 
 char *guidstr;
 char *recovery;
 char *template_f;
 uint8_t guid[GUID_LEN];
 
+libzfs_handle_t *g_zfs;
+
 static errf_t *parse_guid(const char *, uint8_t guid[GUID_LEN]);
 static errf_t *read_template_file(const char *, char **);
 static errf_t *read_template_stdin(char **);
 static errf_t *run_zpool_cmd(char **, const uint8_t *, size_t);
+
+static void mount_zpool(const char *, const char *);
 
 /*
  * Unfortunately, errf_t's assume that the file and func values are
@@ -362,7 +377,7 @@ do_create_zpool(int argc, char **argv, nvlist_t **respp)
 	    (ret = add_debug_args(req)) != ERRF_OK ||
 	    (ret = envlist_add_string(req, KBM_NV_DATASET,
 	    dataset)) != ERRF_OK ||
-	    (ret = open_door(&fd)) != ERRF_OK ||
+	    (ret = assert_door(&fd)) != ERRF_OK ||
 	    (ret = nv_door_call(fd, req, &resp)) ||
 	    (ret = check_error(resp)) != ERRF_OK)
 		goto done;
@@ -450,13 +465,17 @@ do_unlock(int argc, char **argv, nvlist_t **respp)
 	nvlist_t *req = NULL, *resp = NULL;
 	int fd = -1;
 
-	if ((ret = open_door(&fd)) != ERRF_OK)
+	if ((ret = assert_door(&fd)) != ERRF_OK)
 		goto done;
 
 	for (int i = 1; i < argc; i++) {
 		ret = unlock_dataset(fd, argv[i]);
 		if (ret != ERRF_OK)
 			goto done;
+
+		if (IS_ZPOOL(argv[i])) {
+			mount_zpool(argv[i], NULL);
+		}
 	}
 
 done:
@@ -509,7 +528,7 @@ do_update_recovery(int argc, char **argv, nvlist_t **respp)
 	    (ret = add_b64(req, KBM_NV_TEMPLATE, tpl)) != ERRF_OK)
 		goto done;
 
-	if ((ret = open_door(&fd)) != ERRF_OK ||
+	if ((ret = assert_door(&fd)) != ERRF_OK ||
 	    (ret = nv_door_call(fd, req, &resp)) != ERRF_OK) {
 		goto done;
 	}
@@ -550,7 +569,7 @@ do_show_recovery(int argc, char **argv, nvlist_t **respp)
 	if ((ret = req_new(KBM_CMD_SHOW_RECOVERY, &req)) != ERRF_OK)
 		return (ret);
 
-	if ((ret = open_door(&fd)) != ERRF_OK ||
+	if ((ret = assert_door(&fd)) != ERRF_OK ||
 	    (ret = nv_door_call(fd, req, &resp)) != ERRF_OK) {
 		goto done;
 	}
@@ -682,16 +701,24 @@ failnoclose:
 }
 
 errf_t *
-open_door(int *fdp)
+assert_door(int *fdp)
 {
+	static int door_fd = -1;
 	int fd;
 
-	if ((fd = open(KBMD_DOOR_PATH, O_RDONLY|O_CLOEXEC)) >= 0) {
-		*fdp = fd;
+	if (door_fd != -1) {
+		*fdp = door_fd;
 		return (ERRF_OK);
 	}
 
-	return (errfno("open", errno, "Error opening kbmd door"));
+	if ((fd = open(KBMD_DOOR_PATH, O_RDONLY|O_CLOEXEC)) >= 0) {
+		door_fd = fd;
+		*fdp = door_fd;
+		return (ERRF_OK);
+	}
+
+	return (errfno("open", errno, "Error opening kbmd door (%s)",
+	    KBMD_DOOR_PATH));
 }
 
 errf_t *
@@ -778,4 +805,43 @@ done:
 	}
 	umem_free(buf, buflen);
 	return (ret);
+}
+
+static void
+mount_zpool(const char *pool, const char *mntopts)
+{
+	errf_t *ret = ERRF_OK;
+	zpool_handle_t *zhp = NULL;
+
+	(void) bunyan_debug(tlog, "Attempting to mount datasets in pool",
+	    BUNYAN_T_STRING, "pool", pool,
+	    BUNYAN_T_END);
+
+	if ((ret = assert_libzfs()) != ERRF_OK) {
+		errf_free(ret);
+		return;
+	}
+
+	if ((zhp = zpool_open_canfail(g_zfs, pool)) == NULL) {
+		goto done;
+	}
+
+	if (zpool_get_state(zhp) == POOL_STATE_UNAVAIL) {
+		goto done;
+	}
+
+	(void) zpool_enable_datasets(zhp, mntopts, 0);
+
+done:
+	zpool_close(zhp);
+}
+
+errf_t *
+assert_libzfs(void)
+{
+	if (g_zfs != NULL || (g_zfs = libzfs_init()) != NULL) {
+		return (ERRF_OK);
+	}
+
+	return (errfno("libzfs_init", errno, "cannot initialize libzfs"));
 }

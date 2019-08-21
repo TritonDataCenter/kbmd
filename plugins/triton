@@ -59,7 +59,7 @@ function get_kbmapi_host {
 	suffix=$(/usr/bin/json -f /system/boot/networking.json \
 		datacenter_name dns_domain | \
 		$SED 'N;s/\n/./')
-	echo "kbmapi.$suffix"
+    printf "kbmapi.%s" "$suffix"
 }
 
 function http_date {
@@ -68,7 +68,7 @@ function http_date {
 
 function piv_sign {
 	local data="$1"
-    echo $data | $PIVYTOOL sign 9e | $OPENSSL enc -base64 -A
+    printf "%s" "$data" | $PIVYTOOL sign 9e | $OPENSSL enc -base64 -A
 }
 
 function hmac_sign {
@@ -76,10 +76,10 @@ function hmac_sign {
 	local key="$2"
     local key_hex
 
-    key_hex=$(echo $key | $OPENSSL enc -base64 -d | $OD -An -tx1 | \
+    key_hex=$(printf "%s" "$key" | $OPENSSL enc -base64 -d | $OD -An -tx1 | \
         $SED -e 'N;s/\n//' -e 's/ //g')
 
-    echo $data | $OPENSSL dgst -sha512 -hmac -macopt hexkey:"$key_hex"
+    printf "%s" "$data" | $OPENSSL dgst -sha512 -hmac -macopt hexkey:"$key_hex"
 }
 
 function get_pin {
@@ -87,7 +87,7 @@ function get_pin {
     local host=$(get_kbmapi_host)
     local url="http://$host/pivtokens/$guid"
     local date=$(http_date)
-    local sig=$(piv_sign "$date")
+    local sig=$(piv_sign "Date: $date")
 
     $CURL -sS \
         -H "Date: $date" \
@@ -100,7 +100,7 @@ function register_pivtoken {
     local host=$(get_kbmapi_host)
     local url="http://$host/pivtokens"
     local date=$(http_date)
-    local sig=$(piv_sign "$date")
+    local sig=$(piv_sign "Date: $date")
 
     /bin/cat - | $CURL -sS \
         -H "Date: $date" \
@@ -114,7 +114,7 @@ function replace_pivtoken {
     local host=$(get_kbmapi_host)
     local url="http://$host/pivtokens/$guid/recover"
     local date=$(http_date)
-    local sig=$(hmac_sign "$rtoken" "$date")
+    local sig=$(hmac_sign "$rtoken" "Date: $date")
 
     /bin/cat - | $CURL -sS \
         -H "Date: $date" \
@@ -127,7 +127,7 @@ function new_rtoken {
     local host=$(get_kbmapi_host)
     local url="http://$host/pivtokens/$guid/recover"
     local date=$(http_date)
-    local sig=$(piv_sign "$date")
+    local sig=$(piv_sign "Date: $date")
 
     $CURL -sS \
         -H "Date: $date" \
