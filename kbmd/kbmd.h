@@ -35,6 +35,9 @@
 extern "C" {
 #endif
 
+#define	DEFAULT_FMRI "svc:/system/kbmd:default"
+#define	PLUGIN_PATH_ENV "KBM_PLUGIN_DIR"
+
 /*
  * XXX: Once we have a better idea of the permissions needed for the ccid
  * driver, we can perhaps set these to something other than root.
@@ -95,6 +98,8 @@ extern SCARDCONTEXT piv_ctx;
 extern kbmd_token_t *sys_piv;
 extern char *sys_pool;
 #define	IS_SYSTEM_TOKEN(_tok) ((sys_piv != NULL) && ((_tok) == sys_piv->kt_piv))
+
+extern char *plugin_dir;
 
 void kbmd_dfatal(int, const char *, ...) __NORETURN;
 int kbmd_door_setup(const char *);

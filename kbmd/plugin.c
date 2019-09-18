@@ -10,10 +10,11 @@
  */
 
 /*
- * Copyright 2019, Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 
 #include <bunyan.h>
+#include <dirent.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <limits.h>
@@ -80,6 +81,8 @@
 
 #define	PLUGIN_VERSION		"1"
 
+#define	PLUGIN_PREFIX		"kbm-plugin-"
+
 /* XXX: This path should change */
 #define	PLUGIN_PATH		"/usr/lib/kbm/plugins/"
 
@@ -94,6 +97,8 @@
 #define	NEW_TOK_PATH		PLUGIN_PATH NEW_TOK_CMD
 
 extern char **_environ;
+
+static char *plugin_path;
 
 /*
  * Truncate the string cu to the first line, removing the trailing \n if
@@ -733,4 +738,149 @@ kbmd_new_recovery_token(kbmd_token_t *restrict kt, uint8_t **restrict rtokenp,
 	custr_free(data[0]);
 	custr_free(data[1]);
 	return (ret);
+}
+
+static errf_t *
+get_plugin_path(custr_t *prefix)
+{
+	errf_t *ret = ERRF_OK;
+	const char *fmri = NULL, *plugin_path = NULL;
+	scf_simple_prop_t *prop = NULL;
+
+	if ((plugin_path = getenv(PLUGIN_PATH_ENV)) != NULL) {
+		(void) bunyan_debug(tlog,
+		    "Using $" PLUGIN_PATH_ENV " as plugin path",
+		    BUNYAN_T_STRING, "plugin_path", plugin_path,
+		    BUNYAN_T_END);
+		goto done;
+	}
+
+	if ((fmri = getenv("SMF_FMRI")) == NULL) {
+		(void) bunyan_info(tlog,
+		    "Failed to get SMF FMRI, using default",
+		    BUNYAN_T_STRING, "default fmri", DEFAULT_FMRI,
+		    BUNYAN_T_END);
+		fmri = DEFAULT_FMRI;
+	}
+
+	if ((prop = scf_simple_prop_get(NULL, fmri, KBMD_PG,
+	    KBMD_PROP_INC)) == NULL) {
+		(void) bunyan_debug(tlog,
+		    "Failed to read plugin SMF property group; using default",
+		    BUNYAN_T_END);
+		plugin_path = PLUGIN_PATH;
+		goto done;
+	}
+
+	if ((plugin_path = scf_simple_prop_next_astring(prop)) == NULL) {
+		(void) bunyan_debug(tlog,
+		    "Failed to read plugin SMF property; using default",
+		    BUNYAN_T_END);
+		plugin_path = PLUGIN_PATH;
+	}
+
+	if (strlen(plugin_path) == 0) {
+		(void) bunyan_debug(tlog,
+		    "SMF contained empty plugin path; using default",
+		    BUNYAN_T_END);
+		plugin_path = PLUGIN_PATH;
+	}
+
+done:
+	/*
+	 * We have no way to really recover or deal with this, so we
+	 * die if it fails.
+	 */
+	VERIFY3P(plugin_path, !=, NULL);
+	custr_reset(prefix);
+	if ((ret = ecustr_append(prefix, plugin_path)) != ERRF_OK)
+		return (ret);
+
+	/* Make sure the prefix ends with a '/' */
+	VERIFY3U(custr_len(prefix), >, 0);
+	if (custr_cstr(prefix)[custr_len(prefix) - 1] != '/') {
+		ret = ecustr_appendc(prefix, '/');
+	}
+
+	if (prop != NULL) {
+		scf_simple_prop_free(prop);
+	}
+
+	(void) bunyan_debug(tlog, "Using plugin path",
+	    BUNYAN_T_STRING, "path", plugin_path,
+	    BUNYAN_T_END);
+}
+
+static void
+kbmd_load_plugins(void)
+{
+	errf_t *ret = ERRF_OK;
+	custr_t *path = NULL;
+	DIR *dir = NULL;
+	struct dirent *de = NULL;
+	size_t prefixlen;
+	size_t maxversion = 0;
+
+	if ((ret = ecustr_alloc(&path)) != ERRF_OK)
+		goto done;
+
+	if ((ret = get_plugin_path(path)) != ERRF_OK)
+		goto done;
+
+	prefixlen = custr_len(path);
+
+	if ((dir = opendir(custr_cstr(path))) == NULL) {
+		(void) bunyan_error(tlog, "Error opening plugin dir",
+		    BUNYAN_T_STRING, "plugin dir", custr_cstr(path),
+		    BUNYAN_T_STRING, "errmsg", strerror(errno),
+		    BUNYAN_T_INT32, "errno", errno,
+		    BUNYAN_T_END);
+		goto done;
+	}
+
+	while ((de = readdir(dir)) != NULL) {
+		unsigned long version;
+
+		if (strncmp(de->d_name, PLUGIN_PREFIX,
+		    sizeof (PLUGIN_PREFIX) - 1) != 0)
+			continue;
+
+		if (strlen(de->d_name) < sizeof (PLUGIN_PREFIX))
+			continue;
+
+		errno = 0;
+		version = strtoul(de->d_name + sizeof (PLUGIN_PREFIX) - 1,
+		    NULL, 10);
+		if (errno != 0 || version == 0) {
+			continue;
+		}
+
+		if (version > maxversion)
+			maxversion = version;
+	}
+
+#if 0
+		if ((ret = ecustr_trunc(path, prefixlen)) != ERRF_OK)
+			goto done;
+
+		if ((ret = ecustr_append(path, de->d_name)) != ERRF_OK)
+			goto done;
+
+	}
+#endif
+
+done:
+	if (ret != ERRF_OK) {
+
+	}
+	if (dir != NULL) {
+		/* Any error other than EINTR is considered fatal */
+		for (;;) {
+			if (closedir(dir) == 0)
+				break;
+			VERIFY33(errno, ==, EINTR);
+		}
+	}
+
+	custr_free(path);
 }

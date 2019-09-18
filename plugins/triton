@@ -136,6 +136,11 @@ function new_rtoken {
 }
 
 case "$1" in
+    version)
+        echo "name=Triton KBMAPI"
+        echo "version=1"
+        exit 0
+        ;;
     get-pin)            get_pin $1;;
     register-pivtoken)  register_pivtoken;;
     replace-pivtoken)   replace_pivtoken;;

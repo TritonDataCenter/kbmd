@@ -43,8 +43,9 @@
 #include <unistd.h>
 #include "kbmd.h"
 
-#define	KBMD_PG		"kbmd"
-#define	KBMD_PROP_INC	"include_path" /* XXX: module path instead? */
+#define	KBMD_PG				"kbmd"
+#define	KBMD_PROP_INC			"kbmd-plugin-dir"
+#define	KBMD_DEFAULT_PLUGIN_DIR		"/usr/lib/kbmd/plugins"
 #define	DEFAULT_SYSPOOL	"zones"
 
 bunyan_logger_t *blog;
@@ -366,8 +367,11 @@ kbmd_load_smf(int dfd)
 
 	if ((prop = scf_simple_prop_get(NULL, fmri, KBMD_PG,
 	    KBMD_PROP_INC)) == NULL)
-		return;
+		goto done;
 
+	if ((inc = scf_simple_prop_next_astring(prop)) == NULL) {
+
+	}
 	while ((inc = scf_simple_prop_next_astring(prop)) != NULL) {
 #if 0
 		int err = plugin_load(XXX, inc);
@@ -378,6 +382,7 @@ kbmd_load_smf(int dfd)
 #endif
 	}
 
+done:
 	scf_simple_prop_free(prop);
 }
 
