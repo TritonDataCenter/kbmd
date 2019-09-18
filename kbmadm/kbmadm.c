@@ -40,14 +40,6 @@
 #define	ZPOOL_CMD		"zpool"
 #define	SYSTEM_POOL_MARKER	".system_pool"
 
-/*
- * Is a dataset name the pool name?
- *
- * XXX: Might need to expand this to check for other special characters
- * (e.g. '@' or '%').
- */
-#define	IS_ZPOOL(_name) (strchr(_name, '/') == NULL)
-
 char *guidstr;
 char *recovery;
 char *template_f;
@@ -59,8 +51,6 @@ static errf_t *parse_guid(const char *, uint8_t guid[GUID_LEN]);
 static errf_t *read_template_file(const char *, char **);
 static errf_t *read_template_stdin(char **);
 static errf_t *run_zpool_cmd(char **, const uint8_t *, size_t);
-
-static void mount_zpool(const char *, const char *);
 
 /*
  * Unfortunately, errf_t's assume that the file and func values are
@@ -76,8 +66,8 @@ static errf_t *do_create_zpool(int, char **, nvlist_t **);
 static errf_t *do_unlock(int, char **, nvlist_t **);
 static errf_t *do_update_recovery(int, char **, nvlist_t **);
 static errf_t *do_show_recovery(int, char **, nvlist_t **);
-errf_t *do_recover(int, char **, nvlist_t **);
-errf_t *show_configs(nvlist_t **, uint_t, boolean_t);
+static errf_t *do_set_syspool(int, char **, nvlist_t **);
+static errf_t *do_set_systoken(int, char **, nvlist_t **);
 
 static struct {
 	const char *name;
@@ -87,7 +77,9 @@ static struct {
 	{ "recover", do_recover },
 	{ "unlock", do_unlock },
 	{ "update-recovery", do_update_recovery },
-	{ "show-recovery", do_show_recovery }
+	{ "show-recovery", do_show_recovery },
+	{ "set-syspool", do_set_syspool },
+	{ "set-systoken", do_set_systoken },
 };
 
 static void __NORETURN
@@ -97,10 +89,10 @@ usage(void)
 
 	(void) fprintf(stderr,
 	    "Usage: %1$s create-zpool <zpool create args>...\n"
-	    "       %1$s recover\n"
-	    "       %1$s unlock [dataset...]\n"
+	    "       %1$s recover dataset\n"
+	    "       %1$s unlock [-r] [dataset...]\n"
 	    "       %1$s update-recovery [-d dataset] [-f template file]\n"
-	    "       %1$s show=recovery\n",
+	    "       %1$s show-recovery\n",
 	    name);
 
 	exit(EXIT_FAILURE);
@@ -464,14 +456,39 @@ do_unlock(int argc, char **argv, nvlist_t **respp)
 	errf_t *ret;
 	nvlist_t *req = NULL, *resp = NULL;
 	int fd = -1;
+	int c;
+	boolean_t recover_if_needed = B_FALSE;
+
+	while ((c = getopt(argc, argv, "r")) != -1) {
+		switch (c) {
+		case 'r':
+			recover_if_needed = B_TRUE;
+			break;
+		case '?':
+			(void) fprintf(stderr, "Unknown option -%c\n",
+			    optopt);
+			usage();
+		}
+	}
 
 	if ((ret = assert_door(&fd)) != ERRF_OK)
 		goto done;
 
 	for (int i = 1; i < argc; i++) {
 		ret = unlock_dataset(fd, argv[i]);
-		if (ret != ERRF_OK)
-			goto done;
+		if (ret != ERRF_OK) {
+			if (errf_caused_by(ret, "RecoveryNeeded") &&
+			    recover_if_needed) {
+				warnfx(ret, "");
+				errf_free(ret);
+
+				ret = recover(argv[i], 0, respp);
+			}
+
+			if (ret != ERRF_OK) {
+				goto done;
+			}
+		}
 
 		if (IS_ZPOOL(argv[i])) {
 			mount_zpool(argv[i], NULL);
@@ -588,6 +605,68 @@ do_show_recovery(int argc, char **argv, nvlist_t **respp)
 done:
 	nvlist_free(req);
 	*respp = resp;
+	return (ret);
+}
+
+static errf_t *
+do_set_syspool(int argc, char **argv, nvlist_t **nvlp)
+{
+	errf_t *ret = ERRF_OK;
+	nvlist_t *req = NULL;
+	nvlist_t *resp = NULL;
+	int fd = -1;
+
+	if (argc < 1) {
+		usage();
+	}
+
+	if ((ret = req_new(KBM_CMD_SET_SYSPOOL, &req)) != ERRF_OK ||
+	    (ret = envlist_add_string(req, KBM_NV_DATASET,
+	    argv[0])) != ERRF_OK) {
+		goto done;
+	}
+
+	if ((ret = assert_door(&fd)) != ERRF_OK ||
+	    (ret = nv_door_call(fd, req, &resp)) != ERRF_OK) {
+		goto done;
+	}
+
+	ret = check_error(resp);
+
+done:
+	nvlist_free(req);
+	*nvlp = resp;
+	return (ret);
+}
+
+static errf_t *
+do_set_systoken(int argc, char **argv, nvlist_t **nvlp)
+{
+	errf_t *ret = ERRF_OK;
+	nvlist_t *req = NULL;
+	nvlist_t *resp = NULL;
+	int fd = -1;
+
+	if (guidstr == NULL) {
+		errx(EXIT_FAILURE, "No GUID supplied");
+	}
+
+	if ((ret = req_new(KBM_CMD_SET_SYSTOKEN, &req)) != ERRF_OK ||
+	    (ret = envlist_add_uint8_array(req, KBM_NV_GUID, guid,
+	    GUID_LEN)) != ERRF_OK) {
+		goto done;
+	}
+
+	if ((ret = assert_door(&fd)) != ERRF_OK ||
+	    (ret = nv_door_call(fd, req, &resp)) != ERRF_OK) {
+		goto done;
+	}
+
+	ret = check_error(resp);
+
+done:
+	nvlist_free(req);
+	*nvlp = resp;
 	return (ret);
 }
 
@@ -807,7 +886,7 @@ done:
 	return (ret);
 }
 
-static void
+void
 mount_zpool(const char *pool, const char *mntopts)
 {
 	errf_t *ret = ERRF_OK;

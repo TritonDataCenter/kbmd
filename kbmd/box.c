@@ -554,8 +554,9 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 			    BUNYAN_T_STRING, "partname", tname,
 			    BUNYAN_T_END);
 
-			return (ret);
+			goto done;
 		}
+
 		VERIFY3P(kt, !=, NULL);
 		VERIFY3P(kt->kt_piv, !=, NULL);
 
@@ -650,10 +651,10 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 		return (ret);
 	}
 
-	ret = errf("NeedRecovery", ret,
+done:
+	ret = errf("RecoveryNeeded", ret,
 	    "Cannot unlock box for %s; recovery is required", boxname);
 
-done:
 	if (kt != sys_piv)
 		kbmd_token_free(kt);
 

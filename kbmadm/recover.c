@@ -74,10 +74,8 @@ errf_t *
 do_recover(int argc, char **argv, nvlist_t **respp)
 {
 	errf_t *ret = ERRF_OK;
-	nvlist_t *req = NULL, *resp = NULL;
-	uint32_t id;
+	const char *dataset = NULL;
 	ulong_t cfgnum = 0;
-	int fd = -1;
 	int c;
 
 	while ((c = getopt(argc, argv, "c:")) != -1) {
@@ -101,6 +99,23 @@ do_recover(int argc, char **argv, nvlist_t **respp)
 		}
 	}
 
+	ret = recover(dataset, (uint32_t)cfgnum, respp);
+
+	if (ret == ERRF_OK && IS_ZPOOL(dataset)) {
+		mount_zpool(dataset, NULL);
+	}
+
+	return (ret);
+}
+
+errf_t *
+recover(const char *dataset, uint32_t cfgnum, nvlist_t **respp)
+{
+	errf_t *ret = ERRF_OK;
+	nvlist_t *req = NULL, *resp = NULL;
+	uint32_t id;
+	int fd = -1;
+
 	if (isatty(STDIN_FILENO) == 0) {
 		if (errno != ENOTTY) {
 			ret = errfno("isatty", errno,
@@ -113,6 +128,11 @@ do_recover(int argc, char **argv, nvlist_t **respp)
 	}
 
 	if ((ret = req_new(KBM_CMD_RECOVER_START, &req)) != ERRF_OK) {
+		goto done;
+	}
+
+	if ((ret = envlist_add_string(req, KBM_NV_DATASET,
+	    dataset)) != ERRF_OK) {
 		goto done;
 	}
 
@@ -167,8 +187,6 @@ do_recover(int argc, char **argv, nvlist_t **respp)
 		    (ret = check_error(resp)) != ERRF_OK)
 			goto done;
 	}
-
-	// XXX: mount zpool
 
 done:
 	if (fd >= 0)

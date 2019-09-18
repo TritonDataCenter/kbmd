@@ -28,6 +28,14 @@
 extern "C" {
 #endif
 
+/*
+ * Is a dataset name the pool name?
+ *
+ * XXX: Might need to expand this to check for other special characters
+ * (e.g. '@' or '%').
+ */
+#define	IS_ZPOOL(_name) (strchr(_name, '/') == NULL)
+
 struct errf;
 struct nvlist;
 struct libzfs_handle;
@@ -48,6 +56,12 @@ struct errf *assert_door(int *);
 struct errf *nv_door_call(int, struct nvlist *, struct nvlist **);
 struct errf *check_error(struct nvlist *);
 struct errf *assert_libzfs(void);
+
+struct errf *do_recover(int, char **, nvlist_t **);
+struct errf *recover(const char *, uint32_t, nvlist_t **);
+struct errf *show_configs(nvlist_t **, uint_t, boolean_t);
+
+void mount_zpool(const char *, const char *);
 
 #ifdef __cplusplus
 }
