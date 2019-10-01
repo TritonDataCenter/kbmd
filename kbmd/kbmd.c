@@ -43,8 +43,6 @@
 #include <unistd.h>
 #include "kbmd.h"
 
-#define	KBMD_PG				"kbmd"
-#define	KBMD_PROP_INC			"kbmd-plugin-dir"
 #define	KBMD_DEFAULT_PLUGIN_DIR		"/usr/lib/kbmd/plugins"
 #define	DEFAULT_SYSPOOL	"zones"
 

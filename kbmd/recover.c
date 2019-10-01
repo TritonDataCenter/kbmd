@@ -66,6 +66,12 @@ static mutex_t recovery_lock = ERRORCHECKMUTEX;
 static refhash_t *recovery_hash;
 static uint32_t recovery_count;
 
+static const char *activate_prog[] =
+    "nextebox = zfs.get_prop(args.dataset, args.nextebox)\n"
+    "err = zfs.sync.set_prop(args.dataset, args.ebox, nextebox)\n"
+    "zfs.sync.inherit(args.dataset, args.nextebox)\n"
+    "return err\n";
+
 static uint64_t
 rec_hash(const void *tp)
 {

@@ -40,9 +40,12 @@
 #define	ZPOOL_CMD		"zpool"
 #define	SYSTEM_POOL_MARKER	".system_pool"
 
-char *guidstr;
+typedef struct cmd {
+	const char *name;
+	errf_t *(*cmd)(int, char **, nvlist_t **);
+} cmd_t;
+
 char *recovery;
-char *template_f;
 uint8_t guid[GUID_LEN];
 
 libzfs_handle_t *g_zfs;
@@ -64,22 +67,26 @@ static errf_t *run_zpool_cmd(char **, const uint8_t *, size_t);
  */
 static errf_t *do_create_zpool(int, char **, nvlist_t **);
 static errf_t *do_unlock(int, char **, nvlist_t **);
-static errf_t *do_update_recovery(int, char **, nvlist_t **);
+static errf_t *do_recovery(int, char **, nvlist_t **);
+static errf_t *do_add_recovery(int, char **, nvlist_t **);
 static errf_t *do_show_recovery(int, char **, nvlist_t **);
 static errf_t *do_set_syspool(int, char **, nvlist_t **);
 static errf_t *do_set_systoken(int, char **, nvlist_t **);
 
-static struct {
-	const char *name;
-	errf_t *(*cmd)(int, char **, nvlist_t **);
-} cmd_tbl[] = {
+static cmd_t cmd_tbl[] = {
 	{ "create-zpool", do_create_zpool },
 	{ "recover", do_recover },
 	{ "unlock", do_unlock },
-	{ "update-recovery", do_update_recovery },
-	{ "show-recovery", do_show_recovery },
+	{ "recovery", do_recovery },
 	{ "set-syspool", do_set_syspool },
 	{ "set-systoken", do_set_systoken },
+};
+
+static cmd_t recovery_cmd_tbl[] = {
+	{ "add", do_update_recovery },
+	{ "list", do_show_recovery },
+	{ "activate", xx },
+	{ "cancel", xx}
 };
 
 static void __NORETURN
@@ -88,11 +95,14 @@ usage(void)
 	const char *name = getprogname();
 
 	(void) fprintf(stderr,
-	    "Usage: %1$s create-zpool <zpool create args>...\n"
-	    "       %1$s recover dataset\n"
+	    "Usage: %1$s create-zpool [-g guid] [-t template] -- "
+	    "<zpool create args>...\n"
+	    "       %1$s recover [-n] dataset\n"
 	    "       %1$s unlock [-r] [dataset...]\n"
-	    "       %1$s update-recovery [-d dataset] [-f template file]\n"
-	    "       %1$s show-recovery\n",
+	    "       %1$s recovery add [-f] [-d dataset] [-t template]\n"
+	    "       %1$s recovery list\n"
+            "       %1$s recovery activate [-d dataset]\n"
+	    "       %1$s recovery cancel [-d dataset]\n",
 	    name);
 
 	exit(EXIT_FAILURE);
@@ -325,10 +335,27 @@ do_create_zpool(int argc, char **argv, nvlist_t **respp)
 	nvlist_t *resp = NULL;
 	uint8_t *key = NULL;
 	const char *dataset = NULL;
+	const char *guidstr = NULL;
+	const char *template_f = NULL;
 	uint_t keylen = 0;
 	int fd = -1;
 	int c;
 	strarray_t args = STRARRAY_INIT;
+
+	while ((c = getopt(argc, argv, "g:t:")) != -1) {
+		switch (c) {
+		case 'g':
+			guidstr = optarg;
+			break;
+		case 't':
+			template_f = optarg;
+			break;
+		case '?':
+			(void) fprintf(stderr, "Unknown option -%c\n",
+			    optopt);
+			usage();
+		}
+	}
 
 	/*
 	 * When 'kbmadm create-zpool args...' is invoked, due to the
@@ -504,20 +531,43 @@ done:
 }
 
 static errf_t *
-do_update_recovery(int argc, char **argv, nvlist_t **respp)
+do_recovery(int argc, char **argv, nvlist_t **respp)
+{
+	if (argc < 1) {
+		(void) fprintf(stderr, "missing subcommand\n");
+		usage();
+	}
+
+	for (size_t i = 0; i < ARRAY_SIZE(recovery_cmd_tbl); i++) {
+		if (strcmp(argv[0], recovery_cmd_tbl[i].name) != 0)
+			continue;
+		return (recovery_cmd_tbl[i].cmd(argc - 1, argv + 1, respp));
+	}
+
+	return (errf("Unknown command", NULL, "unrecognized command '%s'",
+	    argv[1]));	
+}
+
+static errf_t *
+do_add_recovery(int argc, char **argv, nvlist_t **respp)
 {
 	const char *dataset = "zones";
+	const char *template_f = NULL;
 	errf_t *ret = ERRF_OK;
 	nvlist_t *req = NULL, *resp = NULL;
 	char *tpl = NULL;
 	int c, fd;
+	boolean_t force = B_FALSE;
 
-	while ((c = getopt(argc, argv, "d:f:")) != -1) {
+	while ((c = getopt(argc, argv, "d:ft:")) != -1) {
 		switch (c) {
 		case 'd':
 			dataset = optarg;
 			break;
 		case 'f':
+			force = B_TRUE;
+			break;
+		case 't':
 			template_f = optarg;
 			break;
 		default:

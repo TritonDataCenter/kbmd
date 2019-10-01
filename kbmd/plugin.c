@@ -19,6 +19,7 @@
 #include <inttypes.h>
 #include <limits.h>
 #include <libnvpair.h>
+#include <libscf.h>
 #include <string.h>
 #include <strings.h>
 #include <umem.h>
@@ -39,41 +40,6 @@
 #include "pivy/libssh/sshkey.h"
 
 /*
- * Since there's nowhere else to put this yet, the plugins work like this:
- *
- * - All plugins return 0 on success, >0 on error.
- * - Error messages can be written to stderr.  On error, the contents of stdout
- *   is ignored.
- *
- * get-pin <guid>
- *	Return the pin for the piv token w/ the given guid.  Writes the pin
- *	to stdout.
- *
- * register-token
- *	Takes a JSON description of the piv token on stdin (in a funny
- *	conincidence, this is the same format used by the KBMAPI CreateToken
- *	API call).  Writes out the base64-encoded recovery token value to
- *	stdout on success.
- *
- * replace-token <guid> <rtoken>
- *	Takes a JSON blob for a PIV token to replace the previous system
- *	token <guid> with the recovery token <rtoken> and replaces the
- *	PIV token data in KBMAPI.
- *
- *	Writes the new recovery token to stdout on success.  This is
- *	different from 'new-token' in that this uses the recovery token
- *	to authenticate and replace the PIV token (as well as generate
- *	a new recovery token).
- *
- * new-token <guid>
- *	Asks for a new recovery token for the given GUID.  Unlike
- *	replace-token, the GUID does not change.  This is used when
- *	replacing/updating the recovery configuration (we can only
- *	obtain the current recovery token by performing an actual
- *	recovery, so when changing the recovery configuration, we
- *	must create a brand new ebox complete with a new recovery
- *	token).
- *
  * In all cases, the PIV token must not currently be in a transaction
  * when we call out to the plugins.  Since they are separate processes, they
  * will be unable to use the PIV token if we keep it locked in a transaction.
@@ -91,14 +57,10 @@
 #define	REPLACE_TOK_CMD		"replace-pivtoken"
 #define	NEW_TOK_CMD		"new-rtoken"
 
-#define	GET_PIN_PATH		PLUGIN_PATH GET_PIN_CMD
-#define	REGISTER_TOK_PATH	PLUGIN_PATH REGISTER_TOK_CMD
-#define	REPLACE_TOK_PATH	PLUGIN_PATH REPLACE_TOK_CMD
-#define	NEW_TOK_PATH		PLUGIN_PATH NEW_TOK_CMD
-
 extern char **_environ;
 
-static char *plugin_path;
+static mutex_t plugin_mutex = ERRORCHECKMUTEX;
+static custr_t *kbmd_plugin;
 
 /*
  * Truncate the string cu to the first line, removing the trailing \n if
@@ -149,6 +111,7 @@ trim_whitespace(custr_t *cu)
 	}
 }
 
+#if 0
 static errf_t *
 check_plugin_version(const char *cmd)
 {
@@ -208,6 +171,22 @@ check_plugin_version(const char *cmd)
 
 	return (ret);
 }
+#endif
+
+static errf_t *
+plugin_create_args(strarray_t *args, const char *subcmd)
+{
+	errf_t *ret = ERRF_OK;
+
+	mutex_enter(&plugin_mutex);
+	ret = strarray_append(args, custr_cstr(kbmd_plugin));
+	mutex_exit(&plugin_mutex);
+
+	if (ret != ERRF_OK)
+		return (ret);
+
+	return (strarray_append(args, subcmd));
+}
 
 errf_t *
 kbmd_get_pin(const uint8_t guid[restrict], custr_t **restrict pinp)
@@ -219,8 +198,7 @@ kbmd_get_pin(const uint8_t guid[restrict], custr_t **restrict pinp)
 
 	*pinp = NULL;
 
-	if ((ret = strarray_append(&args, GET_PIN_CMD)) != ERRF_OK ||
-	    (ret = strarray_append_guid(&args, guid)) != ERRF_OK) {
+	if ((ret = plugin_create_args(&args, GET_PIN_CMD)) != ERRF_OK) {
 		return (errf("PluginError", ret, ""));
 	}
 
@@ -548,6 +526,7 @@ plugin_pivtoken_common(struct piv_token *restrict pt, const char *restrict pin,
 	data[1] = NULL;
 
 done:
+	close_fds(fds);
 	if (json != NULL)
 		freezero(json, strlen(json) + 1);
 	custr_free(data[1]);
@@ -607,7 +586,7 @@ kbmd_register_pivtoken(kbmd_token_t *kt)
 		goto done;
 	}
 
-	if ((ret = strarray_append(&args, REGISTER_TOK_CMD)) != ERRF_OK) {
+	if ((ret = plugin_create_args(&args, REGISTER_TOK_CMD)) != ERRF_OK) {
 		goto done;
 	}
 
@@ -646,7 +625,7 @@ kbmd_replace_pivtoken(const uint8_t *guid, size_t guidlen,
 		goto done;
 	}
 
-	if ((ret = strarray_append(&args, REPLACE_TOK_CMD)) != ERRF_OK ||
+	if ((ret = plugin_create_args(&args, REPLACE_TOK_CMD)) != ERRF_OK ||
 	    (ret = strarray_append_guid(&args, guid)) != ERRF_OK ||
 	    (ret = strarray_append(&args, "%s", custr_cstr(rtok64))) != ERRF_OK)
 		goto done;
@@ -686,7 +665,7 @@ kbmd_new_recovery_token(kbmd_token_t *restrict kt, uint8_t **restrict rtokenp,
 	*rtokenp = NULL;
 	*rtokenlenp = 0;
 
-	if ((ret = strarray_append(&args, NEW_TOK_CMD)) != ERRF_OK ||
+	if ((ret = plugin_create_args(&args, NEW_TOK_CMD)) != ERRF_OK ||
 	    (ret = strarray_append_guid(&args,
 	    piv_token_guid(kt->kt_piv))) != ERRF_OK) {
 		return (errf("PluginError", ret,
@@ -739,6 +718,113 @@ kbmd_new_recovery_token(kbmd_token_t *restrict kt, uint8_t **restrict rtokenp,
 	custr_free(data[1]);
 	return (ret);
 }
+
+#if 0
+static boolean_t
+parse_info_line(custr_t *restrict line, size_t *restrict offp,
+   custr_t *restrict key, custr_t *restrict val)
+{
+	const char *p = custr_cstr(line) + *offp;
+	const char *end = strchrnul(p, '\n');
+	const char *keyp = NULL, *valp = NULL;
+	const char *eq = strchr(p, '=');
+	size_t keylen = 0, vallen = 0;
+
+	if (*offp == custr_len(line))
+		return (B_FALSE);
+
+	custr_reset(key);
+	custr_reset(val);
+
+	if (eq != NULL)
+		keylen = (size_t)(uintptr_t)(eq - p);
+	else
+		keylen = (size_t)(uintptr_t)(end - p);
+
+	if (keylen > INT_MAX)
+		return (B_FALSE);
+
+	if (custr_append_printf(key, "%.*s", (int)keylen, p) != 0)
+		return (B_FALSE);
+
+	eq++;
+	if (*eq == '\0')
+		goto done;
+
+	vallen = (size_t)(uintptr_t)(end - eq);
+	if (vallen > INT_MAX)
+		return (B_FALSE);
+
+	if (custr_append_printf(val, "%.*s", (int)vallen, eq) != 0)
+		return (B_FALSE);
+
+done:
+	trim_whitespace(key);
+	trim_whitespace(val);
+	*offp += (uintptr_t)(end - p);
+	return (B_TRUE);
+}
+
+static errf_t *
+check_plugin_version(custr_t *restrict plugin,
+    unsigned long *restrict plugin_versionp)
+{
+	errf_t *ret = ERRF_OK;
+	strarray_t args = STRARRAY_INIT;
+	int fds[3] = { -1, -1, -1 };
+	pid_t pid;
+
+	if ((ret = strarray_append(&args, custr_cstr(plugin))) != ERRF_OK ||
+	    (ret = strarray_append(&args, "info")) != ERRF_OK)
+		goto done;
+
+	(void) bunyan_debug(tlog, "Checking plugin version",
+	    BUNYAN_T_STRING, "plugin", custr_cstr(plugin),
+	    BUNYAN_T_END);
+
+	ret = spawn(custr_cstr(plugin), args.sar.strs, _environ, &pid, fds);
+	strarray_fini(&args);
+	if (ret != ERRF_OK) {
+		(void) bunyan_debug(tlog, "Failed to run plugin",
+		    BUNYAN_T_STRING, "errmsg", errf_message(ret),
+		    BUNYAN_T_END);
+		return (ret);
+	}
+
+	custr_t *data[2] = { 0 };
+	int exitval;
+
+	if ((ret = ecustr_alloc(&data[0])) != ERRF_OK ||
+	    (ret = ecustr_alloc(&data[1])) != ERRF_OK ||
+	    (ret = interact(pid, fds, NULL, 0, data, &exitval,
+	    B_FALSE)) != ERRF_OK) {
+		ret = errf("PluginError", ret, "");
+		goto done;
+	}
+
+	if (exitval != 0) {
+		(void) bunyan_warn(tlog,
+		    "Plugin returned error querying version",
+		    BUNYAN_T_STRING, "plugin", custr_cstr(plugin),
+		    BUNYAN_T_INT32, "exitval", exitval,
+		    BUNYAN_T_END);
+		ret = errf("PluginError", NULL,
+		    "plugin returned non-zero exit value %d", exitval);
+		goto done;
+	}
+
+	trim_whitespace(data[0]);
+
+	/*
+	 * Currently, we only support 'version=1'
+	 */
+	
+done:
+	custr_free(data[0]);
+	custr_free(data[1]);
+	return (ret);
+}
+#endif
 
 static errf_t *
 get_plugin_path(custr_t *prefix)
@@ -812,16 +898,18 @@ done:
 }
 
 static void
-kbmd_load_plugins(void)
+load_plugin(void)
 {
 	errf_t *ret = ERRF_OK;
 	custr_t *path = NULL;
+	custr_t *plugin = NULL;
 	DIR *dir = NULL;
 	struct dirent *de = NULL;
 	size_t prefixlen;
 	size_t maxversion = 0;
 
-	if ((ret = ecustr_alloc(&path)) != ERRF_OK)
+	if ((ret = ecustr_alloc(&path)) != ERRF_OK ||
+	    (ret = ecustr_alloc(&plugin)) != ERRF_OK)
 		goto done;
 
 	if ((ret = get_plugin_path(path)) != ERRF_OK)
@@ -840,6 +928,7 @@ kbmd_load_plugins(void)
 
 	while ((de = readdir(dir)) != NULL) {
 		unsigned long version;
+		unsigned long plugin_version;
 
 		if (strncmp(de->d_name, PLUGIN_PREFIX,
 		    sizeof (PLUGIN_PREFIX) - 1) != 0)
@@ -855,32 +944,66 @@ kbmd_load_plugins(void)
 			continue;
 		}
 
-		if (version > maxversion)
-			maxversion = version;
-	}
+		if (version <= maxversion)
+			continue;
 
-#if 0
-		if ((ret = ecustr_trunc(path, prefixlen)) != ERRF_OK)
-			goto done;
+		/*
+		 * Make sure the version the plugin reports agrees with its
+		 * name
+		 */
+		VERIFY0(custr_trunc(path, prefixlen));
 
 		if ((ret = ecustr_append(path, de->d_name)) != ERRF_OK)
 			goto done;
 
-	}
+#if 0
+		if ((ret = check_plugin_version(path,
+		    &plugin_version)) != ERRF_OK) {
+			(void) bunyan_info(tlog,
+			    "Couldn't verify plugin version; skipping",
+			    BUNYAN_T_STRING, "plugin", custr_cstr(path),
+			    BUNYAN_T_END);
+
+			errf_free(ret);
+			continue;
+		}
+
+		if (plugin_version != version) {
+			(void) bunyan_info(tlog,
+			    "Plugin version mismatch; skippping",
+			    BUNYAN_T_UINT32, "expected version",
+			    (uint32_t)version,
+			    BUNYAN_T_UINT32, "reported version",
+			    (uint32_t)plugin_version,
+			    BUNYAN_T_END);
+			continue;
+		}
 #endif
 
-done:
-	if (ret != ERRF_OK) {
+		maxversion = version;
+		custr_reset(plugin);
+		if ((ret = ecustr_append(plugin, custr_cstr(path))) != ERRF_OK)
+			goto done;
 
 	}
+
+	mutex_enter(&plugin_mutex);
+	if (kbmd_plugin != NULL)
+		custr_free(kbmd_plugin);
+	kbmd_plugin = plugin;
+	plugin = NULL;
+	mutex_exit(&plugin_mutex);
+
+done:
 	if (dir != NULL) {
 		/* Any error other than EINTR is considered fatal */
 		for (;;) {
 			if (closedir(dir) == 0)
 				break;
-			VERIFY33(errno, ==, EINTR);
+			VERIFY3S(errno, ==, EINTR);
 		}
 	}
 
 	custr_free(path);
+	custr_free(plugin);
 }

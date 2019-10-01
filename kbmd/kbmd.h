@@ -35,8 +35,11 @@
 extern "C" {
 #endif
 
-#define	DEFAULT_FMRI "svc:/system/kbmd:default"
-#define	PLUGIN_PATH_ENV "KBM_PLUGIN_DIR"
+
+#define	KBMD_PG				"kbmd"
+#define	KBMD_PROP_INC			"kbmd-plugin-dir"
+#define	DEFAULT_FMRI			"svc:/system/kbmd:default"
+#define	PLUGIN_PATH_ENV			"KBM_PLUGIN_DIR"
 
 /*
  * XXX: Once we have a better idea of the permissions needed for the ccid

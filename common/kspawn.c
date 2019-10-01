@@ -487,3 +487,16 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
 
 	return (exitval(pid, exitvalp));
 }
+
+/*
+ * If any fds are left open by spawn, close them
+ */
+void
+close_fds(int fds[3])
+{
+	for (size_t i = 0; i < 3; i++) {
+		if (fds[i] == -1)
+			continue;
+		VERIFY0(close(fds[i]));
+	}
+}
