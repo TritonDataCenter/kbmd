@@ -272,7 +272,7 @@ show_configs(nvlist_t **cfgs, uint_t ncfgs, boolean_t verbose)
 				errf_free(ret);
 			}
 
-			guidtohex(guid, gstr);
+			guidtohex(guid, gstr, sizeof (gstr));
 			(void) printf("\t%32s %4x %*s%s%s\n", gstr, slot,
 			    namewidth, (name == NULL) ? "" : name,
 			    verbose ? " " : "", verbose ? pubkey : "");
@@ -382,7 +382,7 @@ challenge(nvlist_t *restrict q, nvlist_t *restrict req)
 			(void) printf("WARNING: part %zu missing GUID\n\n", i);
 			continue;
 		}
-		guidtohex(guid, gstr);
+		guidtohex(guid, gstr, sizeof (gstr));
 
 		if (nvlist_lookup_string_array(parts[i], KBM_NV_WORDS,
 		    &words, &nwords) != 0) {

@@ -41,7 +41,8 @@ struct errf *init_log(bunyan_level_t);
 
 void panic(const char *, ...) __NORETURN;
 void alloc_init(void);
-void guidtohex(const uint8_t *restrict, char *restrict);
+void tohex(const uint8_t *restrict, size_t, char *restrict, size_t);
+void guidtohex(const uint8_t *restrict, char *restrict, size_t);
 
 struct errf *ecalloc(size_t, size_t, void *);
 

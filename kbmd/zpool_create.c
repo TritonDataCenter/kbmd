@@ -24,12 +24,6 @@
 #include "pivy/ebox.h"
 #include "pivy/libssh/sshbuf.h"
 
-static size_t zfs_key_len = 32; /* bytes */
-
-const char *piv_pin_str(enum piv_pin);
-errf_t *get_slot(struct piv_token *restrict, enum piv_slotid,
-    struct piv_slot **restrict);
-
 static errf_t *
 add_opt(nvlist_t **nvl, const char *name, const char *val)
 {
@@ -103,82 +97,63 @@ add_create_data(nvlist_t *restrict resp, struct ebox *restrict ebox,
 	return (add_key(resp, key, keylen));
 }
 
-/*
- * Create an ebox template with 'kt' as the PIV token for the primary
- * config, and the current recovery configuration from the gossip
- * protocol as the recovery configuration.
- *
- * XXX: Until we integrate the gossip protocol support, no recovery
- * configurations are added (but this is where that should occur).
- */
-errf_t *
-get_template(kbmd_token_t *restrict kt, struct ebox_tpl **restrict tplp)
-{
-	errf_t *ret = ERRF_OK;
-	struct ebox_tpl *tpl = NULL;
-	struct ebox_tpl_config *cfg = NULL;
-
-	if ((tpl = ebox_tpl_alloc()) == NULL) {
-		ret = errfno("ebox_tpl_alloc", errno, "creating template");
-		return (errf("TemplateError", ret,
-		    "cannot create ebox template))"));
-	}
-
-	if ((ret = create_piv_tpl_config(kt, &cfg)) != ERRF_OK) {
-		ret = errf("TemplateError", ret, "cannot create ebox template");
-		ebox_tpl_free(tpl);
-		return (ret);
-	}
-
-	ebox_tpl_add_config(tpl, cfg);
-	*tplp = tpl;
-	return (ret);
-}
-
-/*
- * XXX: Check if request includes a PIV guid and recovery token.  Only
- * for testing.
- */
 static errf_t *
-req_has_token(nvlist_t *restrict req, kbmd_token_t **restrict ktp)
+try_guid(const uint8_t *guid, const uint8_t *rtoken, uint_t rtokenlen,
+    kbmd_token_t **restrict ktp)
 {
 	errf_t *ret = ERRF_OK;
 	kbmd_token_t *kt = NULL;
-	uint8_t *guid = NULL, *rtok = NULL;
-	uint_t guidlen = 0, rtoklen = 0;
-	char str[GUID_STR_LEN];
 
-	VERIFY3P(sys_piv, ==, NULL);
+	ASSERT(MUTEX_HELD(&piv_lock));
 
-	if ((ret = envlist_lookup_uint8_array(req, KBM_NV_GUID, &guid,
-	    &guidlen)) != ERRF_OK ||
-	    (ret = envlist_lookup_uint8_array(req, "recovery_token", &rtok,
-	    &rtoklen)) != ERRF_OK) {
+	if ((ret = kbmd_find_byguid(guid, GUID_LEN, &kt)) != ERRF_OK)
+		return (ret);
+
+	if ((ret = set_piv_rtoken(kt, rtoken, rtokenlen)) != ERRF_OK) {
+		kbmd_token_free(kt);
 		return (ret);
 	}
 
-	guidtohex(guid, str);
-	(void) bunyan_debug(tlog, "Using existing token",
-	    BUNYAN_T_STRING, "guid", str,
+	(void) bunyan_debug(tlog, "Using supplied PIV token",
+	    BUNYAN_T_STRING, "token", piv_token_guid_hex(kt->kt_piv),
 	    BUNYAN_T_END);
 
-	if ((ret = zalloc(sizeof (*kt), &kt)) != ERRF_OK ||
-	    (ret = zalloc(rtoklen, &kt->kt_rtoken)) != ERRF_OK) {
-		kbmd_token_free(kt);
-		return (ret);
-	}
-
-	if ((ret = piv_find(piv_ctx, guid, guidlen, &kt->kt_piv)) != ERRF_OK) {
-		kbmd_token_free(kt);
-		return (ret);
-	}
-
-	bcopy(rtok, kt->kt_rtoken, rtoklen);
-	kt->kt_rtoklen = rtoklen;
-	*ktp = kt;
-	kbmd_set_token(kt);
-
 	return (ERRF_OK);
+}
+
+static boolean_t
+try_sys_piv(const uint8_t *guid, const uint8_t *rtoken, size_t rtokenlen)
+{
+	errf_t *ret = ERRF_OK;
+	const uint8_t *sys_piv_guid = NULL;
+
+	(void) bunyan_trace(tlog, "try_sys_piv: enter", BUNYAN_T_END);
+
+	ASSERT(MUTEX_HELD(&piv_lock));
+
+	if (sys_piv == NULL || guid == NULL)
+		return (B_FALSE);
+
+	sys_piv_guid = piv_token_guid(sys_piv->kt_piv);
+
+	if (bcmp(sys_piv_guid, guid, GUID_LEN) != 0)
+		return (B_FALSE);
+
+	if (sys_piv->kt_rtoken == NULL && rtoken == NULL)
+		return (B_FALSE);
+
+	if (sys_piv->kt_rtoken != NULL)
+		return (B_TRUE);
+
+	if ((ret = set_piv_rtoken(sys_piv, rtoken, rtokenlen)) != ERRF_OK) {
+		/*
+		 * This can only fail due to no memory, so we don't
+		 * care about the exact error message.
+		 */
+		errf_free(ret);
+		return (B_FALSE);
+	}
+	return (B_TRUE);
 }
 
 /*
@@ -187,41 +162,39 @@ req_has_token(nvlist_t *restrict req, kbmd_token_t **restrict ktp)
  * retry recreating the zpool.
  */
 static errf_t *
-assert_token(nvlist_t *restrict req, kbmd_token_t **restrict ktp)
+kbmd_assert_token(const uint8_t *guid, const uint8_t *rtoken, size_t rtokenlen,
+    kbmd_token_t **restrict ktp)
 {
-	errf_t *ret;
+	errf_t *ret = ERRF_OK;
 
 	ASSERT(MUTEX_HELD(&piv_lock));
 
 	/*
-	 * We can only use the cached PIV token if we also have the
-	 * recovery token.
+	 * If the system PIV has been designated, and is usable, we
+	 * use that.
 	 */
-	if (sys_piv != NULL && sys_piv->kt_rtoken != NULL) {
+	if (try_sys_piv(guid, rtoken, rtokenlen)) {
+		(void) bunyan_debug(tlog, "Using system token",
+		    BUNYAN_T_STRING, "piv_guid",
+		    piv_token_guid_hex(sys_piv->kt_piv),
+		    BUNYAN_T_END);
 		*ktp = sys_piv;
 		return (ERRF_OK);
 	}
 
-	/*
-	 * XXX: Allow caller to specify PIV token and recovery token.
-	 * This is only for testing and should be removed before go live.
-	 */
-	if ((ret = req_has_token(req, ktp)) == ERRF_OK) {
+	if ((ret = try_guid(guid, rtoken, rtokenlen, ktp)) == ERRF_OK) {
+		(void) bunyan_debug(tlog, "Using supplied PIV token",
+		    BUNYAN_T_STRING, "piv_guid",
+		    piv_token_guid_hex((*ktp)->kt_piv),
+		    BUNYAN_T_END);
+		kbmd_set_token(*ktp);
 		return (ERRF_OK);
 	}
 
-	/*
-	 * Any error but 'not found' means something else has gone wrong and
-	 * should be propagated up stack.
-	 */
 	if (errf_errno(ret) != ENOENT)
 		return (ret);
 	errf_free(ret);
-	ret = ERRF_OK;
 
-	/*
-	 * Otherwise go through the normal init + setup for a new PIV token
-	 */
 	if ((ret = kbmd_setup_token(ktp)) != ERRF_OK)
 		return (ret);
 
@@ -229,16 +202,15 @@ assert_token(nvlist_t *restrict req, kbmd_token_t **restrict ktp)
 	return (ERRF_OK);
 }
 
-void
-kbmd_zpool_create(nvlist_t *req)
+errf_t *
+kbmd_zpool_create(const char *dataset, const uint8_t *guid,
+    const struct ebox_tpl *rcfg, const uint8_t *rtoken, size_t rtokenlen,
+    nvlist_t *resp)
 {
 	errf_t *ret = ERRF_OK;
-	nvlist_t *resp = NULL;
-	struct ebox_tpl *tpl = NULL;
 	struct ebox *ebox = NULL;
 	kbmd_token_t *kt = NULL;
-	char *dataset = NULL;
-	uint8_t *key = NULL;
+	const uint8_t *key = NULL;
 	size_t keylen = 0;
 
 	(void) bunyan_debug(tlog, "Received KBM_CMD_ZPOOL_CREATE request",
@@ -246,76 +218,31 @@ kbmd_zpool_create(nvlist_t *req)
 
 	mutex_enter(&piv_lock);
 
-	if ((ret = envlist_lookup_string(req, KBM_NV_DATASET,
-	    &dataset)) != ERRF_OK) {
-		ret = errf("ArgumentError", ret,
-		    "request is missing dataset name");
+	if (dataset == NULL)
+		dataset = sys_pool;
+	if (dataset == NULL) {
+		ret = errf("ParameterError", NULL,
+		    "system zpool not set and no dataset name given");
 		goto done;
 	}
 
-	if ((ret = envlist_alloc(&resp)) != ERRF_OK)
-		goto done;
-
-	if ((key = calloc(1, zfs_key_len)) == NULL) {
-		ret = errfno("calloc", errno, "");
-		goto done;
-	}
-	keylen = zfs_key_len;
-	arc4random_buf(key, keylen);
-
-	if ((ret = assert_token(req, &kt)) != ERRF_OK ||
+	if ((ret = kbmd_assert_token(guid, rtoken, rtokenlen,
+	    &kt)) != ERRF_OK ||
 	    (ret = kbmd_assert_pin(kt)) != ERRF_OK) {
 		goto done;
 	}
 	VERIFY3P(kt->kt_rtoken, !=, NULL);
 
-	if ((ret = piv_txn_begin(kt->kt_piv)) != ERRF_OK ||
-	    (ret = piv_select(kt->kt_piv)) != ERRF_OK) {
+	if ((ret = kbmd_create_ebox(kt, rcfg, dataset, &ebox)) != ERRF_OK)
 		goto done;
-	}
 
-	/*
-	 * Currently, we create a new template using either the
-	 * PIV token given in the create command (for testing) via the -g GUID
-	 * option, or the PIV token we've just initialized (no -g GUID given
-	 * and an uninitialized PIV token is present on the system).
-	 */
-	if ((ret = get_template(kt, &tpl)) != ERRF_OK) {
-		ret = errf("ZpoolCreateError", ret,
-		    "cannot retrieve current ebox template");
-		goto done;
-	}
-
-	/*
-	 * XXX: For testing, we allow kbmadm to supply a template that's used
-	 * to supply the recovery parts.  We want to remove this once the
-	 * gossip protocol is written.
-	 */
-	VERIFY3P(add_supplied_template(req, tpl, B_FALSE), ==, ERRF_OK);
-
-	if ((ret = ebox_create(tpl, key, keylen, kt->kt_rtoken,
-	    kt->kt_rtoklen, &ebox)) != ERRF_OK ||
-	    (ret = set_box_name(ebox, dataset)) != ERRF_OK) {
-		goto done;
-	}
+	key = ebox_key(ebox, &keylen);
+	VERIFY3P(key, !=, NULL);
 
 	ret = add_create_data(resp, ebox, key, keylen);
 
 done:
-	if (kt != NULL && kt->kt_piv != NULL && piv_token_in_txn(kt->kt_piv))
-		piv_txn_end(kt->kt_piv);
-
 	mutex_exit(&piv_lock);
-	freezero(key, keylen);
-	nvlist_free(req);
 	ebox_free(ebox);
-	ebox_tpl_free(tpl);
-
-	if (ret == ERRF_OK) {
-		kbmd_ret_nvlist(resp);
-	} else {
-		ebox_free(ebox);
-		nvlist_free(resp);
-		kbmd_ret_error(ret);
-	}
+	return (ret);
 }

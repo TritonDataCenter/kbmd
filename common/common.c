@@ -15,9 +15,11 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/debug.h>
 #include <sys/types.h>
 #include <umem.h>
 #include <unistd.h>
@@ -96,17 +98,33 @@ alloc_init(void)
 }
 
 void
-guidtohex(const uint8_t *restrict guid, char *restrict str)
+tohex(const uint8_t *restrict bytes, size_t len, char *restrict str,
+    size_t slen)
 {
 	static const char hexdigits[] = "0123456789ABCDEF";
 	size_t i, j;
 
-	for (i = j = 0; i < GUID_LEN; i++) {
-		uint8_t v = guid[i];
+	if (slen < 2) {
+		bzero(str, slen);
+		return;
+	}
+	VERIFY3U(len, <, (SIZE_MAX - 1) / 2);
+
+	if (len * 2 + 1 > slen)
+		len = (slen - 1) / 2;
+
+	for (i = j = 0; i < len; i++) {
+		uint8_t v = bytes[i];
 		str[j++] = hexdigits[v >> 4];
 		str[j++] = hexdigits[v & 0x0f];
 	}
 	str[j] = '\0';
+}
+
+void
+guidtohex(const uint8_t *restrict guid, char *restrict str, size_t slen)
+{
+	tohex(guid, GUID_LEN, str, slen);
 }
 
 errf_t *
@@ -115,7 +133,7 @@ ecalloc(size_t n, size_t sz, void *p)
 	void **pp = p;
 
 	if ((*pp = calloc(n, sz)) == NULL)
-		return (errfno("calloc", NULL, ""));
+		return (errfno("calloc", errno, ""));
 	return (ERRF_OK);
 }
 

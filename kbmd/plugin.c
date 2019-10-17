@@ -207,7 +207,7 @@ kbmd_get_pin(const uint8_t guid[restrict], custr_t **restrict pinp)
 	 * string to args
 	 */
 	(void) bunyan_debug(tlog, "Running " GET_PIN_CMD " plugin",
-	    BUNYAN_T_STRING, "path", GET_PIN_PATH,
+	    BUNYAN_T_STRING, "path", args.sar_strs[0],
 	    BUNYAN_T_STRING, "guid", args.sar_strs[args.sar_n - 1],
 	    BUNYAN_T_END);
 
@@ -215,10 +215,11 @@ kbmd_get_pin(const uint8_t guid[restrict], custr_t **restrict pinp)
 	 * Let the command inherit our environment.
 	 * XXX: Maybe set the environment to a fixed known value?
 	 */
-	ret = spawn(GET_PIN_PATH, args.sar_strs, _environ, &pid, fds);
-	strarray_fini(&args);
-	if (ret != ERRF_OK)
+	ret = spawn(args.sar_strs[0], args.sar_strs, _environ, &pid, fds);
+	if (ret != ERRF_OK) {
+		strarray_fini(&args);
 		return (errf("PluginError", ret, ""));
+	}
 
 	custr_t *data[2] = { 0 };
 	int exitval;
@@ -227,6 +228,7 @@ kbmd_get_pin(const uint8_t guid[restrict], custr_t **restrict pinp)
 	    (ret = ecustr_alloc(&data[1])) != ERRF_OK ||
 	    (ret = interact(pid, fds, NULL, 0, data, &exitval,
 	    B_FALSE)) != ERRF_OK) {
+		strarray_fini(&args);
 		custr_free(data[0]);
 		custr_free(data[1]);
 		return (errf("PluginError", ret, ""));
@@ -239,7 +241,7 @@ kbmd_get_pin(const uint8_t guid[restrict], custr_t **restrict pinp)
 	 */
 	if (exitval != 0) {
 		(void) bunyan_warn(tlog, "Get pin plugin returned an error",
-		    BUNYAN_T_STRING, "plugin", GET_PIN_CMD,
+		    BUNYAN_T_STRING, "plugin", args.sar_strs[0],
 		    BUNYAN_T_INT32, "retval", (int32_t)exitval,
 		    BUNYAN_T_END);
 
@@ -256,6 +258,7 @@ kbmd_get_pin(const uint8_t guid[restrict], custr_t **restrict pinp)
 		}
 	}
 
+	strarray_fini(&args);
 	custr_free(data[0]);
 	custr_free(data[1]);
 	return (ret);
@@ -591,7 +594,7 @@ kbmd_register_pivtoken(kbmd_token_t *kt)
 	}
 
 	if ((ret = plugin_pivtoken_common(kt->kt_piv, kt->kt_pin,
-	    REGISTER_TOK_PATH, args.sar_strs, input, &rtoken)) != ERRF_OK) {
+	    args.sar_strs[0], args.sar_strs, input, &rtoken)) != ERRF_OK) {
 		goto done;
 	}
 
@@ -637,7 +640,7 @@ kbmd_replace_pivtoken(const uint8_t *guid, size_t guidlen,
 	 *	}
 	 */
 	if ((ret = plugin_pivtoken_common(kt->kt_piv, kt->kt_pin,
-	    REPLACE_TOK_PATH, args.sar_strs, input, &new_rtoken)) != ERRF_OK) {
+	    args.sar_strs[0], args.sar_strs, input, &new_rtoken)) != ERRF_OK) {
 		goto done;
 	}
 
@@ -652,7 +655,7 @@ done:
 }
 
 errf_t *
-kbmd_new_recovery_token(kbmd_token_t *restrict kt, uint8_t **restrict rtokenp,
+new_recovery_token(kbmd_token_t *restrict kt, uint8_t **restrict rtokenp,
     size_t *restrict rtokenlenp)
 {
 	errf_t *ret = ERRF_OK;
@@ -673,12 +676,11 @@ kbmd_new_recovery_token(kbmd_token_t *restrict kt, uint8_t **restrict rtokenp,
 	}
 
 	(void) bunyan_debug(tlog, "Running " NEW_TOK_CMD " plugin",
-	    BUNYAN_T_STRING, "path", NEW_TOK_PATH,
+	    BUNYAN_T_STRING, "path", args.sar_strs[0],
 	    BUNYAN_T_STRING, "guid", args.sar_strs[args.sar_n - 1],
 	    BUNYAN_T_END);
 
-	ret = spawn(NEW_TOK_PATH, args.sar_strs, _environ, &pid, fds);
-	strarray_fini(&args);
+	ret = spawn(args.sar_strs[0], args.sar_strs, _environ, &pid, fds);
 	if (ret != ERRF_OK) {
 		return (errf("PluginError", ret, ""));
 	}
@@ -690,6 +692,7 @@ kbmd_new_recovery_token(kbmd_token_t *restrict kt, uint8_t **restrict rtokenp,
 	    (ret = ecustr_alloc(&data[1])) != ERRF_OK ||
 	    (ret = interact(pid, fds, NULL, 0, data, &exitval,
 	    B_FALSE)) != ERRF_OK) {
+		strarray_fini(&args);
 		custr_free(data[0]);
 		custr_free(data[1]);
 		return (errf("PluginError", ret, ""));
@@ -698,7 +701,7 @@ kbmd_new_recovery_token(kbmd_token_t *restrict kt, uint8_t **restrict rtokenp,
 	if (exitval != 0) {
 		(void) bunyan_warn(tlog,
 		    "New recovery token  plugin returned an error",
-		    BUNYAN_T_STRING, "plugin", NEW_TOK_CMD,
+		    BUNYAN_T_STRING, "plugin", args.sar_strs[0],
 		    BUNYAN_T_INT32, "retval", (int32_t)exitval,
 		    BUNYAN_T_END);
 
@@ -714,6 +717,7 @@ kbmd_new_recovery_token(kbmd_token_t *restrict kt, uint8_t **restrict rtokenp,
 		}
 	}
 
+	strarray_fini(&args);
 	custr_free(data[0]);
 	custr_free(data[1]);
 	return (ret);

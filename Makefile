@@ -21,6 +21,7 @@ AR =		/usr/bin/ar
 LIBCRYPTO =	$(DESTDIR)/.build/libsunw_crypto.a
 PROTOINC =	$(DESTDIR)/usr/include
 INSTALL =	/usr/sbin/install
+ELFWRAP =	/usr/bin/elfwrap
 
 _PROGS =	kbmd kbmadm
 _STATIC_LIBS =	common.a pivy.a
@@ -62,6 +63,13 @@ KBMADM_OBJS = $(KBMADM_SRCS:%.c=%.o) pivy/libssh/base64.o
 KBMADM_LIBS = -lbunyan -ltecla -lzfs
 out/kbmadm:	LDLIBS += $(KBMADM_LIBS)
 
+_ZCP_SRCS =		\
+	add_prog.lua	\
+	activate_prog.lua
+ZCP_SRCS =	$(_ZCP_SRCS:%=lua/%)
+ZCP_SRCS_NUL =	$(_ZCP_SRCS:%.lua=out/%)
+ZCP_OBJS =	out/zcp.o
+
 _KBMD_SRCS =		\
 	box.c		\
 	cmds.c		\
@@ -74,7 +82,7 @@ _KBMD_SRCS =		\
 	recover.c	\
 	zpool_create.c
 KBMD_SRCS =	$(_KBMD_SRCS:%=kbmd/%)
-KBMD_OBJS =	$(KBMD_SRCS:%.c=%.o)
+KBMD_OBJS =	$(KBMD_SRCS:%.c=%.o) $(ZCP_OBJS)
 KBMD_LIBS =		\
 	out/pivy.a	\
 	$(LIBCRYPTO)	\
@@ -201,6 +209,7 @@ kbmd/%.o: kbmd/%.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 	$(CTFCONVERT) $@
 
+
 out/kbmadm: $(KBMADM_OBJS) out/common.a
 	$(CC) -o $@ $(CFLAGS) $(KBMADM_OBJS) $(LDFLAGS) $(LDLIBS)
 	$(CTFCONVERT) $@
@@ -210,6 +219,13 @@ out/kbmadm: $(KBMADM_OBJS) out/common.a
 out/kbmd: $(KBMD_OBJS) $(STATIC_LIBS)
 	$(CC) -o $@ $(CFLAGS) $(KBMD_OBJS) $(LDFLAGS) $(LDLIBS)
 	$(CTFCONVERT) -m $@
+
+out/%: lua/%.lua
+	cp $^ $@
+	printf '\0' >> $@
+
+$(ZCP_OBJS): $(ZCP_SRCS_NUL)
+	$(ELFWRAP) -64 -o $@ $(ZCP_SRCS_NUL)
 
 #
 # Install Targets

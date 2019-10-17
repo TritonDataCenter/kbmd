@@ -25,12 +25,19 @@
 
 #include <stdio.h>
 
+#define	EBOX_KEY_LEN 32
+
+extern const char *activate_prog_start;
+extern const char *add_prog_start;
+
 struct ebox *sys_box;
 
 errf_t *
 ezfs_open(libzfs_handle_t *hdl, const char *path, int types,
     zfs_handle_t **zhpp)
 {
+	VERIFY(MUTEX_HELD(&g_zfs_lock));
+
 	if ((*zhpp = zfs_open(hdl, path, types)) != NULL)
 		return (ERRF_OK);
 
@@ -41,6 +48,8 @@ ezfs_open(libzfs_handle_t *hdl, const char *path, int types,
 static errf_t *
 ezfs_prop_set_list(zfs_handle_t *zhp, nvlist_t *prop)
 {
+	VERIFY(MUTEX_HELD(&g_zfs_lock));
+
 	if (zfs_prop_set_list(zhp, prop) == 0)
 		return (ERRF_OK);
 
@@ -52,6 +61,8 @@ ezfs_prop_set_list(zfs_handle_t *zhp, nvlist_t *prop)
 static errf_t *
 ezfs_prop_inherit(zfs_handle_t *zhp, const char *propname)
 {
+	VERIFY(MUTEX_HELD(&g_zfs_lock));
+
 	if (zfs_prop_inherit(zhp, propname, B_FALSE) == 0)
 		return (ERRF_OK);
 
@@ -59,6 +70,45 @@ ezfs_prop_inherit(zfs_handle_t *zhp, const char *propname)
 	    "zfs_prop_inherit(%s) on %s failed: %s",
 	    propname, zfs_get_name(zhp),
 	    libzfs_error_description(zfs_get_handle(zhp))));
+}
+
+/*
+ * These match the ZCP default values from sys/zfs.h, and should be
+ * sufficient for our purposes.
+ */
+#define	INSTRLIMIT (10 * 1000 * 1000)
+#define	MEMLIMIT (10 * 1024 * 1024)
+
+static errf_t *
+run_channel_program(const char *pool, const char *prog, nvlist_t *args,
+    nvlist_t **result)
+{
+	errf_t *ret = ERRF_OK;
+	int rc;
+
+	(void) bunyan_trace(tlog, "Running channel program",
+	    BUNYAN_T_STRING, "pool", pool,
+	    BUNYAN_T_END);
+
+	rc = lzc_channel_program(pool, prog, INSTRLIMIT, MEMLIMIT, args,
+	    result);
+	if (rc != 0) {
+		ret = errfno("lzc_channel_program", rc,
+		    "error running zfs channel program");
+		(void) bunyan_debug(tlog, "Channel program failed",
+		    BUNYAN_T_INT32, "errno", rc,
+		    BUNYAN_T_END);
+	}
+
+#ifdef DEBUG
+	/* XXX: Just for testing */
+	flockfile(stderr);
+	(void) fprintf(stderr, "Channel program results:\n");
+	nvlist_print(stderr, *result);
+	funlockfile(stderr);
+#endif
+
+	return (ret);
 }
 
 static errf_t *
@@ -163,18 +213,16 @@ get_property_str(nvlist_t *restrict proplist, const char *propname,
 }
 
 static errf_t *
-get_ebox_string(zfs_handle_t *restrict zhp, char **restrict sp)
+get_ebox_string(zfs_handle_t *restrict zhp, boolean_t staged,
+    char **restrict sp)
 {
 	errf_t *ret = ERRF_OK;
 	nvlist_t *uprops = NULL;
+	const char *propstr = staged ? STAGEBOX_PROP : BOX_PROP;
 
 	uprops = zfs_get_user_props(zhp);
 
-	if ((ret = get_property_str(uprops, BOX_NEWPROP, sp)) == ERRF_OK ||
-	    !errf_caused_by(ret, "ENOENT"))
-		return (ret);
-
-	if ((ret = get_property_str(uprops, BOX_PROP, sp)) == ERRF_OK ||
+	if ((ret = get_property_str(uprops, propstr, sp)) == ERRF_OK ||
 	    !errf_caused_by(ret, "ENOENT"))
 		return (ret);
 
@@ -183,14 +231,17 @@ get_ebox_string(zfs_handle_t *restrict zhp, char **restrict sp)
 }
 
 static errf_t *
-get_ebox_common(zfs_handle_t *restrict zhp, struct ebox **restrict eboxp)
+get_ebox_common(zfs_handle_t *restrict zhp, boolean_t staged,
+    struct ebox **restrict eboxp)
 {
 	errf_t *ret = ERRF_OK;
 	const char *dataset = zfs_get_name(zhp);
 	char *str = NULL;
 	struct ebox *ebox = NULL;
 
-	if ((ret = get_ebox_string(zhp, &str)) != ERRF_OK ||
+	VERIFY(MUTEX_HELD(&g_zfs_lock));
+
+	if ((ret = get_ebox_string(zhp, staged, &str)) != ERRF_OK ||
 	    (ret = str_to_ebox(dataset, str, &ebox)) != ERRF_OK ||
 	    (ret = set_box_name(ebox, dataset)) != ERRF_OK)
 		return (ret);
@@ -200,13 +251,14 @@ get_ebox_common(zfs_handle_t *restrict zhp, struct ebox **restrict eboxp)
 }
 
 errf_t *
-kbmd_get_ebox(const char *dataset, struct ebox **eboxp)
+kbmd_get_ebox(const char *dataset, boolean_t stage, struct ebox **eboxp)
 {
 	zfs_handle_t *zhp = NULL;
 	errf_t *ret = ERRF_OK;
 
 	(void) bunyan_trace(tlog, "kbmd_get_ebox: enter",
 	    BUNYAN_T_STRING, "dataset", dataset,
+	    BUNYAN_T_STRING, "stage", stage ? "true" : "false",
 	    BUNYAN_T_END);
 
 	if (sys_box != NULL && strcmp(ebox_private(sys_box), dataset) == 0) {
@@ -226,7 +278,7 @@ kbmd_get_ebox(const char *dataset, struct ebox **eboxp)
 		goto done;
 	}
 
-	ret = get_ebox_common(zhp, eboxp);
+	ret = get_ebox_common(zhp, stage, eboxp);
 
 done:
 	if (zhp != NULL)
@@ -236,12 +288,13 @@ done:
 }
 
 static errf_t *
-put_ebox_common(zfs_handle_t *restrict zhp, const char *propname,
+put_ebox_common(zfs_handle_t *restrict zhp, boolean_t stage,
     struct ebox *restrict ebox)
 {
 	errf_t *ret = ERRF_OK;
 	char *str = NULL;
 	nvlist_t *prop = NULL;
+	const char *propname = stage ? STAGEBOX_PROP : BOX_PROP;
 
 	if ((ret = envlist_alloc(&prop)) != ERRF_OK ||
 	    (ret = ebox_to_str(ebox, &str)) != ERRF_OK ||
@@ -252,8 +305,8 @@ put_ebox_common(zfs_handle_t *restrict zhp, const char *propname,
 	}
 
 	if ((ret = ezfs_prop_set_list(zhp, prop)) != ERRF_OK) {
-		ret = errf("EBoxError", ret, "unable to save ebox for %s",
-		    zfs_get_name(zhp));
+		ret = errf("EBoxError", ret,
+		    "unable to save ebox for %s", zfs_get_name(zhp));
 	}
 
 done:
@@ -263,7 +316,7 @@ done:
 }
 
 errf_t *
-kbmd_put_ebox(struct ebox *ebox)
+kbmd_put_ebox(struct ebox *ebox, boolean_t stage)
 {
 	errf_t *ret = ERRF_OK;
 	const char *dsname = ebox_private(ebox);
@@ -280,7 +333,7 @@ kbmd_put_ebox(struct ebox *ebox)
 		goto done;
 	}
 
-	ret = put_ebox_common(zhp, BOX_PROP, ebox);
+	ret = put_ebox_common(zhp, stage, ebox);
 
 done:
 	if (zhp != NULL)
@@ -328,73 +381,14 @@ ebox_tpl_foreach_cfg(struct ebox_tpl *tpl, ebox_tpl_cb_t cb, void *arg)
 	return (ERRF_OK);
 }
 
-/*
- * Creates the ebox template config for the given PIV token
- */
-errf_t *
-create_piv_tpl_config(kbmd_token_t *restrict kt,
-    struct ebox_tpl_config **restrict cfgp)
-{
-	errf_t *ret = ERRF_OK;
-	struct piv_token *pk = kt->kt_piv;
-	struct piv_slot *slot = NULL;
-	struct piv_slot *auth_slot = NULL;
-	struct ebox_tpl_config *cfg = NULL;
-	struct ebox_tpl_part *part = NULL;
-
-	VERIFY(piv_token_in_txn(pk));
-
-	if ((ret = kbmd_get_slot(kt, PIV_SLOT_KEY_MGMT, &slot)) != ERRF_OK) {
-		return (errf("TemplateError", ret,
-		    "cannot read PIV %02X token slot", PIV_SLOT_KEY_MGMT));
-	}
-
-	if ((ret = kbmd_get_slot(kt, PIV_SLOT_CARD_AUTH,
-	    &auth_slot)) != ERRF_OK) {
-		return (errf("TemplateError", ret,
-		    "cannot read PIV %02X token slot", PIV_SLOT_CARD_AUTH));
-	}
-
-	if ((cfg = ebox_tpl_config_alloc(EBOX_PRIMARY)) == NULL) {
-		ret = errfno("ebox_tpl_config_alloc", errno,
-		    "cannot create primary ebox config template");
-		ret = errf("TemplateError", ret, "");
-		goto fail;
-	}
-
-	if ((part = ebox_tpl_part_alloc(piv_token_guid(pk), GUID_LEN,
-	    PIV_SLOT_KEY_MGMT, piv_slot_pubkey(slot))) == NULL) {
-		ret = errfno("ebox_tpl_part_alloc", errno,
-		    "cannot create primary ebox config template part");
-		ret = errf("TemplateError", ret, "");
-		goto fail;
-	}
-
-	ebox_tpl_part_set_cak(part, piv_slot_pubkey(auth_slot));
-
-	/*
-	 * XXX: We can set a name for this part.  Is there any useful/
-	 * meaningful value that could be used?
-	 */
-
-	ebox_tpl_config_add_part(cfg, part);
-	*cfgp = cfg;
-	return (ERRF_OK);
-
-fail:
-	ebox_tpl_part_free(part);
-	ebox_tpl_config_free(cfg);
-	*cfgp = NULL;
-	return (ret);
-}
-
+#if 0
 /*
  * Place the key from src ebox (unlocked prior to calling) into a
  * new ebox w/ a new template
  */
 errf_t *
 kbmd_ebox_clone(struct ebox *restrict src, struct ebox **restrict dstp,
-    struct ebox_tpl *restrict tpl, kbmd_token_t *restrict kt)
+    const struct ebox_tpl *restrict tpl, kbmd_token_t *restrict kt)
 {
 	errf_t *ret = ERRF_OK;
 	struct ebox *ebox = NULL;
@@ -423,6 +417,7 @@ kbmd_ebox_clone(struct ebox *restrict src, struct ebox **restrict dstp,
 	*dstp = ebox;
 	return (ERRF_OK);
 }
+#endif
 
 static errf_t *
 find_part_pivtoken(struct ebox_part *part, kbmd_token_t **ktp)
@@ -505,7 +500,7 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 		if (tname == NULL) {
 			tname = "(not set)";
 		}
-		guidtohex(ebox_tpl_part_guid(tpart), gstr);
+		guidtohex(ebox_tpl_part_guid(tpart), gstr, sizeof (gstr));
 
 		dhbox = ebox_part_box(part);
 
@@ -662,125 +657,311 @@ done:
 }
 
 /*
- * If both a 'new' and 'old' zfs ebox exist, remove the 'old' config, leaving
- * the 'new' config.  Unlike the soft token eboxes, we don't (won't) have
- * a separate recovery ebox, so we just age out the old config.
- *
- * XXX: Better name?
+ * Creates the ebox template config for the given PIV token
  */
-errf_t *
-kbmd_rotate_zfs_ebox(const char *dataset)
+static errf_t *
+create_piv_tpl_config(kbmd_token_t *restrict kt,
+    struct ebox_tpl_config **restrict cfgp)
 {
 	errf_t *ret = ERRF_OK;
-	zfs_handle_t *zhp = NULL;
-	nvlist_t *uprops = NULL;
-	nvlist_t *newprops = NULL;
-	char *old = NULL, *new = NULL;
+	struct piv_token *pk = kt->kt_piv;
+	struct piv_slot *slot = NULL;
+	struct piv_slot *auth_slot = NULL;
+	struct ebox_tpl_config *cfg = NULL;
+	struct ebox_tpl_part *part = NULL;
 
-	mutex_enter(&g_zfs_lock);
+	VERIFY(piv_token_in_txn(pk));
 
-	if ((ret = ezfs_open(g_zfs, dataset,
-	    ZFS_TYPE_FILESYSTEM|ZFS_TYPE_VOLUME, &zhp)) != ERRF_OK) {
-		ret = errf("EBoxError", ret,
-		    "unable to consolidate ebox for %s", dataset);
-		goto done;
+	if ((ret = kbmd_get_slot(kt, PIV_SLOT_KEY_MGMT, &slot)) != ERRF_OK) {
+		return (errf("TemplateError", ret,
+		    "cannot read PIV %02X token slot", PIV_SLOT_KEY_MGMT));
 	}
 
-	uprops = zfs_get_user_props(zhp);
-
-	if ((ret = get_property_str(uprops, BOX_NEWPROP, &new)) != ERRF_OK) {
-		if (errf_caused_by(ret, "ENOENT")) {
-			errf_free(ret);
-			ret = ERRF_OK;
-		}
-
-		goto done;
+	if ((ret = kbmd_get_slot(kt, PIV_SLOT_CARD_AUTH,
+	    &auth_slot)) != ERRF_OK) {
+		return (errf("TemplateError", ret,
+		    "cannot read PIV %02X token slot", PIV_SLOT_CARD_AUTH));
 	}
+
+	if ((cfg = ebox_tpl_config_alloc(EBOX_PRIMARY)) == NULL) {
+		ret = errfno("ebox_tpl_config_alloc", errno,
+		    "cannot create primary ebox config template");
+		ret = errf("TemplateError", ret, "");
+		goto fail;
+	}
+
+	if ((part = ebox_tpl_part_alloc(piv_token_guid(pk), GUID_LEN,
+	    PIV_SLOT_KEY_MGMT, piv_slot_pubkey(slot))) == NULL) {
+		ret = errfno("ebox_tpl_part_alloc", errno,
+		    "cannot create primary ebox config template part");
+		ret = errf("TemplateError", ret, "");
+		goto fail;
+	}
+
+	ebox_tpl_part_set_cak(part, piv_slot_pubkey(auth_slot));
 
 	/*
-	 * If there is a 'new' ebox, we always want to try to move it to
-	 * the 'old' property.  If the 'old' ebox doesn't exist, that's ok,
-	 * but some other problem suggests a bigger problem and we abort.
+	 * There isn't a meaningful name we can give to this part, so
+	 * we leave the name blank.
 	 */
-	if ((ret = get_property_str(uprops, BOX_PROP, &old)) != ERRF_OK &&
-	    !errf_caused_by(ret, "ENOENT")) {
-		goto done;
-	}
+	ebox_tpl_config_add_part(cfg, part);
+	*cfgp = cfg;
+	return (ERRF_OK);
 
-	/*
-	 * Currently, there is no way to do this atomically, so we remove the
-	 * old property first, then set the old to the new, then remove the
-	 * new so any failure still leaves a valid box.  If zfs channel
-	 * programs ever support setting properties, we should consider
-	 * altering this to do the change using a channel program so everything
-	 * happens in a single TXG.
-	 */
-	if ((ret = ezfs_prop_inherit(zhp, BOX_PROP)) != ERRF_OK) {
-		goto done;
-	}
-
-	if ((ret = envlist_alloc(&newprops)) != ERRF_OK ||
-	    (ret = envlist_add_string(newprops, BOX_PROP, new)) != ERRF_OK ||
-	    (ret = ezfs_prop_set_list(zhp, newprops)) != ERRF_OK) {
-		goto done;
-	}
-
-	ret = ezfs_prop_inherit(zhp, BOX_NEWPROP);
-
-done:
-	if(zhp != NULL) {
-		zfs_close(zhp);
-	}
-	mutex_exit(&g_zfs_lock);
-	nvlist_free(newprops);
+fail:
+	ebox_tpl_part_free(part);
+	ebox_tpl_config_free(cfg);
+	*cfgp = NULL;
 	return (ret);
 }
 
-struct move_data {
-	struct ebox_tpl *md_src;
-	struct ebox_tpl *md_dst;
-};
-
 static errf_t *
-move_recovery(struct ebox_tpl_config *cfg, void *arg)
+strip_non_recovery(struct ebox_tpl_config *tcfg, void *arg)
 {
-	struct move_data *data = arg;
+	struct ebox_tpl *tpl = arg;
 
-	if (ebox_tpl_config_type(cfg) == EBOX_RECOVERY) {
-		(void) bunyan_debug(tlog, "Adding recovery template",
-		    BUNYAN_T_END);
-
-		ebox_tpl_remove_config(data->md_src, cfg);
-		ebox_tpl_add_config(data->md_dst, cfg);
-	}
+	if (ebox_tpl_config_type(tcfg) != EBOX_RECOVERY)
+		ebox_tpl_remove_config(tpl, tcfg);
 	return (ERRF_OK);
 }
 
 /*
- * For testing -- if kbmadm includes a template, merge in all the EBOX_RECOVERY
- * configs into tpl
+ * Create an ebox template for the given PIV token containing the
+ * given recovery config.
  */
 errf_t *
-add_supplied_template(nvlist_t *restrict nvl, struct ebox_tpl *restrict tpl,
-    boolean_t required)
+create_template(kbmd_token_t *restrict kt, const struct ebox_tpl *rcfg,
+    struct ebox_tpl **restrict tplp)
 {
 	errf_t *ret = ERRF_OK;
-	struct move_data data = {
-		.md_dst = tpl
-	};
+	struct ebox_tpl *tpl = NULL;
+	struct ebox_tpl_config *cfg =  NULL;
 
-	/*
-	 * This function is just for testing, if we fail, we just act
-	 * like the template isn't there.
-	 */
-	if ((ret = get_request_template(nvl, &data.md_src)) != ERRF_OK) {
-		if (required)
-			return (ret);
-		errf_free(ret);
-		return (ERRF_OK);
+	*tplp = NULL;
+
+	if (rcfg != NULL) {
+		tpl = ebox_tpl_clone((struct ebox_tpl *)rcfg);
+		if (tpl == NULL) {
+			return (errf("TemplateError", ret,
+			    "failed to clone recovery config"));
+		}
+		VERIFY0(ebox_tpl_foreach_cfg(tpl, strip_non_recovery, tpl));
+	} else {
+		tpl = ebox_tpl_alloc();
+		if (tpl == NULL) {
+			return (errf("TemplateError", ret,
+			    "failed to create a new ebox template"));
+		}
 	}
 
-	ebox_tpl_foreach_cfg(data.md_src, move_recovery, &data);
-	ebox_tpl_free(data.md_src);
+	if ((ret = create_piv_tpl_config(kt, &cfg)) != ERRF_OK) {
+		ret = errf("TemplateError", ret, "cannot create ebox template");
+		ebox_tpl_free(tpl);
+		return (ret);
+	}
+	ebox_tpl_add_config(tpl, cfg);
+
+	*tplp = tpl;
 	return (ERRF_OK);
+}
+
+errf_t *
+kbmd_create_ebox(kbmd_token_t *restrict kt, const struct ebox_tpl *rcfg,
+    const char *name, struct ebox **restrict eboxp)
+{
+	errf_t *ret = ERRF_OK;
+	struct ebox_tpl *tpl = NULL;
+	struct ebox *ebox = NULL;
+	uint8_t *rtoken = NULL;
+	size_t rtokenlen = 0;
+	uint8_t key[EBOX_KEY_LEN] = { 0 };
+
+	*eboxp = NULL;
+
+	VERIFY(MUTEX_HELD(&piv_lock));
+
+	if ((ret = new_recovery_token(kt, &kt->kt_rtoken,
+	    &kt->kt_rtoklen)) != ERRF_OK)
+		return (ret);
+
+	if ((ret = piv_txn_begin(kt->kt_piv)) != ERRF_OK ||
+	    (ret = piv_select(kt->kt_piv)) != ERRF_OK ||
+	    (ret = create_template(kt, rcfg, &tpl)) != ERRF_OK)
+		goto done;
+
+	arc4random_buf(key, sizeof (key));
+	if ((ret = ebox_create(tpl, key, sizeof (key), kt->kt_rtoken,
+	    kt->kt_rtoklen, &ebox)) != ERRF_OK)
+		goto done;
+
+	ret = set_box_name(ebox, name);
+
+done:
+	if (piv_token_in_txn(kt->kt_piv))
+		piv_txn_end(kt->kt_piv);
+
+	explicit_bzero(key, sizeof (key));
+	freezero(rtoken, rtokenlen);
+
+	*eboxp = ebox;
+	return (ERRF_OK);
+}
+
+static errf_t *
+add_hexkey(nvlist_t *nvl, const char *name, const uint8_t *key, size_t keylen)
+{
+	errf_t *ret = ERRF_OK;
+	size_t keystrlen = keylen * 2 + 1;
+	char keystr[keystrlen];
+
+	bzero(keystr, keystrlen);
+	tohex(key, keylen, keystr, keystrlen);
+	ret = envlist_add_string(nvl, name, keystr);
+	explicit_bzero(keystr, keystrlen);
+	return (ret);
+}
+
+errf_t *
+add_recovery(const struct ebox_tpl *rcfg, boolean_t stage)
+{
+	errf_t *ret = ERRF_OK;
+	kbmd_token_t *kt = NULL;
+	struct ebox *ebox = NULL;
+	const char *dataset = NULL;
+	const char *propstr = stage ? STAGEBOX_PROP : BOX_PROP;
+	char *eboxstr = NULL;
+	nvlist_t *zcp_args = NULL;
+	nvlist_t *result = NULL;
+
+	mutex_enter(&piv_lock);
+
+	if (sys_piv == NULL || sys_pool == NULL) {
+		mutex_exit(&piv_lock);
+		return (errf("UnlockError", NULL,
+		    "system zpool dataset must be set and unlocked before "
+		    "updating its recovery template"));
+	}
+	dataset = sys_pool;
+	kt = sys_piv;
+
+	if ((ret = kbmd_create_ebox(kt, rcfg, dataset, &ebox)) != ERRF_OK ||
+	    (ret = ebox_to_str(ebox, &eboxstr)) != ERRF_OK)
+		goto done;
+
+	if ((ret = envlist_alloc(&zcp_args)) != ERRF_OK ||
+	    (ret = envlist_add_string(zcp_args, "dataset",
+	    dataset)) != ERRF_OK ||
+	    (ret = envlist_add_string(zcp_args, "prop", propstr)) != ERRF_OK ||
+	    (ret = envlist_add_string(zcp_args, "ebox", eboxstr)) != ERRF_OK)
+		goto done;
+
+	if (!stage) {
+		size_t keylen = 0;
+		const uint8_t *key = ebox_key(ebox, &keylen);
+
+		if ((ret = add_hexkey(zcp_args, "keyhex", key,
+		    keylen)) != ERRF_OK) {
+			goto done;
+		}
+	}
+
+	ret = run_channel_program(sys_pool, add_prog_start, zcp_args, &result);
+	
+done:
+	mutex_exit(&piv_lock);
+	ebox_free(ebox);
+	free(eboxstr);
+	nvlist_free(zcp_args);
+	nvlist_free(result);
+	return (ret); 
+}
+
+errf_t *
+activate_recovery(void)
+{
+	errf_t *ret = ERRF_OK;
+	kbmd_token_t *kt = NULL;
+	const char *dataset = NULL;
+	struct ebox *ebox = NULL;
+	nvlist_t *zcp_args = NULL;
+	nvlist_t *result = NULL;
+	const uint8_t *key = NULL;
+	size_t keylen = 0;
+
+	mutex_enter(&piv_lock);
+	if (sys_pool == NULL) {
+		mutex_exit(&piv_lock);
+		return (errf("NotFoundError", NULL,
+		    "system zpool must be set before activating a recovery"
+		    "config"));
+	}
+	dataset = sys_pool;
+
+	if ((ret = kbmd_get_ebox(dataset, B_TRUE, &ebox)) != ERRF_OK ||
+	    (ret = kbmd_unlock_ebox(ebox, &kt)) != ERRF_OK)
+		goto done;
+
+	key = ebox_key(ebox, &keylen);
+
+	if ((ret = envlist_alloc(&zcp_args)) != ERRF_OK ||
+	    (ret = envlist_add_string(zcp_args, "dataset",
+	    sys_pool)) != ERRF_OK ||
+	    (ret = envlist_add_string(zcp_args, "ebox", BOX_PROP)) != ERRF_OK ||
+	    (ret = envlist_add_string(zcp_args, "stagedebox",
+	    STAGEBOX_PROP)) != ERRF_OK ||
+	    (ret = add_hexkey(zcp_args, "keyhex", key, keylen)) != ERRF_OK) {
+		goto done;
+	}
+
+	ret = run_channel_program(sys_pool, activate_prog_start, zcp_args,
+	    &result);
+
+done:
+	if (kt != sys_piv)
+		kbmd_token_free(kt);
+
+	mutex_exit(&piv_lock);
+	ebox_free(ebox);
+	nvlist_free(zcp_args);
+	nvlist_free(result);
+	return (ret);
+}
+
+errf_t *
+remove_recovery(void)
+{
+	errf_t *ret = ERRF_OK;
+	zfs_handle_t *zhp = NULL;
+
+	(void) bunyan_trace(tlog, "remove_recovery: enter",
+	    BUNYAN_T_END);
+
+	mutex_enter(&piv_lock);
+
+	if (sys_pool == NULL) {
+		mutex_exit(&piv_lock);
+		return (errf("NotFound", NULL, "system pool is not set"));
+	}
+
+	mutex_enter(&g_zfs_lock);
+
+	if ((ret = ezfs_open(g_zfs, sys_pool,
+	    ZFS_TYPE_FILESYSTEM|ZFS_TYPE_VOLUME, &zhp)) != ERRF_OK) {
+		mutex_exit(&piv_lock);
+		ret = errf("EBoxError", ret,
+		    "unable to load ebox for %s", sys_pool);
+		goto done;
+	}
+
+	mutex_exit(&piv_lock);
+
+	ret = ezfs_prop_inherit(zhp, STAGEBOX_PROP);
+	/* XXX: figure out what is returned when it doesn't exist, and
+	 * convert to non error */
+
+done:
+	if (zhp != NULL)
+		zfs_close(zhp);
+	mutex_exit(&g_zfs_lock);
+	return (ret);
 }

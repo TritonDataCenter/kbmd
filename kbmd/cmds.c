@@ -19,7 +19,7 @@
 #include <libzfs_core.h>
 #include <strings.h>
 #include <synch.h>
-
+#include "pivy/libssh/sshbuf.h"
 #include "kbmd.h"
 
 #ifdef DEBUG
@@ -266,7 +266,7 @@ unlock_dataset(const char *dataset)
 		goto done;
 	}
 
-	if ((ret = kbmd_get_ebox(dataset, &ebox)) != ERRF_OK ||
+	if ((ret = kbmd_get_ebox(dataset, B_FALSE, &ebox)) != ERRF_OK ||
 	    (ret = kbmd_unlock_ebox(ebox, &kt)) != ERRF_OK) {
 		goto done;
 	}
@@ -306,6 +306,140 @@ done:
 	kbmd_ret_nvlist(NULL);
 }
 
+static errf_t *
+get_request_template(nvlist_t *restrict nvl, struct ebox_tpl **restrict tplp)
+{
+	errf_t *ret = ERRF_OK;
+	struct sshbuf *buf = NULL;
+	uint8_t *bytes = NULL;
+	uint_t nbytes = 0;
+
+	if ((ret = envlist_lookup_uint8_array(nvl, KBM_NV_TEMPLATE, &bytes,
+	    &nbytes)) != ERRF_OK)
+		return (ret);
+
+	if ((buf = sshbuf_from(bytes, nbytes)) == NULL) {
+		return (errfno("sshbuf_from", errno,
+		    "cannot allocate ebox template"));
+	}
+
+	ret = sshbuf_get_ebox_tpl(buf, tplp);
+	sshbuf_free(buf);
+	return (ret);
+}
+
+static void
+cmd_zpool_create(nvlist_t *req)
+{
+	errf_t *ret = ERRF_OK;
+	char *dataset = NULL;
+	struct ebox_tpl *rcfg = NULL;
+	uint8_t *guid = NULL;
+	uint8_t *rtoken = NULL;
+	uint_t guidlen = 0;
+	uint_t rtoklen = 0;
+	nvlist_t *resp = NULL;
+
+	if ((ret = envlist_lookup_string(req, KBM_NV_DATASET,
+	    &dataset)) != ERRF_OK &&
+	    !errf_caused_by(ret, "ENOENT"))
+		goto done;
+
+	if ((ret = envlist_lookup_uint8_array(req, KBM_NV_GUID, &guid,
+	    &guidlen)) != ERRF_OK) {
+		if (!errf_caused_by(ret, "ENOENT"))
+			goto done;
+		errf_free(ret);
+		ret = ERRF_OK;
+	}
+	if (guid != NULL && guidlen != GUID_LEN) {
+		ret = errf("InvalidGUID", NULL, "Bad guid length (%u)",
+		    guidlen);
+		goto done;
+	}
+
+	if ((ret = get_request_template(req, &rcfg)) != ERRF_OK) {
+		if (!errf_caused_by(ret, "ENOENT"))
+			goto done;
+		errf_free(ret);
+		ret = ERRF_OK;
+	}
+
+	if ((ret = envlist_lookup_uint8_array(req, KBM_NV_RTOKEN, &rtoken,
+	    &rtoklen)) != ERRF_OK) {
+		if (!errf_caused_by(ret, "ENOENT"))
+			goto done;
+		errf_free(ret);
+		ret = ERRF_OK;
+	}
+
+	if ((ret = envlist_alloc(&resp)) != ERRF_OK)
+		goto done;
+
+	ret = kbmd_zpool_create(dataset, guid, rcfg, rtoken, (size_t)rtoklen,
+	    resp);
+
+done:
+	nvlist_free(req);
+	ebox_tpl_free(rcfg);
+	if (ret != ERRF_OK) {
+		nvlist_free(resp);
+		kbmd_ret_error(ret);
+	}
+	kbmd_ret_nvlist(resp);
+}
+
+static void
+cmd_add_recovery(nvlist_t *req)
+{
+	errf_t *ret = ERRF_OK;
+	struct ebox_tpl *tpl = NULL;
+	boolean_t stage = B_FALSE;
+
+	if ((ret = get_request_template(req, &tpl)) != ERRF_OK)
+		goto done;
+
+	if ((ret = envlist_lookup_boolean_value(req, KBM_NV_STAGE,
+	    &stage)) != ERRF_OK)
+		goto done;
+
+	ret = add_recovery(tpl, stage);
+
+done:
+	nvlist_free(req);
+	ebox_tpl_free(tpl);
+	if (ret != ERRF_OK)
+		kbmd_ret_error(ret);
+
+	kbmd_ret_nvlist(NULL);
+}
+
+static void
+cmd_activate_recovery(nvlist_t *req)
+{
+	errf_t *ret = ERRF_OK;
+
+	nvlist_free(req);
+	ret = activate_recovery();
+	if (ret != ERRF_OK)
+		kbmd_ret_error(ret);
+
+	kbmd_ret_nvlist(NULL);
+}
+
+static void
+cmd_remove_recovery(nvlist_t *req)
+{
+	errf_t *ret = ERRF_OK;
+
+	nvlist_free(req);
+	ret = remove_recovery();
+	if (ret != ERRF_OK)
+		kbmd_ret_error(ret);
+
+	kbmd_ret_nvlist(NULL);
+}
+
 void
 dispatch_request(nvlist_t *req, pid_t req_pid)
 {
@@ -340,7 +474,7 @@ dispatch_request(nvlist_t *req, pid_t req_pid)
 		kbmd_zfs_unlock(req);
 		break;
 	case KBM_CMD_ZPOOL_CREATE:
-		kbmd_zpool_create(req);
+		cmd_zpool_create(req);
 		break;
 	case KBM_CMD_RECOVER_START:
 		kbmd_recover_start(req, req_pid);
@@ -348,11 +482,17 @@ dispatch_request(nvlist_t *req, pid_t req_pid)
 	case KBM_CMD_RECOVER_RESP:
 		kbmd_recover_resp(req, req_pid);
 		break;
-	case KBM_CMD_UPDATE_RECOVERY:
-		kbmd_update_recovery(req);
+	case KBM_CMD_ADD_RECOVERY:
+		cmd_add_recovery(req);
 		break;
-	case KBM_CMD_SHOW_RECOVERY:
-		kbmd_show_recovery(req);
+	case KBM_CMD_LIST_RECOVERY:
+		kbmd_list_recovery(req);
+		break;
+	case KBM_CMD_ACTIVATE_RECOVERY:
+		cmd_activate_recovery(req);
+		break;
+	case KBM_CMD_CANCEL_RECOVERY:
+		cmd_remove_recovery(req);
 		break;
 	case KBM_CMD_SET_SYSTOKEN:
 		kbmd_set_systoken(req);

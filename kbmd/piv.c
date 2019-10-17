@@ -989,6 +989,27 @@ kbmd_find_byslot(enum piv_slotid slotid, const struct sshkey *key,
 	    "No PIV token found on system with matching %02X key", slotid));
 }
 
+errf_t *
+set_piv_rtoken(kbmd_token_t *kt, const uint8_t *rtoken, size_t rtokenlen)
+{
+	errf_t *ret = ERRF_OK;
+	void *tokcopy = NULL;
+
+	if ((ret = zalloc(rtokenlen, &tokcopy)) != ERRF_OK)
+		return (ret);
+
+	if (kt->kt_rtoken != NULL) {
+		freezero(kt->kt_rtoken, kt->kt_rtoklen);
+		kt->kt_rtoken = NULL;
+		kt->kt_rtoklen = 0;
+	}
+
+	bcopy(rtoken, tokcopy, rtokenlen);
+	kt->kt_rtoken = tokcopy;
+	kt->kt_rtoklen =  rtokenlen;
+	return (ret);
+}
+
 /*
  * XXX: It might make more sense to have the pin_type->string
  * code in pivy instead of here

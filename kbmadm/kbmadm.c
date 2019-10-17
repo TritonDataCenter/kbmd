@@ -70,6 +70,8 @@ static errf_t *do_unlock(int, char **, nvlist_t **);
 static errf_t *do_recovery(int, char **, nvlist_t **);
 static errf_t *do_add_recovery(int, char **, nvlist_t **);
 static errf_t *do_show_recovery(int, char **, nvlist_t **);
+static errf_t *do_activate_recovery(int, char **, nvlist_t **);
+static errf_t *do_cancel_recovery(int, char **, nvlist_t **);
 static errf_t *do_set_syspool(int, char **, nvlist_t **);
 static errf_t *do_set_systoken(int, char **, nvlist_t **);
 
@@ -83,10 +85,10 @@ static cmd_t cmd_tbl[] = {
 };
 
 static cmd_t recovery_cmd_tbl[] = {
-	{ "add", do_update_recovery },
+	{ "add", do_add_recovery },
 	{ "list", do_show_recovery },
-	{ "activate", xx },
-	{ "cancel", xx}
+	{ "activate", do_activate_recovery },
+	{ "cancel", do_cancel_recovery }
 };
 
 static void __NORETURN
@@ -100,7 +102,7 @@ usage(void)
 	    "       %1$s recover [-n] dataset\n"
 	    "       %1$s unlock [-r] [dataset...]\n"
 	    "       %1$s recovery add [-f] [-d dataset] [-t template]\n"
-	    "       %1$s recovery list\n"
+	    "       %1$s recovery list [-p]\n"
             "       %1$s recovery activate [-d dataset]\n"
 	    "       %1$s recovery cancel [-d dataset]\n",
 	    name);
@@ -114,7 +116,6 @@ main(int argc, char *argv[])
 	errf_t *ret = ERRF_OK;
 	nvlist_t *resp = NULL;
 	size_t i;
-	int c;
 
 	alloc_init();
 
@@ -135,36 +136,6 @@ main(int argc, char *argv[])
 	 * wants the per-thread logger.
 	 */
 	tlog = blog;
-
-	/* XXX: For testing */
-	while ((c = getopt(argc, argv, "g:t:r:")) != -1) {
-		switch (c) {
-		case 'g':
-			guidstr = optarg;
-			break;
-		case 't':
-			template_f = optarg;
-			break;
-		case 'r':
-			recovery = optarg;
-			break;
-		case '?':
-			return (1);
-		}
-	}
-
-	if (recovery != NULL && guidstr == NULL) {
-		err(EXIT_FAILURE, "-r also requires -g options");
-	}
-
-	if (guidstr != NULL) {
-		if ((ret = parse_guid(guidstr, guid)) != ERRF_OK)
-			errfx(EXIT_FAILURE, ret, "invalid GUID");
-	}
-
-	argc -= optind - 1;
-	argv += optind - 1;
-	/* XXX: End testing */
 
 	if (argc <= 1)
 		usage();
@@ -297,33 +268,33 @@ done:
 }
 
 static errf_t *
-add_debug_args(nvlist_t *req)
+add_guidstr(nvlist_t *nvl, const char *name, const char *guidstr)
+{
+	errf_t *ret = ERRF_OK;
+	uint8_t guid[GUID_LEN] = { 0 };
+
+	if ((ret = parse_guid(guidstr, guid)) != ERRF_OK)
+		return (ret);
+
+	return (envlist_add_uint8_array(nvl, name, guid, GUID_LEN));
+}
+
+static errf_t *
+add_template_file(nvlist_t *nvl, const char *name, const char *fname)
 {
 	errf_t *ret = ERRF_OK;
 	char *buf = NULL;
 
-	if (guidstr != NULL &&
-	    (ret = envlist_add_uint8_array(req, KBM_NV_GUID, guid,
-	    GUID_LEN)) != ERRF_OK)
+	if ((ret = read_template_file(fname, &buf)) != ERRF_OK)
 		return (ret);
 
-	if (recovery != NULL &&
-	    (ret = add_b64(req, "recovery_token", recovery)) != ERRF_OK)
-		return (ret);
-
-	if (template_f == NULL)
-		return (ERRF_OK);
-
-	if ((ret = read_template_file(template_f, &buf)) != ERRF_OK)
-		return (ret);
-
-	ret = add_b64(req, KBM_NV_TEMPLATE, buf);
-
+	ret = add_b64(nvl, name, buf);
 	/*
-	 * A recovery template is essentially public information, so
-	 * freezero() is not needed here
+	 * A recovery template does not contain any sensitive information,
+	 * so freezero(3C) isn't necessary.
 	 */
 	free(buf);
+
 	return (ret);
 }
 
@@ -342,7 +313,7 @@ do_create_zpool(int argc, char **argv, nvlist_t **respp)
 	int c;
 	strarray_t args = STRARRAY_INIT;
 
-	while ((c = getopt(argc, argv, "g:t:")) != -1) {
+	while ((c = getopt(argc, argv, "dg:t:")) != -1) {
 		switch (c) {
 		case 'g':
 			guidstr = optarg;
@@ -378,13 +349,14 @@ do_create_zpool(int argc, char **argv, nvlist_t **respp)
 	 * to correctly skip past any options and option arguments.  It does
 	 * mean that any new options added to 'zpool create' should also
 	 * be reflected here for full compatability.
+	 *
+	 * We first need to reset our state for getopt(3C) after processing
+	 * our arguments.
 	 */
+	argc -= optind;
+	argv += optind;
+	optind = 1;
 
-	/*
-	 * A getopt(3C) call in main might have altered optind.  Reset to
-	 * the initial value (1 in order to skip argv[0]).
-	 */
-	optind = 1; /* This might have been changed by a getopt(3C) main() */
 	while ((c = getopt(argc, argv, ":fndBR:m:o:O:t:")) != -1)
 		;
 
@@ -392,9 +364,19 @@ do_create_zpool(int argc, char **argv, nvlist_t **respp)
 		return (errf("ArgumentError", NULL, "zpool name is missing"));
 	}
 
-	if ((ret = req_new(KBM_CMD_ZPOOL_CREATE, &req)) != ERRF_OK ||
-	    (ret = add_debug_args(req)) != ERRF_OK ||
-	    (ret = envlist_add_string(req, KBM_NV_DATASET,
+	if ((ret = req_new(KBM_CMD_ZPOOL_CREATE, &req)) != ERRF_OK)
+		goto done;
+
+	if (guidstr != NULL &&
+	    (ret = add_guidstr(req, KBM_NV_GUID, guidstr)) != ERRF_OK)
+		goto done;
+
+	if (template_f != NULL &&
+	    (ret = add_template_file(req, KBM_NV_TEMPLATE,
+	    template_f)) != ERRF_OK)
+		goto done;	
+
+	if ((ret = envlist_add_string(req, KBM_NV_DATASET,
 	    dataset)) != ERRF_OK ||
 	    (ret = assert_door(&fd)) != ERRF_OK ||
 	    (ret = nv_door_call(fd, req, &resp)) ||
@@ -589,9 +571,11 @@ do_add_recovery(int argc, char **argv, nvlist_t **respp)
 		}
 	}
 
-	if ((ret = req_new(KBM_CMD_UPDATE_RECOVERY, &req)) != ERRF_OK ||
+	if ((ret = req_new(KBM_CMD_ADD_RECOVERY, &req)) != ERRF_OK ||
 	    (ret = envlist_add_string(req, KBM_NV_DATASET,
 	    dataset)) != ERRF_OK ||
+	    (ret = envlist_add_boolean_value(req, KBM_NV_STAGE,
+	    force)) != ERRF_OK ||
 	    (ret = add_b64(req, KBM_NV_TEMPLATE, tpl)) != ERRF_OK)
 		goto done;
 
@@ -633,7 +617,7 @@ do_show_recovery(int argc, char **argv, nvlist_t **respp)
 		}
 	}
 
-	if ((ret = req_new(KBM_CMD_SHOW_RECOVERY, &req)) != ERRF_OK)
+	if ((ret = req_new(KBM_CMD_LIST_RECOVERY, &req)) != ERRF_OK)
 		return (ret);
 
 	if ((ret = assert_door(&fd)) != ERRF_OK ||
@@ -655,6 +639,94 @@ do_show_recovery(int argc, char **argv, nvlist_t **respp)
 done:
 	nvlist_free(req);
 	*respp = resp;
+	return (ret);
+}
+
+static errf_t *
+do_activate_recovery(int argc, char **argv, nvlist_t **nvlp)
+{
+	errf_t *ret = ERRF_OK;
+	const char *dataset = NULL;
+	nvlist_t *req = NULL;
+	nvlist_t *resp = NULL;
+	int fd = -1;
+	int c;
+
+	while ((c = getopt(argc, argv, "d:")) != -1) {
+		switch (c) {
+		case 'd':
+			dataset = optarg;
+			break;
+		case '?':
+			(void) fprintf(stderr, "Unknown option -%c\n",
+			    optopt);
+			usage();
+		}
+	}
+
+	if ((ret = req_new(KBM_CMD_ACTIVATE_RECOVERY, &req)) != ERRF_OK)
+		goto done;
+
+	if (dataset != NULL &&
+	    (ret = envlist_add_string(req, KBM_NV_DATASET,
+	    dataset)) != ERRF_OK)
+		goto done;
+
+	if ((ret = assert_door(&fd)) != ERRF_OK ||
+	    (ret = nv_door_call(fd, req, &resp)) != ERRF_OK)
+		goto done;
+
+	ret = check_error(resp);
+
+done:
+	if (fd >= 0)
+		(void) close(fd);
+	nvlist_free(req);
+	*nvlp = resp;
+	return (ret);
+}
+
+static errf_t *
+do_cancel_recovery(int argc, char **argv, nvlist_t **nvlp)
+{
+	errf_t *ret = ERRF_OK;
+	const char *dataset = NULL;
+	nvlist_t *req = NULL;
+	nvlist_t *resp = NULL;
+	int fd = -1;
+	int c;
+
+	while ((c = getopt(argc, argv, "d:")) != -1) {
+		switch (c) {
+		case 'd':
+			dataset = optarg;
+			break;
+		case '?':
+			(void) fprintf(stderr, "Unknown option -%c\n",
+			    optopt);
+			usage();
+		}
+	}
+
+	if ((ret = req_new(KBM_CMD_CANCEL_RECOVERY, &req)) != ERRF_OK)
+		goto done;
+
+	if (dataset != NULL &&
+	    (ret = envlist_add_string(req, KBM_NV_DATASET,
+	    dataset)) != ERRF_OK)
+		goto done;
+
+	if ((ret = assert_door(&fd)) != ERRF_OK ||
+	    (ret = nv_door_call(fd, req, &resp)) != ERRF_OK)
+		goto done;
+
+	ret = check_error(resp);
+
+done:
+	if (fd >= 0)
+		(void) close(fd);
+	nvlist_free(req);
+	*nvlp = resp;
 	return (ret);
 }
 
@@ -695,11 +767,15 @@ do_set_systoken(int argc, char **argv, nvlist_t **nvlp)
 	errf_t *ret = ERRF_OK;
 	nvlist_t *req = NULL;
 	nvlist_t *resp = NULL;
+	uint8_t guid[GUID_LEN] = { 0 };
 	int fd = -1;
 
-	if (guidstr == NULL) {
+	if (argc < 2) {
 		errx(EXIT_FAILURE, "No GUID supplied");
 	}
+
+	if ((ret = parse_guid(argv[1], guid)) != ERRF_OK)
+		goto done;
 
 	if ((ret = req_new(KBM_CMD_SET_SYSTOKEN, &req)) != ERRF_OK ||
 	    (ret = envlist_add_uint8_array(req, KBM_NV_GUID, guid,

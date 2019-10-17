@@ -66,12 +66,6 @@ static mutex_t recovery_lock = ERRORCHECKMUTEX;
 static refhash_t *recovery_hash;
 static uint32_t recovery_count;
 
-static const char *activate_prog[] =
-    "nextebox = zfs.get_prop(args.dataset, args.nextebox)\n"
-    "err = zfs.sync.set_prop(args.dataset, args.ebox, nextebox)\n"
-    "zfs.sync.inherit(args.dataset, args.nextebox)\n"
-    "return err\n";
-
 static uint64_t
 rec_hash(const void *tp)
 {
@@ -707,39 +701,6 @@ done:
 	return (ret);
 }
 
-/*
- * Combine an EBOX_PRIMARY config for kt and the EBOX_RECOVERY config(s)
- * from oldtpl into *newtplp.
- */
-static errf_t *
-create_replacement_tpl(kbmd_token_t *kt, struct ebox_tpl *oldtpl,
-    struct ebox_tpl **newtplp)
-{
-	errf_t *ret = ERRF_OK;
-	struct ebox_tpl *newtpl = NULL;
-	struct ebox_tpl_config *newpri = NULL;
-
-	/*
-	 * We can't clone an ebox_tpl_config directly, so we create a
-	 * complete copy of the old config, then remove the EBOX_PRIMARY
-	 * config(s) and then add the new EBOX_PRIMARY.
-	 */
-	if ((newtpl = ebox_tpl_clone(oldtpl)) == NULL) {
-		return (errfno("ebox_tpl_clone", errno,
-		    "cannot clone template"));
-	}
-
-	if ((ret = create_piv_tpl_config(kt, &newpri)) != ERRF_OK) {
-		ebox_tpl_free(newtpl);
-		return (ret);
-	}
-
-	VERIFY0(ebox_tpl_foreach_cfg(newtpl, strip_primary_cb, newtpl));
-	ebox_tpl_add_config(newtpl, newpri);
-	*newtplp = newtpl;
-	return (ERRF_OK);
-}
-
 struct update_data {
 	kbmd_token_t	*ud_tok;
 	const uint8_t	*ud_rtoken;
@@ -863,13 +824,17 @@ post_recovery(recovery_t *r)
 		return (ret);
 	}
 
-	if ((ret = create_replacement_tpl(kt, ebox_tpl(r->r_ebox),
+	if ((ret = piv_txn_begin(kt->kt_piv)) != ERRF_OK ||
+	    (ret = piv_select(kt->kt_piv)) != ERRF_OK ||
+	    (ret = create_template(kt, ebox_tpl(r->r_ebox),
 	    &tpl)) != ERRF_OK) {
+		if (piv_token_in_txn(kt->kt_piv))
+			piv_txn_end(kt->kt_piv);
 		mutex_exit(&piv_lock);
 		kbmd_token_free(kt);
 		return (ret);
 	}
-
+	piv_txn_end(kt->kt_piv);
 	mutex_exit(&piv_lock);
 
 	if ((ret = do_piv_update(r->r_ebox, kt, rtoken,
@@ -878,8 +843,9 @@ post_recovery(recovery_t *r)
 		return (ret);
 	}
 
-	if ((ret = kbmd_ebox_clone(r->r_ebox, &new_ebox, tpl, kt)) != ERRF_OK ||
-	    (ret = kbmd_put_ebox(new_ebox)) != ERRF_OK) {
+	if ((ret = ebox_create(tpl, key, keylen, rtoken, rtokenlen,
+	    &new_ebox)) != ERRF_OK ||
+	    (ret = kbmd_put_ebox(new_ebox, B_FALSE)) != ERRF_OK) {
 		ebox_free(new_ebox);
 		return (ret);
 	}
@@ -1115,7 +1081,7 @@ kbmd_recover_start(nvlist_t *req, pid_t pid)
 	(void) bunyan_trace(tlog, "kbmd_recover_start: enter",
 	    BUNYAN_T_END);
 
-	if ((ret = kbmd_get_ebox(sys_pool, &ebox)) != ERRF_OK)
+	if ((ret = kbmd_get_ebox(sys_pool, B_FALSE, &ebox)) != ERRF_OK)
 		goto fail;
 
 	mutex_enter(&recovery_lock);
@@ -1214,107 +1180,8 @@ kbmd_recover_resp(nvlist_t *req, pid_t pid)
 	recover_common(req, r);
 }
 
-errf_t *
-get_request_template(nvlist_t *restrict nvl, struct ebox_tpl **restrict tplp)
-{
-	errf_t *ret = ERRF_OK;
-	struct sshbuf *buf = NULL;
-	uint8_t *bytes = NULL;
-	uint_t nbytes = 0;
-
-	if ((ret = envlist_lookup_uint8_array(nvl, KBM_NV_TEMPLATE, &bytes,
-	    &nbytes)) != ERRF_OK)
-		return (ret);
-
-	if ((buf = sshbuf_from(bytes, nbytes)) == NULL) {
-		return (errfno("sshbuf_from", errno,
-		    "cannot allocate ebox template"));
-	}
-
-	ret = sshbuf_get_ebox_tpl(buf, tplp);
-	sshbuf_free(buf);
-	return (ret);
-}
-
 void
-kbmd_update_recovery(nvlist_t *req)
-{
-	errf_t *ret = ERRF_OK;
-	nvlist_t *resp = NULL;
-	kbmd_token_t *kt = NULL;
-	struct ebox *ebox_old = NULL, *ebox_new = NULL;
-	struct ebox_tpl *tpl = NULL;
-
-	(void) bunyan_trace(tlog, "kbmd_update_recovery: enter", BUNYAN_T_END);
-
-	if ((ret = envlist_alloc(&resp)) != ERRF_OK) {
-		kbmd_ret_error(ret);
-	}
-
-	mutex_enter(&piv_lock);
-
-	/*
-	 * We must know which PIV is the system piv.  Currently the only
-	 * way to do that is to unlock the system zpool (as we assume/require
-	 * the system zpool to use the system PIV to protect its key)
-	 */
-	if (sys_piv == NULL) {
-		mutex_exit(&piv_lock);
-		nvlist_free(resp);
-		kbmd_ret_error(errf("UnlockError", NULL,
-		    "system zpool dataset must be unlocked before updating "
-		    "its recovery template"));
-	}
-	VERIFY3P(sys_pool, !=, NULL);
-
-	if ((ret = piv_txn_begin(sys_piv->kt_piv)) != ERRF_OK ||
-	    (ret = piv_select(sys_piv->kt_piv)) != ERRF_OK ||
-	    (ret = get_template(sys_piv, &tpl)) != ERRF_OK ||
-	    (ret = add_supplied_template(req, tpl, B_TRUE)) != ERRF_OK) {
-		piv_txn_end(sys_piv->kt_piv);
-		mutex_exit(&piv_lock);
-		ebox_tpl_free(tpl);
-		nvlist_free(resp);
-		kbmd_ret_error(ret);
-	}
-	piv_txn_end(sys_piv->kt_piv);
-
-	if ((ret = kbmd_get_ebox(sys_pool, &ebox_old)) != ERRF_OK ||
-	    (ret = kbmd_unlock_ebox(ebox_old, &kt)) != ERRF_OK) {
-		mutex_exit(&piv_lock);
-		nvlist_free(resp);
-		kbmd_ret_error(ret);
-	}
-	VERIFY0(strcmp(ebox_private(ebox_old), sys_pool));
-
-	if ((ret = kbmd_ebox_clone(ebox_old, &ebox_new, tpl, kt)) != ERRF_OK) {
-		mutex_exit(&piv_lock);
-		nvlist_free(resp);
-		ebox_tpl_free(tpl);
-		kbmd_ret_error(ret);
-	}
-
-	if ((ret = kbmd_put_ebox(ebox_new)) != ERRF_OK) {
-		mutex_exit(&piv_lock);
-		nvlist_free(resp);
-		ebox_tpl_free(tpl);
-		kbmd_ret_error(ret);
-	}
-
-	ebox_free(ebox_old);
-	ebox_free(ebox_new);
-	ebox_old = ebox_new;
-	ebox_new = NULL;
-
-	kbmd_set_token(kt);
-
-	mutex_exit(&piv_lock);
-	ebox_tpl_free(tpl);
-	kbmd_ret_nvlist(resp);
-}
-
-void
-kbmd_show_recovery(nvlist_t *req)
+kbmd_list_recovery(nvlist_t *req)
 {
 	errf_t *ret = ERRF_OK;
 	nvlist_t *resp = NULL;
@@ -1329,7 +1196,7 @@ kbmd_show_recovery(nvlist_t *req)
 		kbmd_ret_error(ret);
 	}
 
-	if ((ret = kbmd_get_ebox(sys_pool, &ebox)) != ERRF_OK) {
+	if ((ret = kbmd_get_ebox(sys_pool, B_FALSE, &ebox)) != ERRF_OK) {
 		goto done;
 	}
 

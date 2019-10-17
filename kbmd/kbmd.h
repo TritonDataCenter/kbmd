@@ -49,7 +49,7 @@ extern "C" {
 #define	GID_KBMD	0
 
 #define	BOX_PROP	"rfd77:ebox"
-#define	BOX_NEWPROP	"rfd77:newebox"
+#define	STAGEBOX_PROP	"rfd77:stagedebox"
 
 #define	ROTATE_MIN	(6U * 60U * 60U)
 #define	ROTATE_SPLAY	ROTATE_MIN
@@ -111,12 +111,13 @@ void kbmd_ret_nvlist(struct nvlist *) __NORETURN;
 void kbmd_ret_error(errf_t *) __NORETURN;
 
 void dispatch_request(struct nvlist *, pid_t);
-void kbmd_zpool_create(struct nvlist *);
+errf_t *kbmd_zpool_create(const char *, const uint8_t *,
+    const struct ebox_tpl *, const uint8_t *, size_t, nvlist_t *);
 void kbmd_recover_init(int);
 void kbmd_recover_start(struct nvlist *, pid_t);
 void kbmd_recover_resp(struct nvlist *, pid_t);
 void kbmd_update_recovery(struct nvlist *);
-void kbmd_show_recovery(struct nvlist *);
+void kbmd_list_recovery(struct nvlist *);
 void kbmd_set_syspool(struct nvlist *);
 void kbmd_set_systoken(struct nvlist *);
 
@@ -125,20 +126,13 @@ errf_t *ezfs_open(struct libzfs_handle *, const char *, int,
 
 errf_t *get_dataset_status(const char *, boolean_t *, boolean_t *);
 errf_t *get_template(kbmd_token_t *, struct ebox_tpl **);
-errf_t *get_request_template(struct nvlist *restrict,
+errf_t *create_template(kbmd_token_t *restrict, const struct ebox_tpl *,
     struct ebox_tpl **restrict);
-errf_t *add_supplied_template(struct nvlist *, struct ebox_tpl *,
-    boolean_t);
-errf_t *create_piv_tpl_config(kbmd_token_t *,
-    struct ebox_tpl_config **restrict);
 
 errf_t *set_box_name(struct ebox *, const char *);
-errf_t *kbmd_get_ebox(const char *restrict, struct ebox **restrict);
-errf_t *kbmd_put_ebox(struct ebox *);
+errf_t *kbmd_get_ebox(const char *restrict, boolean_t, struct ebox **restrict);
+errf_t *kbmd_put_ebox(struct ebox *, boolean_t);
 errf_t *ebox_to_str(struct ebox *restrct, char **restrict);
-errf_t *kbmd_ageout_zfs_ebox(const char *);
-
-errf_t *kbmd_scan_pools(void);
 
 void kbmd_event_init(int);
 void kbmd_event_fini(void);
@@ -153,11 +147,11 @@ errf_t *kbmd_get_slot(kbmd_token_t *restrict, enum piv_slotid slotid,
     struct piv_slot **restrict);
 errf_t *kbmd_assert_pin(kbmd_token_t *);
 errf_t *kbmd_verify_pin(kbmd_token_t *);
-errf_t *kbmd_assert_token(const uint8_t *, size_t, kbmd_token_t **);
 errf_t *kbmd_auth_pivtoken(kbmd_token_t *restrict, struct sshkey *restrict);
 errf_t *kbmd_setup_token(kbmd_token_t **);
 void kbmd_set_token(kbmd_token_t *);
 void kbmd_token_free(kbmd_token_t *);
+errf_t *set_piv_rtoken(kbmd_token_t *, const uint8_t *, size_t);
 
 const char *piv_pin_str(enum piv_pin pin_type);
 
@@ -166,14 +160,14 @@ errf_t *kbmd_get_pin(const uint8_t guid[restrict], struct custr **restrict);
 errf_t *kbmd_register_pivtoken(kbmd_token_t *);
 errf_t *kbmd_replace_pivtoken(const uint8_t *, size_t, const uint8_t *, size_t,
     kbmd_token_t *);
-errf_t *kbmd_new_recovery_token(kbmd_token_t *restrict,
+errf_t *new_recovery_token(kbmd_token_t *restrict,
     uint8_t **restrict, size_t *restrict);
 
 /* box.c */
-errf_t *kbmd_ebox_clone(struct ebox *restrict, struct ebox **restrict,
-    struct ebox_tpl *restrict, kbmd_token_t *restrict);
 errf_t *kbmd_unlock_ebox(struct ebox *restrict, struct kbmd_token **restrict);
 errf_t *kbmd_rotate_zfs_ebox(const char *);
+errf_t *kbmd_create_ebox(kbmd_token_t *restrict, const struct ebox_tpl *,
+    const char *, struct ebox **restrict);
 
 #define	FOREACH_STOP ((errf_t *)(uintptr_t)-1)
 
@@ -183,6 +177,10 @@ typedef errf_t *(ebox_tpl_part_cb_t)(struct ebox_tpl_part *, void *);
 errf_t *ebox_tpl_foreach_cfg(struct ebox_tpl *, ebox_tpl_cb_t, void *);
 errf_t *ebox_tpl_foreach_part(struct ebox_tpl_config *, ebox_tpl_part_cb_t,
     void *);
+
+errf_t *add_recovery(const struct ebox_tpl *rcfg, boolean_t stage);
+errf_t *activate_recovery(void);
+errf_t *remove_recovery(void);
 
 /* zfs_unlock.c */
 errf_t *load_key(const char *, const uint8_t *, size_t);
