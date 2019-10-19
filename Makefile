@@ -18,6 +18,8 @@ include		$(PWD)/../../../build.env
 STRAP_AREA =	$(PWD)/../../../proto.strap
 CC =		$(STRAP_AREA)/usr/bin/gcc
 AR =		/usr/bin/ar
+LN =		/bin/ln
+RM =		/bin/rm
 LIBCRYPTO =	$(DESTDIR)/.build/libsunw_crypto.a
 PROTOINC =	$(DESTDIR)/usr/include
 INSTALL =	/usr/sbin/install
@@ -95,11 +97,7 @@ KBMD_LIBS =		\
 	-lzfs		\
 	-lzfs_core	\
 	-lpcsc
-KBMD_PLUGINS =			\
-	get-pin			\
-	new-rtoken		\
-	register-pivtoken	\
-	replace-pivtoken
+KBMD_PLUGINS = triton unlock
 
 out/kbmd:	LDLIBS += $(KBMD_LIBS)
 # For flockfile and funlockfile
@@ -241,6 +239,8 @@ install: all
 	    $(INSTALL) -m 0555 -f $(DESTDIR)/usr/lib/kbm/plugins	\
 	    plugins/$$plugin;						\
 	done
+	$(RM) -f $(DESTDIR)/usr/lib/kbm/plugins/kbm-plugin-1
+	$(LN) -s triton  $(DESTDIR)/usr/lib/kbm/plugins/kbm-plugin-1
 	$(INSTALL) -m 0644 -f $(DESTDIR)/lib/svc/manifest/system smf/kbmd.xml
 	$(INSTALL) -m 0555 -f $(DESTDIR)/lib/svc/method smf/kbmd
 

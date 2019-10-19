@@ -244,8 +244,8 @@ show_configs(nvlist_t **cfgs, uint_t ncfgs, boolean_t verbose)
 		    namewidth, "NAME", verbose ? " PUBKEY" : "");
 
 		for (size_t j = 0; j < m; j++) {
-			uint8_t *guid = NULL;
 			char gstr[GUID_STR_LEN] = { 0 };
+			uint8_t *guid = NULL;
 			char *name = NULL;
 			char *pubkey = NULL;
 			int32_t slot = 0;

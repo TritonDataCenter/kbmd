@@ -171,6 +171,7 @@ main(int argc, char *argv[])
 
 	kbmd_event_init(dfd);
 	kbmd_recover_init(dfd);
+	load_plugin();
 
 	(void) bunyan_trace(tlog, "Creating door server", BUNYAN_T_END);
 

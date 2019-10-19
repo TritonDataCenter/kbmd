@@ -85,7 +85,7 @@ function hmac_sign {
 function get_pin {
     local guid="$1"
     local host=$(get_kbmapi_host)
-    local url="http://$host/pivtokens/$guid"
+    local url="http://$host/pivtokens/$guid/pin"
     local date=$(http_date)
     local sig=$(piv_sign "Date: $date")
 
@@ -135,13 +135,17 @@ function new_rtoken {
         "$url" || exit 1
 }
 
+[[ -z "$1" ]] && \
+    echo "No subcommand given." >&2 && \
+    exit 1
+
 case "$1" in
     version)
         echo "name=Triton KBMAPI"
         echo "version=1"
         exit 0
         ;;
-    get-pin)            get_pin $1;;
+    get-pin)            get_pin $2;;
     register-pivtoken)  register_pivtoken;;
     replace-pivtoken)   replace_pivtoken;;
     new-rtoken)         new_rtoken;;

@@ -88,7 +88,7 @@ strarray_append_guid(strarray_t *restrict sar, const uint8_t guid[restrict])
 {
 	char str[GUID_LEN * 2 + 1] = { 0 };
 
-	guidtohex(guid, str);
+	guidtohex(guid, str, sizeof (str));
 	return (strarray_append(sar, "%s", str));
 }
 
@@ -176,7 +176,7 @@ kspawnp(pid_t *restrict pidp, const char *restrict path,
 	if ((rc = posix_spawnp(pidp, path, file_actions, attrp, argv,
 	    envp)) == 0)
 		return (ERRF_OK);
-	return (errfno("posix_spawnp", rc, ""));
+	return (errfno("posix_spawnp", rc, "error running %s", path));
 }
 
 /*

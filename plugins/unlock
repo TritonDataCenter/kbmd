@@ -1,0 +1,9 @@
+#!/bin/bash
+
+# Quick and dirty script to unlock a pool
+# You must first unlock the PIV token
+# or supply the PIN when prompted.
+zfs get -p -H -o value rfd77:ebox zones | \
+   pivy-box key unlock | \
+   openssl enc -base64 -d | \
+   zfs load-key zones

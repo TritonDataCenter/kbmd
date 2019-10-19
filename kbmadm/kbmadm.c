@@ -600,14 +600,18 @@ do_show_recovery(int argc, char **argv, nvlist_t **respp)
 	errf_t *ret = ERRF_OK;
 	nvlist_t *req = NULL;
 	nvlist_t *resp = NULL;
-	nvlist_t **cfgs = NULL;
-	uint_t ncfgs = 0;
+	nvlist_t *cfgs = NULL;
+	nvpair_t *pair = NULL;
 	int fd = -1;
 	int c;
+	boolean_t opt_p = B_FALSE;
 	boolean_t opt_v = B_FALSE;
 
-	while ((c = getopt(argc, argv, "v")) != -1) {
+	while ((c = getopt(argc, argv, "pv")) != -1) {
 		switch (c) {
+		case 'p':
+			opt_p = B_TRUE;
+			break;
 		case 'v':
 			opt_v = B_TRUE;
 			break;
@@ -629,12 +633,49 @@ do_show_recovery(int argc, char **argv, nvlist_t **respp)
 		goto done;
 	}
 
-	if ((ret = envlist_lookup_nvlist_array(resp, KBM_NV_CONFIGS, &cfgs,
-	    &ncfgs)) != ERRF_OK) {
+	if ((ret = envlist_lookup_nvlist(resp, KBM_NV_CONFIGS,
+	    &cfgs)) != ERRF_OK) {
 		goto done;
 	}
 
-	ret = show_configs(cfgs, ncfgs, opt_v);
+	for (pair = nvlist_next_nvpair(cfgs, NULL); pair != NULL;
+	    pair = nvlist_next_nvpair(cfgs, pair)) {
+		const char *name = nvpair_name(pair);
+		nvlist_t *cfg = NULL;
+		nvlist_t **cfgs = NULL;
+		uint_t ncfgs = 0;
+		uint8_t *hash = NULL;
+		uint_t hashlen = 0;
+
+		if (nvpair_type(pair) != DATA_TYPE_NVLIST) {
+			ret = errf("InternalError", NULL,
+			    "kbmd response was not an nvlist");
+			goto done;
+		}
+
+		VERIFY0(nvpair_value_nvlist(pair, &cfg));
+
+		if ((ret = envlist_lookup_uint8_array(cfg, KBM_NV_CONFIG_HASH,
+		    &hash, &hashlen)) != ERRF_OK)
+			goto done;
+
+		char hashstr[hashlen * 2 + 1];
+		tohex(hash, (size_t)hashlen, hashstr, hashlen * 2 + 1);
+
+		if (opt_p) {
+			(void) printf("%s:%s\n", name, hashstr);
+			continue;
+		}
+
+		if ((ret = envlist_lookup_nvlist_array(cfg, KBM_NV_CONFIGS,
+		    &cfgs, &ncfgs)) != ERRF_OK)
+			goto done;
+
+		(void) printf("%s config (%s):\n", name, hashstr);
+
+		if ((ret = show_configs(cfgs, ncfgs, opt_v)) != ERRF_OK)
+			goto done;
+	}
 
 done:
 	nvlist_free(req);

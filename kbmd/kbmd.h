@@ -162,6 +162,7 @@ errf_t *kbmd_replace_pivtoken(const uint8_t *, size_t, const uint8_t *, size_t,
     kbmd_token_t *);
 errf_t *new_recovery_token(kbmd_token_t *restrict,
     uint8_t **restrict, size_t *restrict);
+void load_plugin(void);
 
 /* box.c */
 errf_t *kbmd_unlock_ebox(struct ebox *restrict, struct kbmd_token **restrict);

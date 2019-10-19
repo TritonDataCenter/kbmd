@@ -62,6 +62,67 @@ extern char **_environ;
 static mutex_t plugin_mutex = ERRORCHECKMUTEX;
 static custr_t *kbmd_plugin;
 
+static size_t
+count_segments(const char *str, const char *sep)
+{
+	size_t n = 0;
+
+	while (*str != '\0') {
+		n++;
+
+		if ((str = strpbrk(str, sep)) == NULL)
+			return (n);
+		str++;
+	}
+
+	return (n);
+}
+
+/* Split src into multiple strings, separated be sep */
+static errf_t *
+split(custr_t *restrict src, const char *sep, custr_t ***restrict segsp,
+    size_t *restrict nsegp)
+{
+	errf_t *ret = ERRF_OK;
+	custr_t **segs = NULL;
+	size_t nsegs = 0;
+	const char *p = NULL;
+
+	nsegs = count_segments(custr_cstr(src), sep);
+
+	if ((ret = ecalloc(nsegs + 1, sizeof (custr_t *), &segs)) != ERRF_OK)
+		return  (ret);
+
+	p = custr_cstr(src);
+	for (size_t i = 0; i < nsegs; i++) {
+		custr_t *seg = NULL;
+		size_t len = 0;
+
+		if ((ret = ecustr_alloc(&seg)) != ERRF_OK)
+			goto done;
+
+		segs[i] = seg;
+
+		if ((len = strcspn(p, sep)) == 0)
+			len = strlen(p);
+
+		if ((ret = ecustr_append_printf(seg, "%.*s",
+		    (int)len, p)) != ERRF_OK)
+			goto done;
+
+		p += len + 1;;
+	}
+
+done:
+	if (ret != ERRF_OK) {
+		for (size_t i = 0; i < nsegs; i++)
+			custr_free(segs[i]);
+		free(segs);
+	}
+
+	return (ret);
+}
+
 /*
  * Truncate the string cu to the first line, removing the trailing \n if
  * present
@@ -193,12 +254,19 @@ kbmd_get_pin(const uint8_t guid[restrict], custr_t **restrict pinp)
 {
 	errf_t *ret = ERRF_OK;
 	strarray_t args = STRARRAY_INIT;
+	char gstr[GUID_STR_LEN] = { 0 };
 	int fds[3] = { -1, -1, -1 };
 	pid_t pid;
 
 	*pinp = NULL;
 
+	guidtohex(guid, gstr, sizeof (gstr));
+
 	if ((ret = plugin_create_args(&args, GET_PIN_CMD)) != ERRF_OK) {
+		return (errf("PluginError", ret, ""));
+	}
+
+	if ((ret = strarray_append(&args, gstr)) != ERRF_OK) {
 		return (errf("PluginError", ret, ""));
 	}
 
@@ -218,7 +286,8 @@ kbmd_get_pin(const uint8_t guid[restrict], custr_t **restrict pinp)
 	ret = spawn(args.sar_strs[0], args.sar_strs, _environ, &pid, fds);
 	if (ret != ERRF_OK) {
 		strarray_fini(&args);
-		return (errf("PluginError", ret, ""));
+		return (errf("PluginError", ret, "failed to run plugin %s",
+		    args.sar_strs[1]));
 	}
 
 	custr_t *data[2] = { 0 };
@@ -899,9 +968,11 @@ done:
 	(void) bunyan_debug(tlog, "Using plugin path",
 	    BUNYAN_T_STRING, "path", plugin_path,
 	    BUNYAN_T_END);
+
+	return (ret);
 }
 
-static void
+void
 load_plugin(void)
 {
 	errf_t *ret = ERRF_OK;
@@ -912,14 +983,19 @@ load_plugin(void)
 	size_t prefixlen;
 	size_t maxversion = 0;
 
+	(void) bunyan_trace(tlog, "load_plugin: enter", BUNYAN_T_END);
+
 	if ((ret = ecustr_alloc(&path)) != ERRF_OK ||
 	    (ret = ecustr_alloc(&plugin)) != ERRF_OK)
 		goto done;
 
 	if ((ret = get_plugin_path(path)) != ERRF_OK)
 		goto done;
-
 	prefixlen = custr_len(path);
+
+	(void) bunyan_debug(tlog, "Scanning for plugins",
+	    BUNYAN_T_STRING, "plugin_path", custr_cstr(path),
+	    BUNYAN_T_END);
 
 	if ((dir = opendir(custr_cstr(path))) == NULL) {
 		(void) bunyan_error(tlog, "Error opening plugin dir",
@@ -933,6 +1009,10 @@ load_plugin(void)
 	while ((de = readdir(dir)) != NULL) {
 		unsigned long version;
 		unsigned long plugin_version;
+
+		(void) bunyan_trace(tlog, "Found entry",
+		     BUNYAN_T_STRING, "filename", de->d_name,
+		     BUNYAN_T_END);
 
 		if (strncmp(de->d_name, PLUGIN_PREFIX,
 		    sizeof (PLUGIN_PREFIX) - 1) != 0)
@@ -948,6 +1028,11 @@ load_plugin(void)
 			continue;
 		}
 
+		(void) bunyan_debug(tlog, "Found plugin",
+		    BUNYAN_T_STRING, "filename", de->d_name,
+		    BUNYAN_T_UINT64, "version", version,
+		    BUNYAN_T_END);
+
 		if (version <= maxversion)
 			continue;
 
@@ -955,7 +1040,8 @@ load_plugin(void)
 		 * Make sure the version the plugin reports agrees with its
 		 * name
 		 */
-		VERIFY0(custr_trunc(path, prefixlen));
+		if (custr_len(path) > prefixlen)
+			VERIFY0(custr_trunc(path, prefixlen));
 
 		if ((ret = ecustr_append(path, de->d_name)) != ERRF_OK)
 			goto done;
@@ -996,6 +1082,11 @@ load_plugin(void)
 		custr_free(kbmd_plugin);
 	kbmd_plugin = plugin;
 	plugin = NULL;
+
+	(void) bunyan_info(tlog, "Using plugin",
+	    BUNYAN_T_STRING, "pathname", custr_cstr(kbmd_plugin),
+	    BUNYAN_T_END);
+
 	mutex_exit(&plugin_mutex);
 
 done:

@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2019, Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 
 #ifndef _KBM_H
@@ -46,11 +46,12 @@ extern "C" {
 
 #define	KBM_NV_ACTION		"action"	/* int32_t */
 #define	KBM_NV_PROMPT		"prompt"	/* string */
-#define	KBM_NV_CONFIGS		"configs"	/* nvlist array */
+#define	KBM_NV_CONFIGS		"configs"	/* nvlist */
 #define	KBM_NV_PARTS		"parts"		/* nvlist array */
 #define	KBM_NV_ANSWER		"answer"	/* string */
 #define	KBM_NV_REMAINING	"remaining"	/* uint32_t */
 
+#define	KBM_NV_CONFIG_HASH	"config hash"	/* uint8 array */
 #define	KBM_NV_CONFIG_NUM	"config num"	/* uint32_t */
 #define	KBM_NV_DESC		"desc"		/* string */
 #define	KBM_NV_GUID		"guid"		/* uint8_t array */
