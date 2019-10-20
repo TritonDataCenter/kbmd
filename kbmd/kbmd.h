@@ -102,6 +102,8 @@ extern kbmd_token_t *sys_piv;
 extern char *sys_pool;
 #define	IS_SYSTEM_TOKEN(_tok) ((sys_piv != NULL) && ((_tok) == sys_piv->kt_piv))
 
+extern struct ebox *sys_box;
+
 extern char *plugin_dir;
 
 void kbmd_dfatal(int, const char *, ...) __NORETURN;
@@ -121,6 +123,9 @@ void kbmd_list_recovery(struct nvlist *);
 void kbmd_set_syspool(struct nvlist *);
 void kbmd_set_systoken(struct nvlist *);
 
+errf_t *
+template_hash(const struct ebox_tpl *, uint8_t **, size_t *);
+
 errf_t *ezfs_open(struct libzfs_handle *, const char *, int,
     struct zfs_handle **);
 
@@ -131,6 +136,8 @@ errf_t *create_template(kbmd_token_t *restrict, const struct ebox_tpl *,
 
 errf_t *set_box_name(struct ebox *, const char *);
 errf_t *kbmd_get_ebox(const char *restrict, boolean_t, struct ebox **restrict);
+errf_t *get_ebox_common(struct zfs_handle *restrict, boolean_t,
+    struct ebox **restrict);
 errf_t *kbmd_put_ebox(struct ebox *, boolean_t);
 errf_t *ebox_to_str(struct ebox *restrct, char **restrict);
 
@@ -162,6 +169,7 @@ errf_t *kbmd_replace_pivtoken(const uint8_t *, size_t, const uint8_t *, size_t,
     kbmd_token_t *);
 errf_t *new_recovery_token(kbmd_token_t *restrict,
     uint8_t **restrict, size_t *restrict);
+errf_t *post_recovery_config_update(void);
 void load_plugin(void);
 
 /* box.c */

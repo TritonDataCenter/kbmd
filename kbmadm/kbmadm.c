@@ -515,19 +515,19 @@ done:
 static errf_t *
 do_recovery(int argc, char **argv, nvlist_t **respp)
 {
-	if (argc < 1) {
+	if (argc < 2) {
 		(void) fprintf(stderr, "missing subcommand\n");
 		usage();
 	}
 
 	for (size_t i = 0; i < ARRAY_SIZE(recovery_cmd_tbl); i++) {
-		if (strcmp(argv[0], recovery_cmd_tbl[i].name) != 0)
+		if (strcmp(argv[1], recovery_cmd_tbl[i].name) != 0)
 			continue;
 		return (recovery_cmd_tbl[i].cmd(argc - 1, argv + 1, respp));
 	}
 
-	return (errf("Unknown command", NULL, "unrecognized command '%s'",
-	    argv[1]));	
+	return (errf("Unknown command", NULL,
+	    "unrecognized recovery command '%s'", argv[1]));
 }
 
 static errf_t *
@@ -779,13 +779,13 @@ do_set_syspool(int argc, char **argv, nvlist_t **nvlp)
 	nvlist_t *resp = NULL;
 	int fd = -1;
 
-	if (argc < 1) {
+	if (argc < 2) {
 		usage();
 	}
 
 	if ((ret = req_new(KBM_CMD_SET_SYSPOOL, &req)) != ERRF_OK ||
-	    (ret = envlist_add_string(req, KBM_NV_DATASET,
-	    argv[0])) != ERRF_OK) {
+	    (ret = envlist_add_string(req, KBM_NV_SYSPOOL,
+	    argv[1])) != ERRF_OK) {
 		goto done;
 	}
 

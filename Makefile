@@ -35,7 +35,7 @@ PIVY_TARGETS =	pivy-tool pivy-box
 
 CPPFLAGS =	-I$(PROTOINC) -Icommon -I.
 CFLAGS =	-g -msave-args -m64 -std=gnu99 -fstack-protector-all \
-			-Wall -Wno-unknown-pragmas
+		-Wall -Wno-unknown-pragmas
 LDFLAGS =	-L$(DESTDIR)/lib/amd64 -L$(DESTDIR)/usr/lib/amd64
 LDLIBS =	out/common.a -lumem -lssp -lcustr -lnvpair -lsocket
 

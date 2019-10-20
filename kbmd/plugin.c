@@ -23,6 +23,7 @@
 #include <string.h>
 #include <strings.h>
 #include <umem.h>
+#include <unistd.h>
 #include <uuid/uuid.h>
 #include <openssl/bio.h>
 #include <openssl/err.h>
@@ -56,6 +57,7 @@
 #define	REGISTER_TOK_CMD	"register-pivtoken"
 #define	REPLACE_TOK_CMD		"replace-pivtoken"
 #define	NEW_TOK_CMD		"new-rtoken"
+#define	POST_RECOVERY_UPDATE	"post-rcfg-update"
 
 extern char **_environ;
 
@@ -789,6 +791,51 @@ new_recovery_token(kbmd_token_t *restrict kt, uint8_t **restrict rtokenp,
 	strarray_fini(&args);
 	custr_free(data[0]);
 	custr_free(data[1]);
+	return (ret);
+}
+
+errf_t *
+post_recovery_config_update(void)
+{
+	errf_t *ret = ERRF_OK;
+	strarray_t args = STRARRAY_INIT;
+	int fds[3] = { -1, -1, -1 };
+	int rc;
+	pid_t pid;
+
+	if ((ret = plugin_create_args(&args,
+	    POST_RECOVERY_UPDATE)) != ERRF_OK) {
+		return (errf("PluginError", ret, ""));
+	}
+
+	(void) bunyan_debug(tlog, "Running " POST_RECOVERY_UPDATE " plugin",
+	    BUNYAN_T_STRING, "path", args.sar_strs[0],
+	    BUNYAN_T_END);
+
+	if ((ret = spawn(args.sar_strs[0], args.sar_strs, _environ, &pid,
+	    fds)) != ERRF_OK) {
+		ret = errf("PluginError", ret, "failed to run plugin %s",
+		    args.sar_strs[1]);
+		goto done;
+	}
+
+	(void) close(fds[0]);
+	(void) close(fds[1]);
+	(void) close(fds[2]);
+
+	if ((ret = exitval(pid, &rc)) != ERRF_OK) {
+		ret = errf("PluginError", ret,
+		    "error obtaining %s plugin exit value",
+		    POST_RECOVERY_UPDATE);
+	}
+
+	if (rc != 0) {
+		ret = errf("PluginError", NULL, "%s plugin returned %d",
+		    POST_RECOVERY_UPDATE, rc);
+	}
+
+done:
+	strarray_fini(&args);
 	return (ret);
 }
 

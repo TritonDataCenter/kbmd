@@ -23,57 +23,57 @@ SED=/usr/xpg4/bin/sed
 OD=/usr/xpg4/bin/od
 
 # The type of system we are on.  One of:
-#	headnode	Triton head node
-#	compute		Triton compute node
-#	smartos		Standalone SmartOS
+#    headnode    Triton head node
+#    compute        Triton compute node
+#    smartos        Standalone SmartOS
 function sys_type {
-	local smartos=0
-	local headnode=0
+    local smartos=0
+    local headnode=0
 
-	/usr/bin/bootparams | while IFS="=" read var value; do
-		if [[ "$var" == "smartos" && "$value" == "true" ]]; then
-			smartos=1
-		elif [[ "$var" == "headnode" && "$value" == "true" ]]; then
-			headnode=1
-		fi
-	done
+    /usr/bin/bootparams | while IFS="=" read var value; do
+        if [[ "$var" == "smartos" && "$value" == "true" ]]; then
+            smartos=1
+        elif [[ "$var" == "headnode" && "$value" == "true" ]]; then
+            headnode=1
+        fi
+    done
 
-	if (( smartos == 0 && headnode == 0 )); then
-		echo "compute"
-	elif (( smartos == 0 && headnode == 1 )); then
-		echo "headnode"
-	elif (( smartos == 1 && headnode == 0 )); then
-		echo "smartos"
-	else
-		echo "ERROR: both headnode and smartos set in bootparams" >&2
-		exit 1
-	fi
+    if (( smartos == 0 && headnode == 0 )); then
+        echo "compute"
+    elif (( smartos == 0 && headnode == 1 )); then
+        echo "headnode"
+    elif (( smartos == 1 && headnode == 0 )); then
+        echo "smartos"
+    else
+        echo "ERROR: both headnode and smartos set in bootparams" >&2
+        exit 1
+    fi
 }
 
 function get_kbmapi_host {
-	local suffix
+    local suffix
 
-	# Grab the datacenter_name and dns_domain values from
-	# networking.json and join the two lines with a '.'
-	# using sed
-	suffix=$(/usr/bin/json -f /system/boot/networking.json \
-		datacenter_name dns_domain | \
-		$SED 'N;s/\n/./')
+    # Grab the datacenter_name and dns_domain values from
+    # networking.json and join the two lines with a '.'
+    # using sed
+    suffix=$(/usr/bin/json -f /system/boot/networking.json \
+        datacenter_name dns_domain | \
+        $SED 'N;s/\n/./')
     printf "kbmapi.%s" "$suffix"
 }
 
 function http_date {
-	LC_TIME=C TZ=GMT /usr/bin/date +"%a, %d %b %Y %T %Z"
+    LC_TIME=C TZ=GMT /usr/bin/date +"%a, %d %b %Y %T %Z"
 }
 
 function piv_sign {
-	local data="$1"
+    local data="$1"
     printf "%s" "$data" | $PIVYTOOL sign 9e | $OPENSSL enc -base64 -A
 }
 
 function hmac_sign {
-	local data="$1"
-	local key="$2"
+    local data="$1"
+    local key="$2"
     local key_hex
 
     key_hex=$(printf "%s" "$key" | $OPENSSL enc -base64 -d | $OD -An -tx1 | \
@@ -135,6 +135,10 @@ function new_rtoken {
         "$url" || exit 1
 }
 
+function post_rcfg_update {
+    /usr/bin/sysinfo -u
+}
+
 [[ -z "$1" ]] && \
     echo "No subcommand given." >&2 && \
     exit 1
@@ -143,12 +147,17 @@ case "$1" in
     version)
         echo "name=Triton KBMAPI"
         echo "version=1"
-        exit 0
-        ;;
-    get-pin)            get_pin $2;;
-    register-pivtoken)  register_pivtoken;;
-    replace-pivtoken)   replace_pivtoken;;
-    new-rtoken)         new_rtoken;;
+        exit 0;;
+    get-pin)
+        get_pin $2;;
+    register-pivtoken)
+        register_pivtoken;;
+    replace-pivtoken)
+        replace_pivtoken;;
+    new-rtoken)
+        new_rtoken $2;;
+    post-rcfg-update)
+        post_rcfg_update;;
     *)
         echo "Unknown subcommand $1" >&2
         # XXX: Usage

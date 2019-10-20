@@ -191,6 +191,8 @@ main(int argc, char *argv[])
 			break;
 	}
 
+	(void) bunyan_info(tlog, "Exiting...", BUNYAN_T_END);
+
 	kbmd_event_fini();
 	return (0);
 }

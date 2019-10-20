@@ -204,8 +204,8 @@ recovery_exit_cb(pid_t pid, void *arg)
 	mutex_exit(&recovery_lock);
 }
 
-static errf_t *
-template_hash(struct ebox_tpl *tpl, uint8_t **hashp, size_t *lenp)
+errf_t *
+template_hash(const struct ebox_tpl *tpl, uint8_t **hashp, size_t *lenp)
 {
 	errf_t *ret = ERRF_OK;
 	struct sshbuf *buf = NULL;
@@ -221,7 +221,8 @@ template_hash(struct ebox_tpl *tpl, uint8_t **hashp, size_t *lenp)
 	/*
 	 * Serialize the template and then hash the serialized form.
 	 */
-	if ((ret = sshbuf_put_ebox_tpl(buf, tpl)) != ERRF_OK) {
+	if ((ret = sshbuf_put_ebox_tpl(buf,
+	    (struct ebox_tpl *)tpl)) != ERRF_OK) {
 		goto done;
 	}
 
@@ -1180,34 +1181,46 @@ kbmd_recover_resp(nvlist_t *req, pid_t pid)
 	recover_common(req, r);
 }
 
-void
-kbmd_list_recovery(nvlist_t *req)
+static errf_t *
+add_template_hash(nvlist_t *restrict nvl, struct ebox_tpl *restrict tpl)
 {
 	errf_t *ret = ERRF_OK;
-	nvlist_t *resp = NULL;
-	struct add_data data = { 0 };
-	struct ebox *ebox = NULL;
-	struct ebox_tpl *tpl = NULL;
+	uint8_t *hash = NULL;
+	size_t hashlen = 0;
+
+	if ((ret = template_hash(tpl, &hash, &hashlen)) != ERRF_OK) {
+		return (ret);
+	}
+
+	return (envlist_add_uint8_array(nvl, KBM_NV_CONFIG_HASH, hash,
+	    (uint_t)hashlen));
+}
+
+static errf_t *
+tpl_to_nvlist(struct ebox_tpl *restrict tpl, nvlist_t **restrict nvlp)
+{
+	errf_t *ret = ERRF_OK;
 	size_t ncfg = 0;
+	struct add_data data = { 0 };
 
-	(void) bunyan_trace(tlog, "kbmd_show_recovery: enter", BUNYAN_T_END);
+	*nvlp = NULL;
 
-	if ((ret = envlist_alloc(&resp)) != ERRF_OK) {
-		kbmd_ret_error(ret);
-	}
-
-	if ((ret = kbmd_get_ebox(sys_pool, B_FALSE, &ebox)) != ERRF_OK) {
-		goto done;
-	}
-
-	tpl = ebox_tpl(ebox);
 	if (tpl == NULL) {
-		ret = errf("EboxError",  NULL,
-		    "ebox does not seem to contain a template");
-		goto done;
+		return (ERRF_OK);
 	}
 
 	VERIFY0(ebox_tpl_foreach_cfg(tpl, count_recovery_configs, &ncfg));
+	if (ncfg == 0) {
+		return (ERRF_OK);
+	}
+
+	if ((ret = envlist_alloc(nvlp)) != ERRF_OK) {
+		return (ret);
+	}
+
+	if ((ret = add_template_hash(*nvlp, tpl)) != ERRF_OK) {
+		goto done;
+	}
 
 	if ((ret = ecalloc(ncfg, sizeof (nvlist_t *), &data.ad_nvls)) != NULL) {
 		goto done;
@@ -1217,8 +1230,10 @@ kbmd_list_recovery(nvlist_t *req)
 		goto done;
 	}
 
-	ret = envlist_add_nvlist_array(resp, KBM_NV_CONFIGS, data.ad_nvls,
-	    ncfg);
+	if ((ret = envlist_add_nvlist_array(*nvlp, KBM_NV_CONFIGS, data.ad_nvls,
+	    ncfg)) != ERRF_OK) {
+		goto done;
+	}
 
 done:
 	if (data.ad_nvls != NULL) {
@@ -1227,7 +1242,85 @@ done:
 		}
 		free(data.ad_nvls);
 	}
-	ebox_free(ebox);
+
+	if (ret != ERRF_OK) {
+		nvlist_free(*nvlp);
+		*nvlp = NULL;
+	}
+
+	return (ret);
+}
+
+static errf_t *
+add_template(nvlist_t *restrict nvl, boolean_t staged)
+{
+	errf_t *ret = ERRF_OK;
+	struct ebox *ebox = NULL;
+	struct ebox_tpl *tpl = NULL;
+	nvlist_t *tpl_nvl = NULL;
+	const char *name = staged ? "staged" : "active";
+
+	VERIFY(MUTEX_HELD(&piv_lock));
+
+	if ((ret = kbmd_get_ebox(sys_pool, staged, &ebox)) != ERRF_OK) {
+		if (errf_caused_by(ret, "NotFoundError")) {
+			errf_free(ret);
+			return (ERRF_OK);
+		}
+
+		goto done;
+	}
+
+	if ((tpl = ebox_tpl(ebox)) == NULL) {
+		ret = errf("TemplateError", NULL,
+		    "%s ebox does not contain a template", name);
+		goto done;
+	}
+
+	if ((ret = tpl_to_nvlist(tpl, &tpl_nvl)) != ERRF_OK) {
+		return (ret);
+	}
+
+	if (tpl_nvl != NULL) {
+		ret = envlist_add_nvlist(nvl, name, tpl_nvl);
+	}
+
+done:
+	nvlist_free(tpl_nvl);
+	if (ebox != sys_box) {
+		ebox_free(ebox);
+	}
+
+	return (ret);
+}
+
+void
+kbmd_list_recovery(nvlist_t *req)
+{
+	errf_t *ret = ERRF_OK;
+	nvlist_t *resp = NULL;
+	nvlist_t *cfgs = NULL;
+
+	(void) bunyan_trace(tlog, "kbmd_show_recovery: enter", BUNYAN_T_END);
+
+	if ((ret = envlist_alloc(&resp)) != ERRF_OK ||
+	    (ret = envlist_alloc(&cfgs)) != ERRF_OK) {
+		kbmd_ret_error(ret);
+	}
+
+	mutex_enter(&piv_lock);
+
+	if ((ret = add_template(cfgs, B_FALSE)) != ERRF_OK ||
+	    (ret = add_template(cfgs, B_TRUE)) != ERRF_OK) {
+		goto done;
+	}
+
+	ret = envlist_add_nvlist(resp, KBM_NV_CONFIGS, cfgs);
+
+done:
+	mutex_exit(&piv_lock);
+
+	nvlist_free(cfgs);
 
 	if (ret == ERRF_OK) {
 		kbmd_ret_nvlist(resp);

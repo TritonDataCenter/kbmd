@@ -31,11 +31,18 @@ set_systoken(const uint8_t *guid, size_t guidlen)
 {
 	errf_t *ret = ERRF_OK;
 	kbmd_token_t *kt = NULL;
+	char gstr[GUID_STR_LEN] = { 0 };
 
 	if (guidlen != GUID_LEN) {
 		return (errf("ParameterError", NULL,
 		    "GUID length (%u) is incorrect", guidlen));
 	}
+
+	guidtohex(guid, gstr, sizeof (gstr));
+
+	(void) bunyan_info(tlog, "Setting system token",
+	    BUNYAN_T_STRING, "guid", gstr,
+	    BUNYAN_T_END);
 
 	mutex_enter(&piv_lock);
 	if (sys_piv != NULL) {
@@ -51,6 +58,10 @@ set_systoken(const uint8_t *guid, size_t guidlen)
 		mutex_exit(&piv_lock);
 		return (ret);
 	}
+
+	(void) bunyan_info(tlog, "Setting system token",
+	    BUNYAN_T_STRING, "guid", piv_token_guid_hex(kt->kt_piv),
+	    BUNYAN_T_END);
 
 	kbmd_set_token(kt);
 	mutex_exit(&piv_lock);
@@ -81,22 +92,103 @@ done:
 	kbmd_ret_nvlist(NULL);
 }
 
+static errf_t *
+set_guid_part(struct ebox_tpl_part *tpart, void *arg)
+{
+	uint8_t *guid = arg;
+
+	bcopy(ebox_tpl_part_guid(tpart), guid, GUID_LEN);
+	return (FOREACH_STOP);
+}
+
+static errf_t *
+set_guid(struct ebox_tpl_config *tcfg, void *arg)
+{
+	if (ebox_tpl_config_type(tcfg) != EBOX_PRIMARY)
+		return  (ERRF_OK);
+
+	return (ebox_tpl_foreach_part(tcfg, set_guid_part, arg));
+}
+
+static errf_t *
+do_set_syspool(const char *zpool)
+{
+	char *str = NULL;
+
+	VERIFY(MUTEX_HELD(&piv_lock));
+
+	if (strcmp(zpool, sys_pool) == 0) {
+		(void) bunyan_debug(tlog,
+		    "Tried to set syspool to existing value, no action taken",
+		    BUNYAN_T_STRING, "syspool", sys_pool,
+		    BUNYAN_T_END);
+		return (ERRF_OK);
+	}
+
+	if ((str = strdup(zpool)) == NULL) {
+		return (errfno("strdup", errno, "failed to set syspool"));
+	}
+
+	(void) bunyan_info(tlog, "Setting system zpool",
+	    BUNYAN_T_STRING, "syspool", zpool,
+	    BUNYAN_T_STRING, "oldvalue",
+	    (sys_pool == NULL) ? "(not set)" : sys_pool,
+	    BUNYAN_T_END);
+
+	free(sys_pool);
+	sys_pool = str;
+	return (ERRF_OK);
+}
+
+static errf_t *
+do_set_sysbox(const char *zpool)
+{
+	errf_t *ret = ERRF_OK;
+	struct ebox *ebox = NULL;
+
+	VERIFY(MUTEX_HELD(&piv_lock));
+
+	if (sys_box != NULL) {
+		const char *box_name = ebox_private(sys_box);
+
+		if (strcmp(box_name, zpool) == 0)
+			return (ERRF_OK);
+	}
+
+	if ((ret = kbmd_get_ebox(zpool, B_FALSE, &ebox)) != ERRF_OK) {
+		return (ret);
+	}
+
+	ebox_free(sys_box);
+	sys_box = ebox;
+
+	(void) bunyan_trace(tlog, "Set system ebox",
+	    BUNYAN_T_STRING, "dataset", zpool,
+	    BUNYAN_T_END);
+
+	return (ERRF_OK);
+}
+
 errf_t *
 set_syspool(const char *zpool)
 {
 	errf_t *ret = ERRF_OK;
 	zpool_handle_t *zhp = NULL;
-	size_t zpoollen = 0;
 	boolean_t exists = B_FALSE;
+	uint8_t guid[GUID_LEN] = { 0 };
+
+	(void) bunyan_info(tlog, "Setting system zpool",
+	    BUNYAN_T_STRING, "syspool", zpool,
+	    BUNYAN_T_END);
 
 	if (!IS_ZPOOL(zpool)) {
 		return (errf("ParameterError", NULL, "'%s' is not a zpool",
 		    zpool));
 	}
 
-	zpoollen = strlen(zpool);
-
+	mutex_enter(&piv_lock);
 	mutex_enter(&g_zfs_lock);
+
 	if ((zhp = zpool_open_canfail(g_zfs, zpool)) == NULL) {
 		mutex_exit(&g_zfs_lock);
 		return (errf("zpool_open_canfail", NULL,
@@ -107,31 +199,31 @@ set_syspool(const char *zpool)
 	zpool_close(zhp);
 	mutex_exit(&g_zfs_lock);
 
+	if (exists && (ret = do_set_sysbox(zpool)) != ERRF_OK) {
+		mutex_exit(&piv_lock);
+		return (ret);
+	}
+
 	if (!exists) {
 		return (errf("NotFoundError", NULL, "zpool '%s' not found",
 		    zpool));
 	}
 
-	mutex_enter(&piv_lock);
-	if (strcmp(zpool, sys_pool) == 0) {
-		mutex_exit(&piv_lock);
-		return (ERRF_OK);
-	}
-
-	char *newstr = NULL;
-
-	if ((ret = zalloc(zpoollen + 1, &newstr)) != ERRF_OK) {
+	if ((ret = do_set_syspool(zpool)) != ERRF_OK) {
 		mutex_exit(&piv_lock);
 		return (ret);
 	}
-	(void) strlcpy(newstr, zpool, zpoollen + 1);
 
-	free(sys_pool);
-	sys_pool = newstr;
-	newstr = NULL;
+	ret = ebox_tpl_foreach_cfg(ebox_tpl(sys_box), set_guid, guid);
 	mutex_exit(&piv_lock);
 
-	return (ERRF_OK);
+	if (ret != ERRF_OK) {
+		return (ret);
+	}
+
+	ret = set_systoken(guid, sizeof (guid));
+
+	return (ret);
 }
 
 void

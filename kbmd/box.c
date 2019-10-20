@@ -230,7 +230,7 @@ get_ebox_string(zfs_handle_t *restrict zhp, boolean_t staged,
 	    "dataset %s does not contain an ebox", zfs_get_name(zhp)));
 }
 
-static errf_t *
+errf_t *
 get_ebox_common(zfs_handle_t *restrict zhp, boolean_t staged,
     struct ebox **restrict eboxp)
 {
@@ -256,10 +256,14 @@ kbmd_get_ebox(const char *dataset, boolean_t stage, struct ebox **eboxp)
 	zfs_handle_t *zhp = NULL;
 	errf_t *ret = ERRF_OK;
 
+	*eboxp = NULL;
+
 	(void) bunyan_trace(tlog, "kbmd_get_ebox: enter",
 	    BUNYAN_T_STRING, "dataset", dataset,
 	    BUNYAN_T_STRING, "stage", stage ? "true" : "false",
 	    BUNYAN_T_END);
+
+	VERIFY(MUTEX_HELD(&piv_lock));
 
 	if (sys_box != NULL && strcmp(ebox_private(sys_box), dataset) == 0) {
 		(void) bunyan_trace(tlog, "using system ebox",
@@ -821,6 +825,33 @@ add_hexkey(nvlist_t *nvl, const char *name, const uint8_t *key, size_t keylen)
 	return (ret);
 }
 
+static errf_t *
+log_tpl(const struct ebox_tpl *rcfg, boolean_t stage)
+{
+	errf_t *ret = ERRF_OK;
+	uint8_t *hash = NULL;
+	size_t hashlen = 0;
+
+	if ((ret = template_hash(rcfg, &hash, &hashlen)) != ERRF_OK) {
+		(void) bunyan_error(tlog, "Failed to hash recovery config",
+		    BUNYAN_T_END);
+		return (ret);
+	}
+
+	char hashstr[hashlen * 2 + 1];
+
+	tohex(hash, hashlen, hashstr, hashlen * 2 + 1);
+
+	(void) bunyan_info(tlog, "Adding recovery configuration",
+	    BUNYAN_T_STRING, "staged", stage ? "true" : "false",
+	    BUNYAN_T_STRING, "hash", hashstr,
+	    BUNYAN_T_END);
+
+	free(hash);
+
+	return (ret);
+}
+
 errf_t *
 add_recovery(const struct ebox_tpl *rcfg, boolean_t stage)
 {
@@ -832,6 +863,10 @@ add_recovery(const struct ebox_tpl *rcfg, boolean_t stage)
 	char *eboxstr = NULL;
 	nvlist_t *zcp_args = NULL;
 	nvlist_t *result = NULL;
+
+	if ((ret = log_tpl(rcfg, stage)) != ERRF_OK) {
+		return (ret);
+	}
 
 	mutex_enter(&piv_lock);
 
@@ -865,7 +900,11 @@ add_recovery(const struct ebox_tpl *rcfg, boolean_t stage)
 		}
 	}
 
-	ret = run_channel_program(sys_pool, add_prog_start, zcp_args, &result);
+	if ((ret = run_channel_program(sys_pool, add_prog_start, zcp_args,
+	    &result)) != ERRF_OK)
+		goto done;
+
+	ret = post_recovery_config_update();
 	
 done:
 	mutex_exit(&piv_lock);
@@ -913,8 +952,12 @@ activate_recovery(void)
 		goto done;
 	}
 
-	ret = run_channel_program(sys_pool, activate_prog_start, zcp_args,
-	    &result);
+	if ((ret = run_channel_program(sys_pool, activate_prog_start, zcp_args,
+	    &result)) != ERRF_OK) {
+		goto done;
+	}
+
+	ret = post_recovery_config_update();
 
 done:
 	if (kt != sys_piv)
@@ -955,9 +998,15 @@ remove_recovery(void)
 
 	mutex_exit(&piv_lock);
 
-	ret = ezfs_prop_inherit(zhp, STAGEBOX_PROP);
-	/* XXX: figure out what is returned when it doesn't exist, and
-	 * convert to non error */
+	if ((ret = ezfs_prop_inherit(zhp, STAGEBOX_PROP)) != ERRF_OK) {
+		goto done;
+		/*
+		 * XXX: figure out what is returned when it doesn't exist, and
+		 * convert to non error
+		 */
+	}
+
+	ret = post_recovery_config_update();
 
 done:
 	if (zhp != NULL)
