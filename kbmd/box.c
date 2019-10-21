@@ -866,6 +866,11 @@ add_recovery(const struct ebox_tpl *rcfg, boolean_t stage)
 	nvlist_t *zcp_args = NULL;
 	nvlist_t *result = NULL;
 
+	if (rcfg == NULL) {
+		return (errf("ArgumentError", NULL,
+		    "no recovery configuration given"));
+	}
+		
 	if ((ret = log_tpl(rcfg, stage)) != ERRF_OK) {
 		return (ret);
 	}

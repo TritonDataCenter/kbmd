@@ -285,16 +285,24 @@ add_template_file(nvlist_t *nvl, const char *name, const char *fname)
 	errf_t *ret = ERRF_OK;
 	char *buf = NULL;
 
-	if ((ret = read_template_file(fname, &buf)) != ERRF_OK)
-		return (ret);
+	if (fname != NULL) {
+		ret = read_template_file(fname, &buf);
+	} else {
+		ret = read_template_stdin(&buf);
+	}
+
+	if (ret != ERRF_OK) {
+		goto done;
+	}
 
 	ret = add_b64(nvl, name, buf);
 	/*
 	 * A recovery template does not contain any sensitive information,
 	 * so freezero(3C) isn't necessary.
 	 */
-	free(buf);
 
+done:
+	free(buf);
 	return (ret);
 }
 
@@ -537,7 +545,6 @@ do_add_recovery(int argc, char **argv, nvlist_t **respp)
 	const char *template_f = NULL;
 	errf_t *ret = ERRF_OK;
 	nvlist_t *req = NULL, *resp = NULL;
-	char *tpl = NULL;
 	int c, fd;
 	boolean_t force = B_FALSE;
 
@@ -558,26 +565,15 @@ do_add_recovery(int argc, char **argv, nvlist_t **respp)
 		}
 	}
 
-	if (template_f != NULL) {
-		if ((ret = read_template_file(template_f, &tpl)) != ERRF_OK)
-			return (ret);
-	} else {
-		if ((ret = read_template_stdin(&tpl)) != ERRF_OK)
-			return (ret);
-		if (tpl == NULL || strlen(tpl) == 0) {
-			ret = errf("ArgumentError", NULL,
-			    "no template was specified");
-			goto done;
-		}
-	}
-
 	if ((ret = req_new(KBM_CMD_ADD_RECOVERY, &req)) != ERRF_OK ||
 	    (ret = envlist_add_string(req, KBM_NV_DATASET,
 	    dataset)) != ERRF_OK ||
 	    (ret = envlist_add_boolean_value(req, KBM_NV_STAGE,
 	    !force)) != ERRF_OK ||
-	    (ret = add_b64(req, KBM_NV_TEMPLATE, tpl)) != ERRF_OK)
+	    (ret = add_template_file(req, KBM_NV_TEMPLATE,
+	    template_f)) != ERRF_OK) {
 		goto done;
+	}
 
 	if ((ret = assert_door(&fd)) != ERRF_OK ||
 	    (ret = nv_door_call(fd, req, &resp)) != ERRF_OK) {
@@ -588,7 +584,6 @@ do_add_recovery(int argc, char **argv, nvlist_t **respp)
 
 done:
 	nvlist_free(req);
-	free(tpl);
 	*respp = resp;
 	return (ret);
 

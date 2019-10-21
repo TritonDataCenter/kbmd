@@ -410,6 +410,8 @@ generate_cert(struct piv_token *restrict pk, struct piv_slot *restrict slot)
 	uint_t flags;
 	char slotstr[9] = { 0 };
 
+	ASSERT(piv_token_in_txn(pk));
+
 	(void) snprintf(slotstr, sizeof (slotstr), "%02x", piv_slot_id(slot));
 
 	(void) bunyan_trace(tlog, "Generating PIV cert",
@@ -417,8 +419,6 @@ generate_cert(struct piv_token *restrict pk, struct piv_slot *restrict slot)
 	    BUNYAN_T_STRING, "slot", slotstr,
 	    BUNYAN_T_END);
 		
-	ASSERT(piv_token_in_txn(pk));
-
 	switch (piv_slot_id(slot)) {
 	case 0x9A:
 		name = "piv-auth";
@@ -567,6 +567,23 @@ generate_certs(struct piv_token *pk)
 	errf_t *ret = ERRF_OK;
 	struct piv_slot *slot;
 
+	/*
+	 * Some certs require authorization with the normal PIN, some
+	 * require the admin PIN for signing. Due to ambiguities with the PIV
+	 * spec merely re-authenticating with different pins in a single
+	 * transaction doesn't always appear to work (different firmware
+	 * versions seem to behave differently). Generating and signing
+	 * each cert in a separate transaction, authenticating with the
+	 * admin key, and then re-authing with the normal key seems to
+	 * be the most universal method that works.
+	 */
+	if ((ret = piv_txn_begin(pk)) != ERRF_OK ||
+	    (ret = piv_select(pk)) != ERRF_OK ||
+	    (ret = piv_auth_admin(pk, DEFAULT_ADMIN_KEY,
+	    sizeof (DEFAULT_ADMIN_KEY))) != ERRF_OK)  {
+		return (ret);
+	}
+
 	if ((ret = piv_read_cert(pk, 0x9E)) != ERRF_OK) {
 		errf_free(ret);
 		ret = ERRF_OK;
@@ -575,14 +592,33 @@ generate_certs(struct piv_token *pk)
 			return (ret);
 		}
 	}
+	piv_txn_end(pk);
+
+
+	if ((ret = piv_txn_begin(pk)) != ERRF_OK ||
+	    (ret = piv_select(pk)) != ERRF_OK ||
+	    (ret = piv_auth_admin(pk, DEFAULT_ADMIN_KEY,
+	    sizeof (DEFAULT_ADMIN_KEY))) != ERRF_OK)  {
+		return (ret);
+	}
 
 	slot = piv_force_slot(pk, 0x9A, PIV_ALG_ECCP256);
 	if ((ret = generate_cert(pk, slot)) != ERRF_OK) {
 		return (ret);
 	}
+	piv_txn_end(pk);
 
+	if ((ret = piv_txn_begin(pk)) != ERRF_OK ||
+	    (ret = piv_select(pk)) != ERRF_OK ||
+	    (ret = piv_auth_admin(pk, DEFAULT_ADMIN_KEY,
+	    sizeof (DEFAULT_ADMIN_KEY))) != ERRF_OK)  {
+		return (ret);
+	}
 	slot = piv_force_slot(pk, 0x9C, PIV_ALG_RSA2048);
-	return (generate_cert(pk, slot));
+	ret = generate_cert(pk, slot);
+	piv_txn_end(pk);
+
+	return (ret);
 }
 
 /*
@@ -806,17 +842,17 @@ kbmd_setup_token(kbmd_token_t **ktp)
 		goto fail;
 	}
 
-	if ((ret = piv_txn_begin(pk)) != ERRF_OK ||
-	    (ret = piv_select(pk)) != ERRF_OK ||
-	    (ret = piv_auth_admin(pk, DEFAULT_ADMIN_KEY,
-	    sizeof (DEFAULT_ADMIN_KEY))) != ERRF_OK)
-		goto fail;
-
 	if ((ret = generate_certs(pk)) != ERRF_OK) {
 		ret = errf("SetupError", ret,
 		    "failed to generate PIV certificates");
 		goto fail;
 	}
+
+	if ((ret = piv_txn_begin(pk)) != ERRF_OK ||
+	    (ret = piv_select(pk)) != ERRF_OK ||
+	    (ret = piv_auth_admin(pk, DEFAULT_ADMIN_KEY,
+	    sizeof (DEFAULT_ADMIN_KEY))) != ERRF_OK)
+		goto fail;
 
 	if ((ret = set_pins(pk, (*ktp)->kt_pin)) != ERRF_OK)
 		goto fail;
