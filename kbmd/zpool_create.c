@@ -126,21 +126,41 @@ try_sys_piv(const uint8_t *guid, const uint8_t *rtoken, size_t rtokenlen)
 {
 	errf_t *ret = ERRF_OK;
 	const uint8_t *sys_piv_guid = NULL;
+	char gstr[GUID_STR_LEN] = { 0 };
 
-	(void) bunyan_trace(tlog, "try_sys_piv: enter", BUNYAN_T_END);
+	if (guid != NULL) {
+		guidtohex(guid, gstr, sizeof (gstr));
+	} else {
+		(void) strlcpy(gstr, "(not set)", sizeof (gstr));
+	}
+
+	(void) bunyan_trace(tlog, "try_sys_piv: enter",
+	    BUNYAN_T_STRING, "guid", gstr,
+	    BUNYAN_T_END);
 
 	ASSERT(MUTEX_HELD(&piv_lock));
 
-	if (sys_piv == NULL || guid == NULL)
+	if (sys_piv == NULL || guid == NULL) {
+		(void) bunyan_trace(tlog,
+		    "sys piv not set or guid not specified",
+		    BUNYAN_T_END);
 		return (B_FALSE);
+	}
 
 	sys_piv_guid = piv_token_guid(sys_piv->kt_piv);
 
-	if (bcmp(sys_piv_guid, guid, GUID_LEN) != 0)
+	if (bcmp(sys_piv_guid, guid, GUID_LEN) != 0) {
+		(void) bunyan_trace(tlog, "specified guid is not sys piv",
+		    BUNYAN_T_STRING, "guid", gstr,
+		    BUNYAN_T_END);
 		return (B_FALSE);
+	}
 
-	if (sys_piv->kt_rtoken == NULL && rtoken == NULL)
+	if (sys_piv->kt_rtoken == NULL && rtoken == NULL) {
+		(void) bunyan_trace(tlog, "System PIV not set",
+		    BUNYAN_T_END);
 		return (B_FALSE);
+	}
 
 	if (sys_piv->kt_rtoken != NULL)
 		return (B_TRUE);
@@ -191,8 +211,9 @@ kbmd_assert_token(const uint8_t *guid, const uint8_t *rtoken, size_t rtokenlen,
 		return (ERRF_OK);
 	}
 
-	if (errf_errno(ret) != ENOENT)
+	if (!errf_caused_by(ret, "NotFoundError")) {
 		return (ret);
+	}
 	errf_free(ret);
 
 	if ((ret = kbmd_setup_token(ktp)) != ERRF_OK)
@@ -212,8 +233,18 @@ kbmd_zpool_create(const char *dataset, const uint8_t *guid,
 	kbmd_token_t *kt = NULL;
 	const uint8_t *key = NULL;
 	size_t keylen = 0;
+	char gstr[GUID_STR_LEN] = { 0 };
+
+	if (guid != NULL) {
+		guidtohex(guid, gstr, sizeof (gstr));
+	} else {
+		(void) strlcpy(gstr, "(not given)", sizeof (gstr));
+	}
 
 	(void) bunyan_debug(tlog, "Received KBM_CMD_ZPOOL_CREATE request",
+	    BUNYAN_T_STRING, "dataset",
+	    (dataset != NULL) ? dataset : "(not set)",
+	    BUNYAN_T_STRING, "guid", gstr,
 	    BUNYAN_T_END);
 
 	mutex_enter(&piv_lock);

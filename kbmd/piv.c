@@ -59,6 +59,11 @@ set_pin(struct piv_token *restrict pk, char pin[restrict], size_t pin_len,
 
 	VERIFY(piv_token_in_txn(pk));
 
+	(void) bunyan_trace(tlog, "Setting PIV pin",
+	    BUNYAN_T_STRING, "guid", piv_token_guid_hex(pk),
+	    BUNYAN_T_STRING, "pin_type", piv_pin_str(pin_type),
+	    BUNYAN_T_END);
+
 	/*
 	 * For reasons described in arc4random_uniform(3C), we use it to
 	 * generate our PIN.
@@ -74,6 +79,11 @@ set_pin(struct piv_token *restrict pk, char pin[restrict], size_t pin_len,
 		ret = funcerrf(ret, "failure to set %s", piv_pin_str(pin_type));
 		return (ret);
 	}
+
+	(void) bunyan_debug(tlog, "PIV pin set",
+	    BUNYAN_T_STRING, "guid", piv_token_guid_hex(pk),
+	    BUNYAN_T_STRING, "pin_type", piv_pin_str(pin_type),
+	    BUNYAN_T_END);
 
 	return (ERRF_OK);
 }
@@ -225,12 +235,14 @@ set_extensions(X509 *cert, const char *basic, const char *ku)
 		make_sslerrf(ret, "X509V3_EXT_conf_nid", "setting extensions");
 		goto done;
 	}
+	X509_add_ext(cert, ext, -1);
 	X509_EXTENSION_free(ext);
 
 	if ((ext = X509V3_EXT_conf_nid(NULL, &x509ctx, NID_key_usage,
 	    (char *)ku)) == NULL) {
 		make_sslerrf(ret, "X509V3_EXT_conf_nid", "setting extensions");
 	}
+	X509_add_ext(cert, ext, -1);
 
 done:
 	X509_EXTENSION_free(ext);
@@ -264,7 +276,9 @@ set_pubkey_rsa(EVP_PKEY *restrict pkey, struct sshkey *restrict pub,
 	*algp = SSH_DIGEST_SHA256;
 
 done:
-	RSA_free(copy);
+	if (ret != ERRF_OK) {
+		RSA_free(copy);
+	}
 	return (ret);
 }
 
@@ -313,7 +327,10 @@ set_pubkey_ecdsa(struct piv_token *restrict pk, EVP_PKEY *restrict pkey,
 	}
 
 done:
-	EC_KEY_free(copy);
+	if (ret != ERRF_OK) {
+		EC_KEY_free(copy);
+	}
+
 	return (ret);
 }
 
@@ -362,6 +379,24 @@ done:
 }
 
 static errf_t *
+null_param(ASN1_TYPE **ap)
+{
+	ASN1_TYPE *nullp = NULL;
+
+	if ((nullp = ASN1_TYPE_new()) == NULL) {
+		errf_t *ret;
+
+		make_sslerrf(ret, "ASN1_TYPE_new",
+		    "failed to create NULL parameter");
+		return (ret);
+	}
+
+	ASN1_TYPE_set(nullp, V_ASN1_NULL, NULL);
+	*ap = nullp;
+	return (ERRF_OK);
+}
+
+static errf_t *
 generate_cert(struct piv_token *restrict pk, struct piv_slot *restrict slot)
 {
 	errf_t *ret = ERRF_OK;
@@ -373,10 +408,15 @@ generate_cert(struct piv_token *restrict pk, struct piv_slot *restrict slot)
 	size_t siglen = 0;
 	enum sshdigest_types wantalg, hashalg;
 	uint_t flags;
-	ASN1_TYPE null_parameter = {
-		.type = V_ASN1_NULL
-	};
+	char slotstr[9] = { 0 };
 
+	(void) snprintf(slotstr, sizeof (slotstr), "%02x", piv_slot_id(slot));
+
+	(void) bunyan_trace(tlog, "Generating PIV cert",
+	    BUNYAN_T_STRING, "guid", piv_token_guid_hex(pk),
+	    BUNYAN_T_STRING, "slot", slotstr,
+	    BUNYAN_T_END);
+		
 	ASSERT(piv_token_in_txn(pk));
 
 	switch (piv_slot_id(slot)) {
@@ -399,7 +439,7 @@ generate_cert(struct piv_token *restrict pk, struct piv_slot *restrict slot)
 	default:
 		ret = errf("InvalidSlot", NULL, "slot 0x%02X is not supported",
 		    piv_slot_id(slot));
-		return (ret);
+		goto done;
 	}
 
 	if ((ret = piv_generate(pk, piv_slot_id(slot), piv_slot_alg(slot),
@@ -440,8 +480,14 @@ generate_cert(struct piv_token *restrict pk, struct piv_slot *restrict slot)
 		goto done;
 
 	if (pub->type == KEY_RSA) {
-		cert->sig_alg->parameter = &null_parameter;
-		cert->cert_info->signature->parameter = &null_parameter;
+		ASN1_TYPE **cert_param = &cert->sig_alg->parameter;
+		ASN1_TYPE **cert_info_param =
+		    &cert->cert_info->signature->parameter;
+	
+		if ((ret = null_param(cert_param)) != ERRF_OK ||
+		    (ret = null_param(cert_info_param)) != ERRF_OK) {
+			goto done;
+		}
 	}
 
 	cert->cert_info->enc.modified = 1;
@@ -452,9 +498,32 @@ generate_cert(struct piv_token *restrict pk, struct piv_slot *restrict slot)
 	}
 
 	hashalg = wantalg;
-	ret = piv_sign(pk, slot, tbs, tbslen, &hashalg, &sig, &siglen);
+
+	if ((ret = piv_auth_admin(pk, DEFAULT_ADMIN_KEY,
+	    sizeof (DEFAULT_ADMIN_KEY))) != ERRF_OK) {
+		goto done;
+	}
+
+	for (size_t i = 0; i < 2; i++) {
+		ret = piv_sign(pk, slot, tbs, tbslen, &hashalg, &sig, &siglen);
+		if (ret == ERRF_OK) {
+			break;
+		}
+
+		if (!errf_caused_by(ret, "PermissionError")) {
+			ret = funcerrf(ret, "failed to sign cert with key");
+			goto done;
+		}
+
+		enum piv_pin pin_auth = piv_token_default_auth(pk);
+
+		if ((ret = piv_verify_pin(pk, pin_auth, DEFAULT_PIN, NULL,
+		    B_TRUE)) != ERRF_OK) {
+			goto done;
+		}
+	}
+
 	if (ret != ERRF_OK) {
-		ret = funcerrf(ret, "failed to sign cert with key");
 		goto done;
 	}
 
@@ -479,12 +548,17 @@ generate_cert(struct piv_token *restrict pk, struct piv_slot *restrict slot)
 
 done:
 	if (ret != ERRF_OK) {
-		ret = errf("generate", ret, "unable to create %02X certificate",
-		    piv_slot_id(slot));
+		ret = errf("GenerateError", ret,
+		    "unable to create %02X certificate", piv_slot_id(slot));
+	} else {
+		(void) bunyan_debug(tlog, "Generated PIV cert",
+	    	    BUNYAN_T_STRING, "guid", piv_token_guid_hex(pk),
+		    BUNYAN_T_STRING, "slot", slotstr,
+		    BUNYAN_T_END);
 	}
 
 	X509_free(cert);
-	return (ERRF_OK);
+	return (ret);
 }
 
 static errf_t *
@@ -495,14 +569,17 @@ generate_certs(struct piv_token *pk)
 
 	if ((ret = piv_read_cert(pk, 0x9E)) != ERRF_OK) {
 		errf_free(ret);
+		ret = ERRF_OK;
 		slot = piv_force_slot(pk, 0x9E, PIV_ALG_ECCP256);
-		if ((ret = generate_cert(pk, slot)) != ERRF_OK)
+		if ((ret = generate_cert(pk, slot)) != ERRF_OK) {
 			return (ret);
+		}
 	}
 
 	slot = piv_force_slot(pk, 0x9A, PIV_ALG_ECCP256);
-	if ((ret = generate_cert(pk, slot)) != ERRF_OK)
+	if ((ret = generate_cert(pk, slot)) != ERRF_OK) {
 		return (ret);
+	}
 
 	slot = piv_force_slot(pk, 0x9C, PIV_ALG_RSA2048);
 	return (generate_cert(pk, slot));
@@ -531,13 +608,16 @@ init_token(uint8_t guid[restrict])
 		0x00
 	};
 
+	(void) bunyan_trace(tlog, "Initializing new PIV token",
+	    BUNYAN_T_END);
+
 	ASSERT(MUTEX_HELD(&piv_lock));
 
 	/*
 	 * Find a non-initialized piv token.  We assume a piv token with
-	 * an all-zero GUID is not initialized.  Since we cannot easily
+	 * a NULL or all-zero GUID is not initialized.  Since we cannot easily
 	 * distinguish between multiple uninitialized piv tokens, we require
-	 * that only one uninitialized piv token is present.
+	 * only one uninitialized token to be present.
 	 */
 	pk = tokens = NULL;
 	if ((ret = piv_enumerate(piv_ctx, &tokens)) != ERRF_OK) {
@@ -548,8 +628,12 @@ init_token(uint8_t guid[restrict])
 	bzero(nguid, sizeof (nguid));
 	for (struct piv_token *tok = tokens; tok != NULL;
 	    tok = piv_token_next(tok)) {
-		if (bcmp(piv_token_guid(tok), nguid, sizeof (nguid)) != 0)
+		const uint8_t *tk_guid = piv_token_guid(tok);
+
+		if (tk_guid != NULL &&
+		    bcmp(tk_guid, nguid, sizeof (nguid)) != 0) {
 			continue;
+		}
 
 		if (pk != NULL) {
 			piv_release(tokens);
@@ -679,6 +763,15 @@ done:
 	}
 
 	bcopy(nguid, guid, sizeof (nguid));
+
+	char gstr[GUID_STR_LEN] = { 0 };
+
+	guidtohex(nguid, gstr, sizeof (gstr));
+
+	(void) bunyan_info(tlog, "Initialized new PIV token",
+	    BUNYAN_T_STRING, "guid", gstr,
+	    BUNYAN_T_END);
+	    
 	return (ERRF_OK);
 }
 
@@ -691,11 +784,17 @@ kbmd_setup_token(kbmd_token_t **ktp)
 
 	ASSERT(MUTEX_HELD(&piv_lock));
 
+	(void) bunyan_trace(tlog, "kbmd_setup_token: enter",
+	    BUNYAN_T_END);
+
 	if ((ret = zalloc(sizeof (kbmd_token_t), ktp)) != ERRF_OK)
 		return (ret);
 
-	if ((ret = init_token(guid)) != ERRF_OK)
+	if ((ret = init_token(guid)) != ERRF_OK) {
+		ret = errf("SetupError", ret,
+		    "failed to initialize new PIV token");
 		goto fail;
+	}
 
 	/*
 	 * Once the token has been initalized, re-read all the info with
@@ -713,8 +812,11 @@ kbmd_setup_token(kbmd_token_t **ktp)
 	    sizeof (DEFAULT_ADMIN_KEY))) != ERRF_OK)
 		goto fail;
 
-	if ((ret = generate_certs(pk)) != ERRF_OK)
+	if ((ret = generate_certs(pk)) != ERRF_OK) {
+		ret = errf("SetupError", ret,
+		    "failed to generate PIV certificates");
 		goto fail;
+	}
 
 	if ((ret = set_pins(pk, (*ktp)->kt_pin)) != ERRF_OK)
 		goto fail;
@@ -726,6 +828,10 @@ kbmd_setup_token(kbmd_token_t **ktp)
 
 	(*ktp)->kt_piv = pk;
 	pk = NULL;
+
+	(void) bunyan_info(tlog, "New PIV token setup",
+	    BUNYAN_T_STRING, "guid", piv_token_guid_hex((*ktp)->kt_piv),
+	    BUNYAN_T_END);
 
 	/*
 	 * XXX: If this fails due to network issues, it would be nice at

@@ -167,8 +167,7 @@ errf_t *kbmd_get_pin(const uint8_t guid[restrict], struct custr **restrict);
 errf_t *kbmd_register_pivtoken(kbmd_token_t *);
 errf_t *kbmd_replace_pivtoken(const uint8_t *, size_t, const uint8_t *, size_t,
     kbmd_token_t *);
-errf_t *new_recovery_token(kbmd_token_t *restrict,
-    uint8_t **restrict, size_t *restrict);
+errf_t *new_recovery_token(kbmd_token_t *restrict);
 errf_t *post_recovery_config_update(void);
 void load_plugin(void);
 

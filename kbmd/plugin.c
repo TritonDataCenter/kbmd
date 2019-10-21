@@ -29,6 +29,7 @@
 #include <openssl/err.h>
 #include <openssl/pem.h>
 #include <openssl/x509.h>
+#include <sys/sysmacros.h>
 #include "kbmd.h"
 #include "common.h"
 #include "ecustr.h"
@@ -433,16 +434,25 @@ static errf_t *
 add_keys(struct piv_token *restrict pt, nvlist_t *restrict pubkeys,
     nvlist_t *restrict attest)
 {
+	/*
+	 * The 9B slot never has a cert, and reading it will generate
+	 * an ArgumentError, so we just explicitly skip it.
+	 */
+	const static enum piv_slotid slotids[] = {
+	    PIV_SLOT_9A, PIV_SLOT_9C, PIV_SLOT_9D, PIV_SLOT_9E
+	};
+
 	errf_t *ret = ERRF_OK;
 
-	for (enum piv_slotid i = PIV_SLOT_9A; i <= PIV_SLOT_9E; i++) {
+	for (size_t i = 0; i < ARRAY_SIZE(slotids); i++) {
 		struct piv_slot *cert = NULL;
-		char slotstr[5] = { 0 };
+		enum piv_slotid slotid = slotids[i];
+		char slotstr[9] = { 0 };
 
-		(void) snprintf(slotstr, sizeof (slotstr), "0x%02hhX", i);
+		(void) snprintf(slotstr, sizeof (slotstr), "0x%02X", slotid);
 
-		ret = piv_read_cert(pt, i);
-		cert = piv_get_slot(pt, i);
+		ret = piv_read_cert(pt, slotid);
+		cert = piv_get_slot(pt, slotid);
 
 		/*
 		 * If no key is present, skip that slot and don't report an
@@ -726,71 +736,38 @@ done:
 }
 
 errf_t *
-new_recovery_token(kbmd_token_t *restrict kt, uint8_t **restrict rtokenp,
-    size_t *restrict rtokenlenp)
+new_recovery_token(kbmd_token_t *restrict kt)
 {
 	errf_t *ret = ERRF_OK;
+	custr_t *input = NULL;
+	custr_t *rtoken = NULL;
 	strarray_t args = STRARRAY_INIT;
-	int fds[3] = { -1, -1, -1 };
-	pid_t pid;
 
 	VERIFY(!piv_token_in_txn(kt->kt_piv));
 
-	*rtokenp = NULL;
-	*rtokenlenp = 0;
+	if ((ret = ecustr_alloc(&input)) != ERRF_OK) {
+		goto done;
+	}
 
 	if ((ret = plugin_create_args(&args, NEW_TOK_CMD)) != ERRF_OK ||
 	    (ret = strarray_append_guid(&args,
 	    piv_token_guid(kt->kt_piv))) != ERRF_OK) {
-		return (errf("PluginError", ret,
-		    "failed to create cmdline for %s", NEW_TOK_CMD));
+		ret = errf("PluginError", ret,
+		    "failed to create cmdline for %s", NEW_TOK_CMD);
+		goto done;
 	}
 
-	(void) bunyan_debug(tlog, "Running " NEW_TOK_CMD " plugin",
-	    BUNYAN_T_STRING, "path", args.sar_strs[0],
-	    BUNYAN_T_STRING, "guid", args.sar_strs[args.sar_n - 1],
-	    BUNYAN_T_END);
-
-	ret = spawn(args.sar_strs[0], args.sar_strs, _environ, &pid, fds);
-	if (ret != ERRF_OK) {
-		return (errf("PluginError", ret, ""));
+	if ((ret = plugin_pivtoken_common(kt->kt_piv, kt->kt_pin,
+	    args.sar_strs[0], args.sar_strs, input, &rtoken)) != ERRF_OK) {
+		goto done;
 	}
 
-	custr_t *data[2] = { 0 };
-	int exitval;
+	ret = set_recovery_token(kt, rtoken);
 
-	if ((ret = ecustr_alloc(&data[0])) != ERRF_OK ||
-	    (ret = ecustr_alloc(&data[1])) != ERRF_OK ||
-	    (ret = interact(pid, fds, NULL, 0, data, &exitval,
-	    B_FALSE)) != ERRF_OK) {
-		strarray_fini(&args);
-		custr_free(data[0]);
-		custr_free(data[1]);
-		return (errf("PluginError", ret, ""));
-	}
-
-	if (exitval != 0) {
-		(void) bunyan_warn(tlog,
-		    "New recovery token  plugin returned an error",
-		    BUNYAN_T_STRING, "plugin", args.sar_strs[0],
-		    BUNYAN_T_INT32, "retval", (int32_t)exitval,
-		    BUNYAN_T_END);
-
-		ret = errf("PluginError", NULL, "Plugin returned %d (%s)",
-		    exitval, NEW_TOK_CMD);
-	} else {
-		extract_line(data[0]);
-		if (custr_len(data[0]) == 0) {
-			ret = errf("PluginError", NULL,
-			    "script did not return any data");
-		} else {
-			ret = ecustr_fromb64(data[0], rtokenp, rtokenlenp);
-		}
-	}
-
+done:
 	strarray_fini(&args);
-	custr_free(data[0]);
-	custr_free(data[1]);
+	custr_free(rtoken);
+	custr_free(input);
 	return (ret);
 }
 

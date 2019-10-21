@@ -116,6 +116,7 @@ kbmd_ret_nvlist(nvlist_t *resp)
 	errf_t *ret = ERRF_OK;
 	struct retbuf *b = NULL;
 	size_t nvlen;
+	boolean_t success;
 
 	/*
 	 * Even if there is no data to return, we want to indicate
@@ -125,10 +126,17 @@ kbmd_ret_nvlist(nvlist_t *resp)
 		kbmd_ret_error(ret);
 	}
 
-	if ((ret = envlist_add_boolean_value(resp, KBM_NV_SUCCESS,
-	    B_TRUE)) != ERRF_OK) {
-		nvlist_free(resp);
-		kbmd_ret_error(ret);
+	if ((ret = envlist_lookup_boolean_value(resp, KBM_NV_SUCCESS,
+	    &success)) != ERRF_OK) {
+		errf_free(ret);
+		if ((ret = envlist_add_boolean_value(resp, KBM_NV_SUCCESS,
+		    B_TRUE)) != ERRF_OK) {
+			errf_free(ret);
+			(void) bunyan_error(tlog,
+			    "Failed to set success in response",
+			    BUNYAN_T_END);
+			goto do_generr;
+		}
 	}
 
 	flockfile(stderr);
@@ -143,9 +151,7 @@ kbmd_ret_nvlist(nvlist_t *resp)
 		    "Tried to return more than DOOR_RET_MAX",
 		    BUNYAN_T_UINT64, "retsize", nvlen,
 		    BUNYAN_T_END);
-		nvlist_free(resp);
-		session_log_end();
-		door_return(generr, generr_sz, NULL, 0);
+		goto do_generr;
 	}
 
 	VERIFY0(thr_keycreate_once(&retkey, retbuf_free));
@@ -167,6 +173,13 @@ kbmd_ret_nvlist(nvlist_t *resp)
 	nvlist_free(resp);
 	session_log_end();
 	door_return(b->rt_buf, nvlen, NULL, 0);
+	/* NOTREACHED */
+	abort();
+
+do_generr:
+	nvlist_free(resp);
+	session_log_end();
+	door_return(generr, generr_sz, NULL, 0);
 	/* NOTREACHED */
 	abort();
 }

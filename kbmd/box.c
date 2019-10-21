@@ -784,19 +784,21 @@ kbmd_create_ebox(kbmd_token_t *restrict kt, const struct ebox_tpl *rcfg,
 
 	VERIFY(MUTEX_HELD(&piv_lock));
 
-	if ((ret = new_recovery_token(kt, &kt->kt_rtoken,
-	    &kt->kt_rtoklen)) != ERRF_OK)
+	if ((ret = new_recovery_token(kt)) != ERRF_OK) {
 		return (ret);
+	}
 
 	if ((ret = piv_txn_begin(kt->kt_piv)) != ERRF_OK ||
 	    (ret = piv_select(kt->kt_piv)) != ERRF_OK ||
-	    (ret = create_template(kt, rcfg, &tpl)) != ERRF_OK)
+	    (ret = create_template(kt, rcfg, &tpl)) != ERRF_OK) {
 		goto done;
+	}
 
 	arc4random_buf(key, sizeof (key));
 	if ((ret = ebox_create(tpl, key, sizeof (key), kt->kt_rtoken,
-	    kt->kt_rtoklen, &ebox)) != ERRF_OK)
+	    kt->kt_rtoklen, &ebox)) != ERRF_OK) {
 		goto done;
+	}
 
 	ret = set_box_name(ebox, name);
 

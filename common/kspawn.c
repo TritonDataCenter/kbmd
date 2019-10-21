@@ -435,6 +435,7 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
 				(void) close(pfds[0].fd);
 				pfds[0].fd = -1;
 				pfds[0].events = 0;
+				pfds[0].revents = 0;
 				if (ret != ERRF_OK)
 					return (errf("IOError", ret, ""));
 			}
@@ -470,6 +471,7 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
 				(void) close(pfds[i].fd);
 				pfds[i].fd = -1;
 				pfds[i].events = 0;
+				pfds[i].revents = 0;
 				if (ret != ERRF_OK)
 					return (errf("IOError", ret, ""));
 			}

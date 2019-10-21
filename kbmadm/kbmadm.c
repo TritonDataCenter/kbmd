@@ -575,7 +575,7 @@ do_add_recovery(int argc, char **argv, nvlist_t **respp)
 	    (ret = envlist_add_string(req, KBM_NV_DATASET,
 	    dataset)) != ERRF_OK ||
 	    (ret = envlist_add_boolean_value(req, KBM_NV_STAGE,
-	    force)) != ERRF_OK ||
+	    !force)) != ERRF_OK ||
 	    (ret = add_b64(req, KBM_NV_TEMPLATE, tpl)) != ERRF_OK)
 		goto done;
 
