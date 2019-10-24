@@ -775,6 +775,7 @@ post_recovery(recovery_t *r)
 	kbmd_token_t *kt = NULL;
 	struct ebox *new_ebox = NULL;
 	struct ebox_tpl *tpl = NULL;
+	struct ebox_tpl *rcfg = NULL;
 	const char *dataset = NULL;
 	const uint8_t *key = NULL, *rtoken = NULL;
 	size_t keylen = 0, rtokenlen = 0;
@@ -805,7 +806,7 @@ post_recovery(recovery_t *r)
 
 	mutex_enter(&piv_lock);
 
-	if ((ret = kbmd_setup_token(&kt)) != ERRF_OK) {
+	if ((ret = kbmd_setup_token(&kt, &rcfg)) != ERRF_OK) {
 		if (errf_caused_by(ret, "NotFoundError")) {
 			/*
 			 * XXX: Might we also want to spit this out to
@@ -827,14 +828,15 @@ post_recovery(recovery_t *r)
 
 	if ((ret = piv_txn_begin(kt->kt_piv)) != ERRF_OK ||
 	    (ret = piv_select(kt->kt_piv)) != ERRF_OK ||
-	    (ret = create_template(kt, ebox_tpl(r->r_ebox),
-	    &tpl)) != ERRF_OK) {
+	    (ret = create_template(kt, rcfg, &tpl)) != ERRF_OK) {
 		if (piv_token_in_txn(kt->kt_piv))
 			piv_txn_end(kt->kt_piv);
 		mutex_exit(&piv_lock);
 		kbmd_token_free(kt);
+		ebox_tpl_free(rcfg);
 		return (ret);
 	}
+	ebox_tpl_free(rcfg);
 	piv_txn_end(kt->kt_piv);
 	mutex_exit(&piv_lock);
 

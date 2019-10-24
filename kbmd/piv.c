@@ -13,6 +13,7 @@
  * Copyright 2019 Joyent, Inc.
  */
 
+#include <sys/sysmacros.h>
 #include <openssl/err.h>
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
@@ -431,6 +432,11 @@ generate_cert(struct piv_token *restrict pk, struct piv_slot *restrict slot)
 		ku = "critical,digitalSignature,nonRepudiation,"
 		    "keyCertSign,cRLSign";
 		break;
+	case 0x9D:
+		name = "piv-key-mgmt";
+		basic = "critical,CA:FALSE";
+		ku = "critical,keyAgreement,keyEncipherment,dataEncipherment";
+		break;
 	case 0x9E:
 		name = "piv-card-auth";
 		basic = "critical,CA:FALSE";
@@ -564,6 +570,9 @@ done:
 static errf_t *
 generate_certs(struct piv_token *pk)
 {
+	static const enum piv_slotid slotids[] = {
+	    PIV_SLOT_9E, PIV_SLOT_9A, PIV_SLOT_9C, PIV_SLOT_9D
+	};
 	errf_t *ret = ERRF_OK;
 	struct piv_slot *slot;
 
@@ -577,46 +586,35 @@ generate_certs(struct piv_token *pk)
 	 * admin key, and then re-authing with the normal key seems to
 	 * be the most universal method that works.
 	 */
-	if ((ret = piv_txn_begin(pk)) != ERRF_OK ||
-	    (ret = piv_select(pk)) != ERRF_OK ||
-	    (ret = piv_auth_admin(pk, DEFAULT_ADMIN_KEY,
-	    sizeof (DEFAULT_ADMIN_KEY))) != ERRF_OK)  {
-		return (ret);
-	}
+	for (size_t i = 0; i < ARRAY_SIZE(slotids); i++) {
+		enum piv_slotid slotid  = slotids[i];
+		enum piv_alg alg = PIV_ALG_ECCP256;
 
-	if ((ret = piv_read_cert(pk, 0x9E)) != ERRF_OK) {
-		errf_free(ret);
-		ret = ERRF_OK;
-		slot = piv_force_slot(pk, 0x9E, PIV_ALG_ECCP256);
+		if (slotid == PIV_SLOT_9C) {
+			alg = PIV_ALG_RSA2048;
+		}
+
+		if ((ret = piv_txn_begin(pk)) != ERRF_OK ||
+		    (ret = piv_select(pk)) != ERRF_OK ||
+		    (ret = piv_auth_admin(pk, DEFAULT_ADMIN_KEY,
+		    sizeof (DEFAULT_ADMIN_KEY))) != ERRF_OK)  {
+			return (ret);
+		}
+
+		if (slotid == PIV_SLOT_9E) {
+			if ((ret = piv_read_cert(pk, slotid)) == ERRF_OK) {
+				continue;
+			}
+			errf_free(ret);
+			ret = ERRF_OK;
+		}
+
+		slot = piv_force_slot(pk, slotid, alg);
 		if ((ret = generate_cert(pk, slot)) != ERRF_OK) {
 			return (ret);
 		}
+		piv_txn_end(pk);
 	}
-	piv_txn_end(pk);
-
-
-	if ((ret = piv_txn_begin(pk)) != ERRF_OK ||
-	    (ret = piv_select(pk)) != ERRF_OK ||
-	    (ret = piv_auth_admin(pk, DEFAULT_ADMIN_KEY,
-	    sizeof (DEFAULT_ADMIN_KEY))) != ERRF_OK)  {
-		return (ret);
-	}
-
-	slot = piv_force_slot(pk, 0x9A, PIV_ALG_ECCP256);
-	if ((ret = generate_cert(pk, slot)) != ERRF_OK) {
-		return (ret);
-	}
-	piv_txn_end(pk);
-
-	if ((ret = piv_txn_begin(pk)) != ERRF_OK ||
-	    (ret = piv_select(pk)) != ERRF_OK ||
-	    (ret = piv_auth_admin(pk, DEFAULT_ADMIN_KEY,
-	    sizeof (DEFAULT_ADMIN_KEY))) != ERRF_OK)  {
-		return (ret);
-	}
-	slot = piv_force_slot(pk, 0x9C, PIV_ALG_RSA2048);
-	ret = generate_cert(pk, slot);
-	piv_txn_end(pk);
 
 	return (ret);
 }
@@ -812,7 +810,7 @@ done:
 }
 
 errf_t *
-kbmd_setup_token(kbmd_token_t **ktp)
+kbmd_setup_token(kbmd_token_t **restrict ktp, struct ebox_tpl **restrict rcfgp)
 {
 	errf_t *ret = ERRF_OK;
 	struct piv_token *pk = NULL;
@@ -874,7 +872,7 @@ kbmd_setup_token(kbmd_token_t **ktp)
 	 * some point to support retrying without requiring the operator
 	 * to reset the token and then re-init it.
 	 */
-	if ((ret = kbmd_register_pivtoken(*ktp)) != ERRF_OK) {
+	if ((ret = kbmd_register_pivtoken(*ktp, rcfgp)) != ERRF_OK) {
 		goto fail;
 	}
 

@@ -41,6 +41,8 @@
 #include "pivy/libssh/ssherr.h"
 #include "pivy/libssh/sshkey.h"
 
+#include <stdio.h>
+
 /*
  * In all cases, the PIV token must not currently be in a transaction
  * when we call out to the plugins.  Since they are separate processes, they
@@ -113,8 +115,11 @@ split(custr_t *restrict src, const char *sep, custr_t ***restrict segsp,
 		    (int)len, p)) != ERRF_OK)
 			goto done;
 
-		p += len + 1;;
+		p += len + 1;
 	}
+
+	*segsp = segs;
+	*nsegp = nsegs;
 
 done:
 	if (ret != ERRF_OK) {
@@ -166,6 +171,8 @@ trim_whitespace(custr_t *cu)
 	while (p > start) {
 		if (*p == ' ' || *p == '\t' || *p == '\n') {
 			amt++;
+		} else {
+			break;
 		}
 		p--;
 	}
@@ -449,7 +456,11 @@ add_keys(struct piv_token *restrict pt, nvlist_t *restrict pubkeys,
 		enum piv_slotid slotid = slotids[i];
 		char slotstr[9] = { 0 };
 
-		(void) snprintf(slotstr, sizeof (slotstr), "0x%02X", slotid);
+		/*
+		 * KBMAPI wants the slot names as '9a', '9c', etc --
+		 * without the 0x prefix and lowercase.
+		 */
+		(void) snprintf(slotstr, sizeof (slotstr), "%02x", slotid);
 
 		ret = piv_read_cert(pt, slotid);
 		cert = piv_get_slot(pt, slotid);
@@ -464,7 +475,7 @@ add_keys(struct piv_token *restrict pt, nvlist_t *restrict pubkeys,
 			continue;
 		} else if (cert == NULL) {
 			return (errf("PluginError", ret,
-			    "failed to read cert in slot %s", slotstr));
+			    "failed to read cert in slot 0x%s", slotstr));
 		}
 
 		if ((ret = add_pubkey(slotstr, cert, pubkeys)) != ERRF_OK ||
@@ -565,7 +576,7 @@ done:
 static errf_t *
 plugin_pivtoken_common(struct piv_token *restrict pt, const char *restrict pin,
     const char *cmd, char *const *args, custr_t *restrict in,
-    custr_t **restrict keyp)
+    custr_t **restrict outp)
 {
 	errf_t *ret = ERRF_OK;
 	custr_t *data[3] = { in, NULL, NULL };
@@ -599,14 +610,7 @@ plugin_pivtoken_common(struct piv_token *restrict pt, const char *restrict pin,
 		goto done;
 	}
 
-	extract_line(data[1]);
-	if (custr_len(data[1]) == 0) {
-		ret = errf("PluginError", NULL,
-		    "plugin did not return a recovery key");
-		goto done;
-	}
-
-	*keyp = data[1];
+	*outp = data[1];
 	data[1] = NULL;
 
 done:
@@ -656,15 +660,77 @@ set_recovery_token(kbmd_token_t *restrict kt, custr_t *restrict rtoken)
 	return (ERRF_OK);
 }
 
+static errf_t *
+parse_register_output(custr_t *restrict data, custr_t **restrict rtoken,
+    struct ebox_tpl **restrict rcfgp)
+{
+	errf_t *ret = ERRF_OK;
+	struct sshbuf *buf = NULL;
+	custr_t **lines = NULL;
+	size_t nlines = 0;
+
+	*rcfgp = NULL;
+
+	trim_whitespace(data);
+	if ((ret = split(data, "\n", &lines, &nlines)) != ERRF_OK) {
+		return (ret);
+	}
+
+	if  (nlines < 2) {
+		ret = errf("OutputError", NULL,
+		    "output had %zu lines; expected at least 2", nlines);
+		goto done;
+	}
+
+	for (size_t i = 2; i < nlines; i++) {
+		if ((ret = ecustr_append(lines[1],
+		    custr_cstr(lines[i]))) != ERRF_OK) {
+			goto done;
+		}
+	}
+
+	if ((buf = sshbuf_new()) == NULL) {
+		ret = errf("OutOfMemory", NULL, "sshbuf_new() failed");
+		goto done;
+	}
+
+	if (sshbuf_b64tod(buf, custr_cstr(lines[1])) != 0) {
+		ret = errf("PluginError", NULL,
+		    "failed to decode recovery template");
+		goto done;
+	}
+
+	if ((ret = sshbuf_get_ebox_tpl(buf, rcfgp)) != ERRF_OK) {
+		goto done;
+	}
+
+	*rtoken = lines[0];
+	lines[0] = NULL;
+
+done:
+	for (size_t i = 0; i < nlines; i++) {
+		custr_free(lines[i]);
+	}
+	free(lines);
+	sshbuf_free(buf);
+
+	return (ret);
+}
+
 errf_t *
-kbmd_register_pivtoken(kbmd_token_t *kt)
+kbmd_register_pivtoken(kbmd_token_t *restrict kt,
+    struct ebox_tpl **restrict rcfgp)
 {
 	errf_t *ret = ERRF_OK;
 	custr_t *input = NULL;
+	custr_t *output = NULL;
 	custr_t *rtoken = NULL;
+	struct ebox_tpl *rcfg = NULL;
 	strarray_t args = STRARRAY_INIT;
 
 	VERIFY(!piv_token_in_txn(kt->kt_piv));
+
+	*rcfgp = NULL;
 
 	if ((ret = ecustr_alloc(&input)) != ERRF_OK) {
 		goto done;
@@ -675,16 +741,27 @@ kbmd_register_pivtoken(kbmd_token_t *kt)
 	}
 
 	if ((ret = plugin_pivtoken_common(kt->kt_piv, kt->kt_pin,
-	    args.sar_strs[0], args.sar_strs, input, &rtoken)) != ERRF_OK) {
+	    args.sar_strs[0], args.sar_strs, input, &output)) != ERRF_OK) {
 		goto done;
 	}
 
-	ret = set_recovery_token(kt, rtoken);
+	if ((ret = parse_register_output(output, &rtoken, &rcfg)) != ERRF_OK) {
+		goto done;
+	}
+
+	if ((ret = set_recovery_token(kt, rtoken)) != ERRF_OK) {
+		goto done;
+	}
+
+	*rcfgp = rcfg;
+	rcfg = NULL;
 
 done:
 	strarray_fini(&args);
 	custr_free(rtoken);
 	custr_free(input);
+	custr_free(output);
+	ebox_tpl_free(rcfg);
 	return (ret);
 }
 

@@ -771,7 +771,8 @@ create_template(kbmd_token_t *restrict kt, const struct ebox_tpl *rcfg,
 
 errf_t *
 kbmd_create_ebox(kbmd_token_t *restrict kt, const struct ebox_tpl *rcfg,
-    const char *name, struct ebox **restrict eboxp)
+    const char *name, uint8_t **restrict keyp, size_t *restrict keylenp,
+    struct ebox **restrict eboxp)
 {
 	errf_t *ret = ERRF_OK;
 	struct ebox_tpl *tpl = NULL;
@@ -782,11 +783,13 @@ kbmd_create_ebox(kbmd_token_t *restrict kt, const struct ebox_tpl *rcfg,
 
 	*eboxp = NULL;
 
-	VERIFY(MUTEX_HELD(&piv_lock));
-
-	if ((ret = new_recovery_token(kt)) != ERRF_OK) {
+	if ((ret = zalloc(EBOX_KEY_LEN, keyp)) != ERRF_OK) {
 		return (ret);
 	}
+	*keylenp = EBOX_KEY_LEN;
+
+	VERIFY(MUTEX_HELD(&piv_lock));
+	VERIFY3P(kt->kt_rtoken, !=, NULL);
 
 	if ((ret = piv_txn_begin(kt->kt_piv)) != ERRF_OK ||
 	    (ret = piv_select(kt->kt_piv)) != ERRF_OK ||
@@ -801,6 +804,7 @@ kbmd_create_ebox(kbmd_token_t *restrict kt, const struct ebox_tpl *rcfg,
 	}
 
 	ret = set_box_name(ebox, name);
+	bcopy(key, *keyp, EBOX_KEY_LEN);
 
 done:
 	if (piv_token_in_txn(kt->kt_piv))
@@ -810,6 +814,13 @@ done:
 	freezero(rtoken, rtokenlen);
 
 	*eboxp = ebox;
+
+	if (ret != ERRF_OK) {
+		freezero(*keyp, *keylenp);
+		*keyp =  NULL;
+		*keylenp =  0;
+	}
+
 	return (ERRF_OK);
 }
 
@@ -865,6 +876,8 @@ add_recovery(const struct ebox_tpl *rcfg, boolean_t stage)
 	char *eboxstr = NULL;
 	nvlist_t *zcp_args = NULL;
 	nvlist_t *result = NULL;
+	uint8_t *key = NULL;
+	size_t keylen = 0;
 
 	if (rcfg == NULL) {
 		return (errf("ArgumentError", NULL,
@@ -886,7 +899,11 @@ add_recovery(const struct ebox_tpl *rcfg, boolean_t stage)
 	dataset = sys_pool;
 	kt = sys_piv;
 
-	if ((ret = kbmd_create_ebox(kt, rcfg, dataset, &ebox)) != ERRF_OK ||
+	if ((ret = new_recovery_token(kt)) != ERRF_OK)
+		goto done;
+
+	if ((ret = kbmd_create_ebox(kt, rcfg, dataset, &key, &keylen,
+	    &ebox)) != ERRF_OK ||
 	    (ret = ebox_to_str(ebox, &eboxstr)) != ERRF_OK)
 		goto done;
 
@@ -898,9 +915,6 @@ add_recovery(const struct ebox_tpl *rcfg, boolean_t stage)
 		goto done;
 
 	if (!stage) {
-		size_t keylen = 0;
-		const uint8_t *key = ebox_key(ebox, &keylen);
-
 		if ((ret = add_hexkey(zcp_args, "keyhex", key,
 		    keylen)) != ERRF_OK) {
 			goto done;
@@ -919,6 +933,7 @@ done:
 	free(eboxstr);
 	nvlist_free(zcp_args);
 	nvlist_free(result);
+	freezero(key, keylen);
 	return (ret); 
 }
 

@@ -82,6 +82,15 @@ function hmac_sign {
     printf "%s" "$data" | $OPENSSL dgst -sha512 -hmac -macopt hexkey:"$key_hex"
 }
 
+function auth_hdr {
+    local sig="$1"
+    local fingerprint=$(pivy-tool pubkey 9e | ssh-keygen -lf - | \
+        awk '{ print $2 }')
+    local fmt='Signature keyId="%s",algorithm="%s",headers="%s",signature="%s"\n'
+
+    printf "$fmt" "$fingerprint" "ecdsa-sha256" "Date" "$sig"
+}
+
 function get_pin {
     local guid="$1"
     local host=$(get_kbmapi_host)
@@ -101,11 +110,15 @@ function register_pivtoken {
     local url="http://$host/pivtokens"
     local date=$(http_date)
     local sig=$(piv_sign "Date: $date")
+    local auth=$(auth_hdr "$sig")
 
     /bin/cat - | $CURL -sS \
         -H "Date: $date" \
         -H "Authorization: $sig" \
-        "$url" || exit 1
+	-H "Content-Type: application/json" \
+        -H "Authorization: $auth" \
+	-d "@-" "$url" | \
+	json 'recovery_tokens[0].token' 'recovery_tokens[0].template' || exit 1
 }
 
 function replace_pivtoken {
@@ -116,10 +129,14 @@ function replace_pivtoken {
     local date=$(http_date)
     local sig=$(hmac_sign "$rtoken" "Date: $date")
 
+    # We'll want to remove the json call and have kbmd parse
+    # the JSON eventually
     /bin/cat - | $CURL -sS \
         -H "Date: $date" \
         -H "Authorization: $sig" \
-        "$url" || exit 1
+	-H "Content-Type: application/json" \
+        "$url" | \
+        json 'recovery_tokens[0].token' 'recovery_tokens[0].template' || exit 1
 }
 
 function new_rtoken {
@@ -132,6 +149,7 @@ function new_rtoken {
     $CURL -sS \
         -H "Date: $date" \
         -H "Authorization: $sig" \
+	-H "Content-Type: application/json" \
         "$url" || exit 1
 }
 

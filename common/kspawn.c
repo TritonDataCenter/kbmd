@@ -405,7 +405,7 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
 	(void) bunyan_trace(ilog, "Interacting with process", BUNYAN_T_END);
 
 	while (pfds[0].fd >= 0 || pfds[1].fd >= 0 || pfds[2].fd >= 0) {
-		errf_t *ret;
+		errf_t *ret = ERRF_OK;
 		size_t n;
 
 		rc = poll(pfds, nfds, -1);
@@ -436,6 +436,7 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
 				pfds[0].fd = -1;
 				pfds[0].events = 0;
 				pfds[0].revents = 0;
+				fds[0] = -1;
 				if (ret != ERRF_OK)
 					return (errf("IOError", ret, ""));
 			}
@@ -472,6 +473,7 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
 				pfds[i].fd = -1;
 				pfds[i].events = 0;
 				pfds[i].revents = 0;
+				fds[i] = -1;
 				if (ret != ERRF_OK)
 					return (errf("IOError", ret, ""));
 			}
