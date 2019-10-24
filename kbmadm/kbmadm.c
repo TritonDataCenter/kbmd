@@ -372,6 +372,9 @@ do_create_zpool(int argc, char **argv, nvlist_t **respp)
 		return (errf("ArgumentError", NULL, "zpool name is missing"));
 	}
 
+	argc -= optind - 1;
+	argv += optind - 1;
+
 	if ((ret = req_new(KBM_CMD_ZPOOL_CREATE, &req)) != ERRF_OK)
 		goto done;
 
@@ -409,7 +412,7 @@ do_create_zpool(int argc, char **argv, nvlist_t **respp)
 	 *	...
 	 * So we start at arg[1].
 	 */
-	for (size_t i = 1; i < argc; i++) {
+	for (size_t i = 0; i < argc; i++) {
 		if ((ret = strarray_append(&args, "%s", argv[i])) != ERRF_OK)
 			goto done;
 	}

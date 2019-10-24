@@ -316,7 +316,7 @@ exitval(pid_t pid, int *valp)
 static errf_t *
 read_fd(int fd, custr_t *restrict cu, size_t *restrict np, boolean_t esc_nl)
 {
-	errf_t *ret;
+	errf_t *ret = ERRF_OK;
 	char buf[READBUF_SZ] = { 0 };
 	ssize_t n;
 
