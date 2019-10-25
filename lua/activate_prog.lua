@@ -23,9 +23,11 @@ args = ...
 -- Due to limitations to the current zcp API, we cannot pass a raw binary
 -- value as an argument. Instead, we pass the key as a hex string and
 -- so we can convert it within the channel program
-key = args.keyhex:gsub('..', function (ch)
-    return string.char(tonumber(ch, 16))
-end
+key = args.keyhex:gsub('..',
+    function (ch)
+        return string.char(tonumber(ch, 16))
+    end
+)
 
 hasold = false
 hasnew = false
@@ -53,31 +55,31 @@ end
 newebox = zfs.get_prop(args.dataset, args.stagedebox)
 
 err = zfs.check.change_key(args.dataset, key)
-if err then
+if err ~= 0 then
     return err
 end
 
 err = zfs.check.set_prop(args.dataset, args.ebox, newebox)
-if err then
+if err ~= 0 then
     return err
 end
 
-err = zfs.check.inherity(args.dataset, args.stagedebox)
-if err then
+err = zfs.check.inherit(args.dataset, args.stagedebox)
+if err ~= 0 then
     return err
 end
 
 err = zfs.sync.change_key(args.dataset, key)
-if err then
+if err ~= 0 then
     return err
 end
 
 err = zfs.sync.set_prop(args.dataset, args.ebox, newebox)
-if err then
+if err ~= 0 then
     return err
 end
 
 err = zfs.sync.inherit(args.dataset, args.stagedebox)
-if err then
+if err ~= 0 then
     return err
 end

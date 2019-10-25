@@ -31,7 +31,7 @@ if args.keyhex then
     -- so we can convert it within the channel program
     key = args.keyhex:gsub('..', function (ch)
         return string.char(tonumber(ch, 16))
-    end
+    end)
 end
 
 for prop, source in zfs.list.properties(args.dataset) do
@@ -42,13 +42,14 @@ end
 
 -- Try to make sure everything will work before we try it
 err = zfs.check.set_prop(args.dataset, args.prop, args.ebox)
-if err then
+if err ~= 0 then
+    zfs.debug(err)
     return err
 end
 
 if key then
     err = zfs.check.change_key(args.dataset, key)
-    if err then
+    if err ~= 0 then
         return err
     end
 end
@@ -57,14 +58,14 @@ end
 -- an abundance of caution, try to undo if they do end up failing for
 -- some reason.
 err = zfs.sync.set_prop(args.dataset, args.prop, args.ebox)
-if err and oldbox then
+if err ~= 0 and oldbox then
     zfs.sync.set_prop(args.dataset, args.prop, oldbox)
     return err
 end
 
 if args.keyhex then
     err = zfs.sync.change_key(args.dataset, key)
-    if err and oldbox then
+    if err ~= 0 and oldbox then
         zfs.sync.set_prop(args.dataset, args.prop, oldbox)
     end
 end

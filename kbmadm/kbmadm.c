@@ -546,18 +546,22 @@ do_add_recovery(int argc, char **argv, nvlist_t **respp)
 {
 	const char *dataset = "zones";
 	const char *template_f = NULL;
+	const char *rtoken_str = NULL;
 	errf_t *ret = ERRF_OK;
 	nvlist_t *req = NULL, *resp = NULL;
 	int c, fd;
 	boolean_t force = B_FALSE;
 
-	while ((c = getopt(argc, argv, "d:ft:")) != -1) {
+	while ((c = getopt(argc, argv, "d:ft:r:")) != -1) {
 		switch (c) {
 		case 'd':
 			dataset = optarg;
 			break;
 		case 'f':
 			force = B_TRUE;
+			break;
+		case 'r':
+			rtoken_str = optarg;
 			break;
 		case 't':
 			template_f = optarg;
@@ -568,13 +572,25 @@ do_add_recovery(int argc, char **argv, nvlist_t **respp)
 		}
 	}
 
-	if ((ret = req_new(KBM_CMD_ADD_RECOVERY, &req)) != ERRF_OK ||
-	    (ret = envlist_add_string(req, KBM_NV_DATASET,
-	    dataset)) != ERRF_OK ||
-	    (ret = envlist_add_boolean_value(req, KBM_NV_STAGE,
-	    !force)) != ERRF_OK ||
-	    (ret = add_template_file(req, KBM_NV_TEMPLATE,
+	if ((ret = req_new(KBM_CMD_ADD_RECOVERY, &req)) != ERRF_OK) {
+		goto done;
+	}
+
+	if ((ret = envlist_add_string(req, KBM_NV_DATASET,
+	    dataset)) != ERRF_OK)
+		goto done;
+
+	if ((ret = envlist_add_boolean_value(req, KBM_NV_STAGE,
+	    !force)) != ERRF_OK)
+		goto done;
+
+	if ((ret = add_template_file(req, KBM_NV_TEMPLATE,
 	    template_f)) != ERRF_OK) {
+		goto done;
+	}
+
+	if (rtoken_str != NULL &&
+	    (ret = add_b64(req, KBM_NV_RTOKEN, rtoken_str)) != ERRF_OK) {
 		goto done;
 	}
 

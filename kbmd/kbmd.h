@@ -51,10 +51,6 @@ extern "C" {
 #define	BOX_PROP	"rfd77:ebox"
 #define	STAGEBOX_PROP	"rfd77:stagedebox"
 
-#define	ROTATE_MIN	(6U * 60U * 60U)
-#define	ROTATE_SPLAY	ROTATE_MIN
-CTASSERT(ROTATE_MIN + ROTATE_SPLAY <= UINT32_MAX);
-
 /* These come from NIST 800-73-4 */
 #define	PIN_MIN_LENGTH	6
 #define	PIN_MAX_LENGTH	8
@@ -187,7 +183,8 @@ errf_t *ebox_tpl_foreach_cfg(struct ebox_tpl *, ebox_tpl_cb_t, void *);
 errf_t *ebox_tpl_foreach_part(struct ebox_tpl_config *, ebox_tpl_part_cb_t,
     void *);
 
-errf_t *add_recovery(const struct ebox_tpl *rcfg, boolean_t stage);
+errf_t *add_recovery(const struct ebox_tpl *, boolean_t, const uint8_t *,
+    size_t);
 errf_t *activate_recovery(void);
 errf_t *remove_recovery(void);
 

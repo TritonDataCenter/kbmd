@@ -267,7 +267,7 @@ kbmd_zpool_create(const char *dataset, const uint8_t *guid,
 	VERIFY3P(kt->kt_rtoken, !=, NULL);
 
 	if ((ret = kbmd_create_ebox(kt,
-	    (rcfg_cmdline != NULL) ? rcfg : rcfg_cmdline, dataset, &key,
+	    (rcfg_cmdline != NULL) ? rcfg_cmdline : rcfg, dataset, &key,
 	    &keylen, &ebox)) != ERRF_OK) {
 		goto done;
 	}

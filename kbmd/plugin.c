@@ -630,14 +630,19 @@ set_recovery_token(kbmd_token_t *restrict kt, custr_t *restrict rtoken)
 	size_t len;
 	int rc;
 
+	if (custr_len(rtoken) == 0) {
+		return (errf("DecodeError", NULL, "empty recovery token"));
+	}
+
 	if ((buf = sshbuf_new()) == NULL)
 		return (errfno("sshbuf_new", errno, ""));
 
 	rc = sshbuf_b64tod(buf, custr_cstr(rtoken));
 	if (rc != SSH_ERR_SUCCESS) {
 		sshbuf_free(buf);
-		return (ssherrf("sshbuf_b64tod", rc,
-		    "cannot decode recovery token"));
+		ret = ssherrf("sshbuf_b64tod", rc);
+		return (errf("DecodeError", ret,
+		    "failed to decode recovery token"));
 	}
 
 	len = sshbuf_len(buf);
@@ -648,7 +653,7 @@ set_recovery_token(kbmd_token_t *restrict kt, custr_t *restrict rtoken)
 
 	rc = sshbuf_get(buf, kt->kt_rtoken, len);
 	if (rc != SSH_ERR_SUCCESS) {
-		ret = ssherrf("sshbuf_get", rc, "");
+		ret = ssherrf("sshbuf_get", rc);
 		sshbuf_free(buf);
 		freezero(kt->kt_rtoken, len);
 		kt->kt_rtoken = NULL;
@@ -856,6 +861,14 @@ post_recovery_config_update(void)
 	int fds[3] = { -1, -1, -1 };
 	int rc;
 	pid_t pid;
+
+	/*
+	 * The post recovery update script might call back into
+	 * kbmd (e.g. sysinfo -u calling kbmadm recovery list to
+	 * get the latest recovery configurations, so we do not want
+	 * to be holding the piv lock while it runs.
+	 */
+	VERIFY(!MUTEX_HELD(&piv_lock));
 
 	if ((ret = plugin_create_args(&args,
 	    POST_RECOVERY_UPDATE)) != ERRF_OK) {

@@ -27,8 +27,11 @@
 
 #define	EBOX_KEY_LEN 32
 
-extern const char *activate_prog_start;
-extern const char *add_prog_start;
+extern const char activate_prog_start;
+extern const char add_prog_start;
+
+static const char *add_prog = &add_prog_start;
+static const char *activate_prog = &activate_prog_start;
 
 struct ebox *sys_box;
 
@@ -90,13 +93,20 @@ run_channel_program(const char *pool, const char *prog, nvlist_t *args,
 	    BUNYAN_T_STRING, "pool", pool,
 	    BUNYAN_T_END);
 
-	rc = lzc_channel_program(pool, prog, INSTRLIMIT, MEMLIMIT, args,
-	    result);
-	if (rc != 0) {
+	if ((rc = lzc_channel_program(pool, prog, INSTRLIMIT, MEMLIMIT, args,
+	    result)) != 0) {
+		char *errmsg = NULL;
+
 		ret = errfno("lzc_channel_program", rc,
 		    "error running zfs channel program");
-		(void) bunyan_debug(tlog, "Channel program failed",
+
+		(void) nvlist_lookup_string(*result, "error", &errmsg);
+
+		(void) bunyan_error(tlog, "Channel program failed",
+		    BUNYAN_T_STRING, "pool", pool,
 		    BUNYAN_T_INT32, "errno", rc,
+		    (errmsg != NULL) ? BUNYAN_T_STRING : BUNYAN_T_END,
+		    "errmsg", errmsg,
 		    BUNYAN_T_END);
 	}
 
@@ -265,7 +275,8 @@ kbmd_get_ebox(const char *dataset, boolean_t stage, struct ebox **eboxp)
 
 	VERIFY(MUTEX_HELD(&piv_lock));
 
-	if (sys_box != NULL && strcmp(ebox_private(sys_box), dataset) == 0) {
+	if (!stage && sys_box != NULL &&
+	    strcmp(ebox_private(sys_box), dataset) == 0) {
 		(void) bunyan_trace(tlog, "using system ebox",
 		    BUNYAN_T_END);
 
@@ -866,12 +877,13 @@ log_tpl(const struct ebox_tpl *rcfg, boolean_t stage)
 }
 
 errf_t *
-add_recovery(const struct ebox_tpl *rcfg, boolean_t stage)
+add_recovery(const struct ebox_tpl *rcfg, boolean_t stage,
+    const uint8_t *rtoken, size_t rtokenlen)
 {
 	errf_t *ret = ERRF_OK;
 	kbmd_token_t *kt = NULL;
 	struct ebox *ebox = NULL;
-	const char *dataset = NULL;
+	char *dataset = NULL;
 	const char *propstr = stage ? STAGEBOX_PROP : BOX_PROP;
 	char *eboxstr = NULL;
 	nvlist_t *zcp_args = NULL;
@@ -883,7 +895,13 @@ add_recovery(const struct ebox_tpl *rcfg, boolean_t stage)
 		return (errf("ArgumentError", NULL,
 		    "no recovery configuration given"));
 	}
-		
+
+	if (rtoken != NULL && rtokenlen != RECOVERY_TOKEN_LEN) {
+		return (errf("ArgumentError", NULL,
+		    "incorrect recovery token size (%zu); expected %u",
+		    rtokenlen, RECOVERY_TOKEN_LEN));
+	}
+
 	if ((ret = log_tpl(rcfg, stage)) != ERRF_OK) {
 		return (ret);
 	}
@@ -899,8 +917,20 @@ add_recovery(const struct ebox_tpl *rcfg, boolean_t stage)
 	dataset = sys_pool;
 	kt = sys_piv;
 
-	if ((ret = new_recovery_token(kt)) != ERRF_OK)
-		goto done;
+	if (rtoken != NULL) {
+		uint8_t *buf = NULL;
+
+		if ((ret = zalloc(rtokenlen, &buf)) != ERRF_OK) {
+			goto done;
+		}
+
+		bcopy(rtoken, buf, rtokenlen);
+		freezero(kt->kt_rtoken, kt->kt_rtoklen);
+		kt->kt_rtoken = buf;
+	} else {
+		if ((ret = new_recovery_token(kt)) != ERRF_OK)
+			goto done;
+	}
 
 	if ((ret = kbmd_create_ebox(kt, rcfg, dataset, &key, &keylen,
 	    &ebox)) != ERRF_OK ||
@@ -921,12 +951,8 @@ add_recovery(const struct ebox_tpl *rcfg, boolean_t stage)
 		}
 	}
 
-	if ((ret = run_channel_program(sys_pool, add_prog_start, zcp_args,
-	    &result)) != ERRF_OK)
-		goto done;
+	ret = run_channel_program(sys_pool, add_prog, zcp_args, &result);
 
-	ret = post_recovery_config_update();
-	
 done:
 	mutex_exit(&piv_lock);
 	ebox_free(ebox);
@@ -934,6 +960,11 @@ done:
 	nvlist_free(zcp_args);
 	nvlist_free(result);
 	freezero(key, keylen);
+
+	if (ret == ERRF_OK) {
+		ret = post_recovery_config_update();
+	}
+
 	return (ret); 
 }
 
@@ -974,12 +1005,7 @@ activate_recovery(void)
 		goto done;
 	}
 
-	if ((ret = run_channel_program(sys_pool, activate_prog_start, zcp_args,
-	    &result)) != ERRF_OK) {
-		goto done;
-	}
-
-	ret = post_recovery_config_update();
+	ret = run_channel_program(sys_pool, activate_prog, zcp_args, &result);
 
 done:
 	if (kt != sys_piv)
@@ -989,6 +1015,11 @@ done:
 	ebox_free(ebox);
 	nvlist_free(zcp_args);
 	nvlist_free(result);
+
+	if (ret == ERRF_OK) {
+		ret = post_recovery_config_update();
+	}
+
 	return (ret);
 }
 

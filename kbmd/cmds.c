@@ -486,6 +486,9 @@ cmd_add_recovery(nvlist_t *req)
 {
 	errf_t *ret = ERRF_OK;
 	struct ebox_tpl *tpl = NULL;
+	uint8_t *rtoken = NULL;
+	size_t rtokenlen = 0;
+	uint_t n = 0;
 	boolean_t stage = B_FALSE;
 
 	if ((ret = get_request_template(req, &tpl)) != ERRF_OK)
@@ -495,13 +498,25 @@ cmd_add_recovery(nvlist_t *req)
 	    &stage)) != ERRF_OK)
 		goto done;
 
-	ret = add_recovery(tpl, stage);
+	if ((ret = envlist_lookup_uint8_array(req, KBM_NV_RTOKEN, &rtoken,
+	    &n)) != ERRF_OK) {
+		if (!errf_caused_by(ret, "ENOENT")) {
+			goto done;
+		}
+		errf_free(ret);
+		ret = ERRF_OK;
+	} else {
+		rtokenlen = n;
+	}
+
+	ret = add_recovery(tpl, stage, rtoken, rtokenlen);
 
 done:
 	nvlist_free(req);
 	ebox_tpl_free(tpl);
-	if (ret != ERRF_OK)
+	if (ret != ERRF_OK) {
 		kbmd_ret_error(ret);
+	}
 
 	kbmd_ret_nvlist(NULL);
 }

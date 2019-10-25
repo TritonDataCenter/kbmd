@@ -26,6 +26,13 @@ extern "C" {
 #endif
 
 /*
+ * The size (in bytes) of a raw (not base64 encoded) recovery token. It is
+ * based on the size allowed in an ebox which itself is limited by the
+ * size of data that the Shamir secret sharing code allows.
+ */
+#define	RECOVERY_TOKEN_LEN	32U
+
+/*
  * For most daemons, we'd set their equivalent of KBMD_RUNDIR to /var/run/xxx.
  * However, kbmd starts early enough in the boot process that /var/run isn't
  * mounted yet.  Similar to dladm and ipadm (and likely for similar reasons),
