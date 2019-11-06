@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2019, Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 
 #include <bunyan.h>
@@ -67,6 +67,7 @@ static errf_t *run_zpool_cmd(char **, const uint8_t *, size_t);
  */
 static errf_t *do_create_zpool(int, char **, nvlist_t **);
 static errf_t *do_unlock(int, char **, nvlist_t **);
+static errf_t *do_recover(int, char **, nvlist_t **);
 static errf_t *do_recovery(int, char **, nvlist_t **);
 static errf_t *do_add_recovery(int, char **, nvlist_t **);
 static errf_t *do_show_recovery(int, char **, nvlist_t **);
@@ -520,6 +521,40 @@ done:
 		(void) close(fd);
 	nvlist_free(req);
 	*respp = resp;
+	return (ret);
+}
+
+static errf_t *
+do_recover(int argc, char **argv, nvlist_t **respp)
+{
+	errf_t *ret = ERRF_OK;
+	const char *dataset = NULL;
+	ulong_t cfgnum = 0;
+	int c;
+
+	while ((c = getopt(argc, argv, "c:")) != -1) {
+		switch (c) {
+		case 'c':
+			errno = 0;
+			cfgnum = strtoul(optarg, NULL, 10);
+			if (cfgnum != 0 || cfgnum != ULONG_MAX) {
+				break;
+			}
+			if (errno != 0) {
+				err(EXIT_FAILURE,
+				    "could not parse '%s' as a number", optarg);
+			}
+			if (cfgnum > UINT32_MAX) {
+				err(EXIT_FAILURE, "%lu is too large\n");
+			}
+			break;
+		default:
+			errx(EXIT_FAILURE, "Invalid option %-c", optopt);
+		}
+	}
+
+	dataset = argv[optind - 1];
+	ret = recover(dataset, (uint32_t)cfgnum, respp);
 	return (ret);
 }
 
@@ -1067,6 +1102,13 @@ done:
 	return (ret);
 }
 
+/*
+ * Normally, 'zpool import' will mount any 'canmount=on' datasets. Encrypted
+ * datasets end up not being mounted after their keys are loaded. We currently
+ * emulate the 'canmount' behavior after the key is loaded (either via
+ * unlock or post-recovery). Like the 'zfs mount -a' behavior, this is
+ * best effort, and we silently ignore errors.
+ */
 void
 mount_zpool(const char *pool, const char *mntopts)
 {

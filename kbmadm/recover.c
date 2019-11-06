@@ -71,44 +71,6 @@ create_gl(GetLine **glp)
 }
 
 errf_t *
-do_recover(int argc, char **argv, nvlist_t **respp)
-{
-	errf_t *ret = ERRF_OK;
-	const char *dataset = NULL;
-	ulong_t cfgnum = 0;
-	int c;
-
-	while ((c = getopt(argc, argv, "c:")) != -1) {
-		switch (c) {
-		case 'c':
-			errno = 0;
-			cfgnum = strtoul(optarg, NULL, 10);
-			if (cfgnum != 0 || cfgnum != ULONG_MAX) {
-				break;
-			}
-			if (errno != 0) {
-				err(EXIT_FAILURE,
-				    "could not parse '%s' as a number", optarg);
-			}
-			if (cfgnum > UINT32_MAX) {
-				err(EXIT_FAILURE, "%lu is too large\n");
-			}
-			break;
-		default:
-			errx(EXIT_FAILURE, "Invalid option %-c", optopt);
-		}
-	}
-
-	ret = recover(dataset, (uint32_t)cfgnum, respp);
-
-	if (ret == ERRF_OK && IS_ZPOOL(dataset)) {
-		mount_zpool(dataset, NULL);
-	}
-
-	return (ret);
-}
-
-errf_t *
 recover(const char *dataset, uint32_t cfgnum, nvlist_t **respp)
 {
 	errf_t *ret = ERRF_OK;
@@ -192,6 +154,11 @@ done:
 	if (fd >= 0)
 		(void) close(fd);
 	nvlist_free(req);
+
+	if (ret == ERRF_OK && IS_ZPOOL(dataset)) {
+		mount_zpool(dataset, NULL);
+	}
+
 	*respp = resp;
 	return (ret);
 }

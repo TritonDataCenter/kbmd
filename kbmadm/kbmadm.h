@@ -57,7 +57,6 @@ struct errf *nv_door_call(int, struct nvlist *, struct nvlist **);
 struct errf *check_error(struct nvlist *);
 struct errf *assert_libzfs(void);
 
-struct errf *do_recover(int, char **, nvlist_t **);
 struct errf *recover(const char *, uint32_t, nvlist_t **);
 struct errf *show_configs(nvlist_t **, uint_t, boolean_t);
 

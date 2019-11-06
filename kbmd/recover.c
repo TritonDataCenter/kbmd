@@ -1084,6 +1084,8 @@ kbmd_recover_start(nvlist_t *req, pid_t pid)
 	(void) bunyan_trace(tlog, "kbmd_recover_start: enter",
 	    BUNYAN_T_END);
 
+	mutex_enter(&piv_lock);
+
 	if ((ret = kbmd_get_ebox(sys_pool, B_FALSE, &ebox)) != ERRF_OK)
 		goto fail;
 
@@ -1154,6 +1156,7 @@ fail:
 	}
 	nvlist_free(req);
 	mutex_exit(&recovery_lock);
+	mutex_exit(&piv_lock);
 	kbmd_ret_error(ret);
 }
 
