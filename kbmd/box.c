@@ -801,6 +801,7 @@ kbmd_create_ebox(kbmd_token_t *restrict kt, const struct ebox_tpl *rcfg,
 
 	VERIFY(MUTEX_HELD(&piv_lock));
 	VERIFY3P(kt->kt_rtoken, !=, NULL);
+	VERIFY3U(kt->kt_rtoklen, ==, RECOVERY_TOKEN_LEN);
 
 	if ((ret = piv_txn_begin(kt->kt_piv)) != ERRF_OK ||
 	    (ret = piv_select(kt->kt_piv)) != ERRF_OK ||
@@ -927,6 +928,7 @@ add_recovery(const struct ebox_tpl *rcfg, boolean_t stage,
 		bcopy(rtoken, buf, rtokenlen);
 		freezero(kt->kt_rtoken, kt->kt_rtoklen);
 		kt->kt_rtoken = buf;
+		kt->kt_rtoklen = rtokenlen;
 	} else {
 		if ((ret = new_recovery_token(kt)) != ERRF_OK)
 			goto done;
@@ -1005,7 +1007,16 @@ activate_recovery(void)
 		goto done;
 	}
 
-	ret = run_channel_program(sys_pool, activate_prog, zcp_args, &result);
+	if ((ret = run_channel_program(sys_pool, activate_prog, zcp_args,
+	    &result)) != ERRF_OK) {
+		goto done;
+	}
+
+	if (strcmp(dataset, sys_pool) == 0) {
+		ebox_free(sys_box);
+		sys_box = ebox;
+		ebox = NULL;
+	}
 
 done:
 	if (kt != sys_piv)

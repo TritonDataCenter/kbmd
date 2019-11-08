@@ -26,6 +26,8 @@
 #include <stdio.h>
 #endif
 
+static const char *kbm_cmd_str(kbm_cmd_t);
+
 errf_t *
 set_systoken(const uint8_t *guid, size_t guidlen)
 {
@@ -335,7 +337,7 @@ unlock_dataset(const char *dataset)
 	size_t keylen = 0;
 	boolean_t is_encrypted, is_locked;
 
-	(void) bunyan_debug(tlog, "Request to unlock dataset",
+	(void) bunyan_info(tlog, "Request to unlock dataset",
 	    BUNYAN_T_STRING, "dataset", dataset,
 	    BUNYAN_T_END);
 
@@ -526,8 +528,8 @@ cmd_activate_recovery(nvlist_t *req)
 {
 	errf_t *ret = ERRF_OK;
 
-	nvlist_free(req);
 	ret = activate_recovery();
+	nvlist_free(req);
 	if (ret != ERRF_OK)
 		kbmd_ret_error(ret);
 
@@ -539,11 +541,20 @@ cmd_remove_recovery(nvlist_t *req)
 {
 	errf_t *ret = ERRF_OK;
 
-	nvlist_free(req);
 	ret = remove_recovery();
+	nvlist_free(req);
 	if (ret != ERRF_OK)
 		kbmd_ret_error(ret);
 
+	kbmd_ret_nvlist(NULL);
+}
+
+static void
+cmd_replace_pivtoken(nvlist_t *req)
+{
+	errf_t *ret = ERRF_OK;
+
+	nvlist_free(req);
 	kbmd_ret_nvlist(NULL);
 }
 
@@ -576,6 +587,12 @@ dispatch_request(nvlist_t *req, pid_t req_pid)
 		    "Unable to retrieve command value"));
 	}
 
+	(void) bunyan_info(tlog, "Received request",
+	    BUNYAN_T_STRING, "request", kbm_cmd_str(cmdval),
+	    BUNYAN_T_INT32, "reqval", cmdval,
+	    BUNYAN_T_INT32, "pid", req_pid,
+	    BUNYAN_T_END);
+
 	switch ((kbm_cmd_t)cmdval) {
 	case KBM_CMD_ZFS_UNLOCK:
 		kbmd_zfs_unlock(req);
@@ -607,14 +624,34 @@ dispatch_request(nvlist_t *req, pid_t req_pid)
 	case KBM_CMD_SET_SYSPOOL:
 		kbmd_set_syspool(req);
 		break;
+	case KBM_CMD_REPLACE_PIVTOKEN:
+		cmd_replace_pivtoken(req);
+		break;
 	default:
-		(void) bunyan_info(tlog, "Unrecognized command",
-		    BUNYAN_T_INT32, "cmdval", (int32_t)cmdval,
-		    BUNYAN_T_END);
 		nvlist_free(req);
-
 		kbmd_ret_error(errf("InvalidCommand", NULL,
 		    "Invalid command value %d", cmdval));
 		break;
+	}
+}
+
+static const char *
+kbm_cmd_str(kbm_cmd_t cmd)
+{
+#define	STR(_x) case _x: return (#_x)
+	switch (cmd) {
+	STR(KBM_CMD_ZFS_UNLOCK);
+	STR(KBM_CMD_ZPOOL_CREATE);
+	STR(KBM_CMD_RECOVER_START);
+	STR(KBM_CMD_RECOVER_RESP);
+	STR(KBM_CMD_ADD_RECOVERY);
+	STR(KBM_CMD_LIST_RECOVERY);
+	STR(KBM_CMD_ACTIVATE_RECOVERY);
+	STR(KBM_CMD_CANCEL_RECOVERY);
+	STR(KBM_CMD_SET_SYSTOKEN);
+	STR(KBM_CMD_SET_SYSPOOL);
+	STR(KBM_CMD_REPLACE_PIVTOKEN);
+	default:
+		return ("<unknown>");
 	}
 }

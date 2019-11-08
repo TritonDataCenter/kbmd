@@ -75,14 +75,16 @@ static errf_t *do_activate_recovery(int, char **, nvlist_t **);
 static errf_t *do_cancel_recovery(int, char **, nvlist_t **);
 static errf_t *do_set_syspool(int, char **, nvlist_t **);
 static errf_t *do_set_systoken(int, char **, nvlist_t **);
+static errf_t *do_replace_pivtoken(int, char **, nvlist_t **);
 
 static cmd_t cmd_tbl[] = {
 	{ "create-zpool", do_create_zpool },
 	{ "recover", do_recover },
-	{ "unlock", do_unlock },
 	{ "recovery", do_recovery },
+	{ "replace-pivtoken", do_replace_pivtoken },
 	{ "set-syspool", do_set_syspool },
 	{ "set-systoken", do_set_systoken },
+	{ "unlock", do_unlock },
 };
 
 static cmd_t recovery_cmd_tbl[] = {
@@ -97,16 +99,19 @@ usage(void)
 {
 	const char *name = getprogname();
 
+/*BEGIN CSTYLED*/
 	(void) fprintf(stderr,
 	    "Usage: %1$s create-zpool [-g guid] [-t template] -- "
 	    "<zpool create args>...\n"
 	    "       %1$s recover [-n] dataset\n"
 	    "       %1$s unlock [-r] [dataset...]\n"
-	    "       %1$s recovery add [-f] [-d dataset] [-t template]\n"
+	    "       %1$s recovery add [-f] [-d dataset] [-t template] [-r recovery_token]\n"
 	    "       %1$s recovery list [-p]\n"
             "       %1$s recovery activate [-d dataset]\n"
-	    "       %1$s recovery cancel [-d dataset]\n",
+	    "       %1$s recovery cancel [-d dataset]\n"
+	    "       %1$s replace-pivtoken\n",
 	    name);
+/*END CSTYLED*/
 
 	exit(EXIT_FAILURE);
 }
@@ -870,6 +875,31 @@ do_set_systoken(int argc, char **argv, nvlist_t **nvlp)
 	if ((ret = req_new(KBM_CMD_SET_SYSTOKEN, &req)) != ERRF_OK ||
 	    (ret = envlist_add_uint8_array(req, KBM_NV_GUID, guid,
 	    GUID_LEN)) != ERRF_OK) {
+		goto done;
+	}
+
+	if ((ret = assert_door(&fd)) != ERRF_OK ||
+	    (ret = nv_door_call(fd, req, &resp)) != ERRF_OK) {
+		goto done;
+	}
+
+	ret = check_error(resp);
+
+done:
+	nvlist_free(req);
+	*nvlp = resp;
+	return (ret);
+}
+
+static errf_t *
+do_replace_pivtoken(int argc, char **argv, nvlist_t **nvlp)
+{
+	errf_t *ret = ERRF_OK;
+	nvlist_t *req = NULL;
+	nvlist_t *resp = NULL;
+	int fd = -1;
+
+	if ((ret = req_new(KBM_CMD_REPLACE_PIVTOKEN, &req)) != ERRF_OK) {
 		goto done;
 	}
 

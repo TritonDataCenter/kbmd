@@ -243,7 +243,7 @@ kbmd_zpool_create(const char *dataset, const uint8_t *guid,
 		(void) strlcpy(gstr, "(not given)", sizeof (gstr));
 	}
 
-	(void) bunyan_debug(tlog, "Received KBM_CMD_ZPOOL_CREATE request",
+	(void) bunyan_info(tlog, "Received zpool create request",
 	    BUNYAN_T_STRING, "dataset",
 	    (dataset != NULL) ? dataset : "(not set)",
 	    BUNYAN_T_STRING, "guid", gstr,

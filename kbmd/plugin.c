@@ -594,6 +594,11 @@ plugin_pivtoken_common(struct piv_token *restrict pt, const char *restrict pin,
 	    (ret = ecustr_appendc(data[0], '\n')) != ERRF_OK)
 		goto done;
 
+	(void) bunyan_debug(tlog, "Running plugin",
+	    BUNYAN_T_STRING, "plugin", cmd,
+	    BUNYAN_T_STRING, "subcmd", args[1],
+	    BUNYAN_T_END);
+
 	if ((ret = spawn(cmd, args, _environ, &pid, fds)) != ERRF_OK ||
 	    (ret = interact(pid, fds, custr_cstr(data[0]), custr_len(data[0]),
 	    &data[1], &exitval, B_FALSE)) != ERRF_OK) {

@@ -1081,7 +1081,8 @@ kbmd_recover_start(nvlist_t *req, pid_t pid)
 	recovery_t *r = NULL;
 	uint32_t cfgnum = 0;
 
-	(void) bunyan_trace(tlog, "kbmd_recover_start: enter",
+	(void) bunyan_info(tlog, "Request to start recovery",
+	    BUNYAN_T_INT32, "request_pid", pid,
 	    BUNYAN_T_END);
 
 	mutex_enter(&piv_lock);
@@ -1182,6 +1183,10 @@ kbmd_recover_resp(nvlist_t *req, pid_t pid)
 		   id);
 		kbmd_ret_error(ret);
 	}
+
+	(void) bunyan_info(tlog, "Received recovery response",
+	    BUNYAN_T_INT32, "request_pid", pid,
+	    BUNYAN_T_END);
 
 	recover_common(req, r);
 }
@@ -1306,7 +1311,7 @@ kbmd_list_recovery(nvlist_t *req)
 	nvlist_t *resp = NULL;
 	nvlist_t *cfgs = NULL;
 
-	(void) bunyan_trace(tlog, "kbmd_show_recovery: enter", BUNYAN_T_END);
+	(void) bunyan_info(tlog, "List recovery config request", BUNYAN_T_END);
 
 	if ((ret = envlist_alloc(&resp)) != ERRF_OK ||
 	    (ret = envlist_alloc(&cfgs)) != ERRF_OK) {

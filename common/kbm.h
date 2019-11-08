@@ -160,6 +160,7 @@ typedef enum kbm_cmd {
 	KBM_CMD_CANCEL_RECOVERY,
 	KBM_CMD_SET_SYSPOOL,
 	KBM_CMD_SET_SYSTOKEN,
+	KBM_CMD_REPLACE_PIVTOKEN,
 } kbm_cmd_t;
 
 typedef enum kbm_act {
