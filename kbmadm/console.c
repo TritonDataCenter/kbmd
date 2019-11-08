@@ -16,6 +16,8 @@
 #include <bunyan.h>
 #include <errno.h>
 #include <libcustr.h>
+#include <stdio.h>
+#include <termio.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/sysmsg_impl.h>
@@ -207,6 +209,83 @@ done:
 		*cusp = cus;
 	} else {
 		custr_free(cus);
+	}
+
+	return (ret);
+}
+
+static void
+echo_off(int fd, struct termio *tinfo)
+{
+	struct termio ti;
+
+	if (ioctl(fd, TCGETA, tinfo) < 0) {
+		return;
+	}
+
+	ti = *tinfo;
+	ti.c_lflag &= ~(ECHO | ECHOE | ECHONL);
+	(void) ioctl(fd, TCSETAF, &ti);
+}
+
+static void
+echo_on(int fd, struct termio *tinfo)
+{
+	(void) ioctl(fd, TFSETAW, tinfo);
+}
+
+errf_t *
+read_input(FILE *restrict f, boolean_t echo, size_t lim, custr_t **respp)
+{
+	errf_t *ret = ERRF_OK;
+	custr_t *resp = NULL;
+	void (*saved_handler)(void);
+	int tty_fd;
+	int c;
+	struct termio tty_save = { 0 };
+
+	if ((ret = ecustr_alloc(&resp)) != ERRF_OK) {
+		return (ret);
+	}
+
+	saved_handler = signal(SIGINT, SIG_IGN);
+
+	tty_fd = fileno(f);
+
+	if (!echo) {
+		echo_off(tty_fd, &tty_save);
+	}
+
+	while ((c = getc(f)) != EOF) {
+		if (c == '\n' || c == '\r') {
+			break;
+		}
+
+		/*
+		 * Silently discard any input beyond the specified limit
+		 * (if given).
+		 */
+		if (lim > 0 && custr_len(resp) < lim) {
+			if ((ret = ecustr_appendc(resp, (char)c)) != ERRF_OK) {
+				break;
+			}
+		}
+	}
+	(void) fputc('\n', f);
+
+	if (!echo) {
+		echo_on(tty_fd, &tty_save);
+	}
+
+	if (ret == ERRF_OK && custr_len(resp) > 0) {
+		*respp = resp;
+	} else {
+		*respp = NULL;
+		custr_free(resp);
+	}
+
+	if (saved_handler != SIG_ERR) {
+		(void) signal(SIGINT, saved_handler);
 	}
 
 	return (ret);
