@@ -40,25 +40,16 @@ struct errf;
 struct nvlist;
 struct libzfs_handle;
 
-/*
- * XXX: These 4 symbols are for testing only
- */
-extern char *guidstr;
-extern char *recovery;
-extern char *template_f;
-extern uint8_t guid[];
-
-
 extern struct libzfs_handle *g_zfs;
 
 struct errf *req_new(kbm_cmd_t, struct nvlist **);
-struct errf *assert_door(int *);
+struct errf *assert_door(void);
 struct errf *nv_door_call(int, struct nvlist *, struct nvlist **);
 struct errf *check_error(struct nvlist *);
 struct errf *assert_libzfs(void);
 struct errf *send_request(struct nvlist * restrict, struct nvlist ** restrict);
 
-struct errf *recover(const char *, uint32_t, nvlist_t **);
+struct errf *recover(const char *, uint32_t);
 struct errf *show_configs(nvlist_t **, uint_t, boolean_t);
 
 void mount_zpool(const char *, const char *);

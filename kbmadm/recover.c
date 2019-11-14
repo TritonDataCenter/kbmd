@@ -71,12 +71,11 @@ create_gl(GetLine **glp)
 }
 
 errf_t *
-recover(const char *dataset, uint32_t cfgnum, nvlist_t **respp)
+recover(const char *dataset, uint32_t cfgnum)
 {
 	errf_t *ret = ERRF_OK;
 	nvlist_t *req = NULL, *resp = NULL;
 	uint32_t id;
-	int fd = -1;
 
 	if (isatty(STDIN_FILENO) == 0) {
 		if (errno != ENOTTY) {
@@ -103,9 +102,7 @@ recover(const char *dataset, uint32_t cfgnum, nvlist_t **respp)
 		goto done;
 	}
 
-	if ((ret = assert_door(&fd)) != ERRF_OK ||
-	    (ret = nv_door_call(fd, req, &resp)) != ERRF_OK ||
-	    (ret = check_error(resp)) != ERRF_OK) {
+	if ((ret = send_request(req, &resp)) != ERRF_OK) {
 		goto done;
 	}
 
@@ -145,21 +142,19 @@ recover(const char *dataset, uint32_t cfgnum, nvlist_t **respp)
 		nvlist_free(resp);
 		resp = NULL;
 
-		if ((ret = nv_door_call(fd, req, &resp)) != ERRF_OK ||
-		    (ret = check_error(resp)) != ERRF_OK)
+		if ((ret = send_request(req, &resp)) != ERRF_OK) {
 			goto done;
+		}
 	}
 
 done:
-	if (fd >= 0)
-		(void) close(fd);
 	nvlist_free(req);
+	nvlist_free(resp);
 
 	if (ret == ERRF_OK && IS_ZPOOL(dataset)) {
 		mount_zpool(dataset, NULL);
 	}
 
-	*respp = resp;
 	return (ret);
 }
 

@@ -42,12 +42,10 @@
 
 typedef struct cmd {
 	const char *name;
-	errf_t *(*cmd)(int, char **, nvlist_t **);
+	errf_t *(*cmd)(int, char **);
 } cmd_t;
 
-char *recovery;
-uint8_t guid[GUID_LEN];
-
+static int door_fd = -1;
 libzfs_handle_t *g_zfs;
 
 static errf_t *parse_guid(const char *, uint8_t guid[GUID_LEN]);
@@ -55,27 +53,17 @@ static errf_t *read_template_file(const char *, char **);
 static errf_t *read_template_stdin(char **);
 static errf_t *run_zpool_cmd(char **, const uint8_t *, size_t);
 
-/*
- * Unfortunately, errf_t's assume that the file and func values are
- * string pointers to static strings (e.g. __FILE__ or __func__).  However,
- * this breaks down when sending errf_ts over a door.  Since the lifetime
- * of both the function and file strings must be at least as long as the
- * errf_t, we pass back the nvlist_t response which contains the strings
- * so that it can be freed after we do any processing on the errf_t.
- * In the case of errx, we end up leaking the nvlist_t, but only because
- * we end up exiting before we have a chance to explicitly free the nvlist_t.
- */
-static errf_t *do_create_zpool(int, char **, nvlist_t **);
-static errf_t *do_unlock(int, char **, nvlist_t **);
-static errf_t *do_recover(int, char **, nvlist_t **);
-static errf_t *do_recovery(int, char **, nvlist_t **);
-static errf_t *do_add_recovery(int, char **, nvlist_t **);
-static errf_t *do_show_recovery(int, char **, nvlist_t **);
-static errf_t *do_activate_recovery(int, char **, nvlist_t **);
-static errf_t *do_cancel_recovery(int, char **, nvlist_t **);
-static errf_t *do_set_syspool(int, char **, nvlist_t **);
-static errf_t *do_set_systoken(int, char **, nvlist_t **);
-static errf_t *do_replace_pivtoken(int, char **, nvlist_t **);
+static errf_t *do_create_zpool(int, char **);
+static errf_t *do_unlock(int, char **);
+static errf_t *do_recover(int, char **);
+static errf_t *do_recovery(int, char **);
+static errf_t *do_add_recovery(int, char **);
+static errf_t *do_show_recovery(int, char **);
+static errf_t *do_activate_recovery(int, char **);
+static errf_t *do_cancel_recovery(int, char **);
+static errf_t *do_set_syspool(int, char **);
+static errf_t *do_set_systoken(int, char **);
+static errf_t *do_replace_pivtoken(int, char **);
 
 static cmd_t cmd_tbl[] = {
 	{ "create-zpool", do_create_zpool },
@@ -120,7 +108,6 @@ int
 main(int argc, char *argv[])
 {
 	errf_t *ret = ERRF_OK;
-	nvlist_t *resp = NULL;
 	size_t i;
 
 	alloc_init();
@@ -148,7 +135,7 @@ main(int argc, char *argv[])
 
 	for (i = 0; i < ARRAY_SIZE(cmd_tbl); i++) {
 		if (strcmp(argv[1], cmd_tbl[i].name) == 0) {
-			ret = cmd_tbl[i].cmd(argc - 1, argv + 1, &resp);
+			ret = cmd_tbl[i].cmd(argc - 1, argv + 1);
 			break;
 		}
 	}
@@ -161,7 +148,9 @@ main(int argc, char *argv[])
 	if (ret != ERRF_OK)
 		errfx(EXIT_FAILURE, ret, "%s command failed", cmd_tbl[i].name);
 
-	nvlist_free(resp);
+	if (door_fd >= 0)
+		VERIFY0(close(door_fd));
+
 	return (0);
 }
 
@@ -313,7 +302,7 @@ done:
 }
 
 static errf_t *
-do_create_zpool(int argc, char **argv, nvlist_t **respp)
+do_create_zpool(int argc, char **argv)
 {
 	errf_t *ret = ERRF_OK;
 	nvlist_t *req = NULL;
@@ -430,8 +419,8 @@ do_create_zpool(int argc, char **argv, nvlist_t **respp)
 
 done:
 	nvlist_free(req);
+	nvlist_free(resp);
 	strarray_fini(&args);
-	*respp = resp;
 	return (ret);
 }
 
@@ -458,31 +447,30 @@ run_zpool_cmd(char **argv, const uint8_t *key, size_t keylen)
 }
 
 static errf_t *
-unlock_dataset(int fd, const char *dataset, nvlist_t **respp)
+unlock_dataset(const char *dataset)
 {
 	errf_t *ret = ERRF_OK;
 	nvlist_t *req = NULL;
+	nvlist_t *resp = NULL;
 
 	if ((ret = req_new(KBM_CMD_ZFS_UNLOCK, &req)) != ERRF_OK ||
 	    (ret = envlist_add_string(req, KBM_NV_ZFS_DATASET,
-	    dataset)) != ERRF_OK ||
-	    (ret = nv_door_call(fd, req, respp)) != ERRF_OK) {
+	    dataset)) != ERRF_OK) {
 		goto done;
 	}
 
-	ret = check_error(*respp);
+	ret = send_request(req, &resp);
 
 done:
 	nvlist_free(req);
+	nvlist_free(resp);
 	return (ret);
 }
 
 static errf_t *
-do_unlock(int argc, char **argv, nvlist_t **respp)
+do_unlock(int argc, char **argv)
 {
 	errf_t *ret;
-	nvlist_t *req = NULL, *resp = NULL;
-	int fd = -1;
 	int c;
 	boolean_t recover_if_needed = B_FALSE;
 
@@ -502,21 +490,15 @@ do_unlock(int argc, char **argv, nvlist_t **respp)
 		return (errf("ArgumentError", NULL, "dataset name is missing"));
 	}
 
-	if ((ret = assert_door(&fd)) != ERRF_OK)
-		goto done;
-
 	for (int i = 1; i < argc; i++) {
-		ret = unlock_dataset(fd, argv[i], &resp);
+		ret = unlock_dataset(argv[i]);
 		if (ret != ERRF_OK) {
 			if (errf_caused_by(ret, "RecoveryNeeded") &&
 			    recover_if_needed) {
 				warnfx(ret, "");
 				errf_free(ret);
 
-				nvlist_free(resp);
-				resp = NULL;
-
-				ret = recover(argv[i], 0, respp);
+				ret = recover(argv[i], 0);
 			}
 
 			if (ret != ERRF_OK) {
@@ -524,24 +506,17 @@ do_unlock(int argc, char **argv, nvlist_t **respp)
 			}
 		}
 
-		nvlist_free(resp);
-		resp = NULL;
-
 		if (IS_ZPOOL(argv[i])) {
 			mount_zpool(argv[i], NULL);
 		}
 	}
 
 done:
-	if (fd >= 0)
-		VERIFY0(close(fd));
-	nvlist_free(req);
-	*respp = resp;
 	return (ret);
 }
 
 static errf_t *
-do_recover(int argc, char **argv, nvlist_t **respp)
+do_recover(int argc, char **argv)
 {
 	errf_t *ret = ERRF_OK;
 	const char *dataset = NULL;
@@ -573,12 +548,12 @@ do_recover(int argc, char **argv, nvlist_t **respp)
 		return (errf("ArgumentError", NULL, "dataset name is missing"));
 	}
 
-	ret = recover(dataset, (uint32_t)cfgnum, respp);
+	ret = recover(dataset, (uint32_t)cfgnum);
 	return (ret);
 }
 
 static errf_t *
-do_recovery(int argc, char **argv, nvlist_t **respp)
+do_recovery(int argc, char **argv)
 {
 	if (argc < 2) {
 		(void) fprintf(stderr, "missing subcommand\n");
@@ -588,7 +563,7 @@ do_recovery(int argc, char **argv, nvlist_t **respp)
 	for (size_t i = 0; i < ARRAY_SIZE(recovery_cmd_tbl); i++) {
 		if (strcmp(argv[1], recovery_cmd_tbl[i].name) != 0)
 			continue;
-		return (recovery_cmd_tbl[i].cmd(argc - 1, argv + 1, respp));
+		return (recovery_cmd_tbl[i].cmd(argc - 1, argv + 1));
 	}
 
 	return (errf("Unknown command", NULL,
@@ -596,13 +571,14 @@ do_recovery(int argc, char **argv, nvlist_t **respp)
 }
 
 static errf_t *
-do_add_recovery(int argc, char **argv, nvlist_t **respp)
+do_add_recovery(int argc, char **argv)
 {
 	const char *dataset = "zones";
 	const char *template_f = NULL;
 	const char *rtoken_str = NULL;
 	errf_t *ret = ERRF_OK;
 	nvlist_t *req = NULL;
+	nvlist_t *resp = NULL;
 	int c;
 	boolean_t force = B_FALSE;
 
@@ -649,15 +625,16 @@ do_add_recovery(int argc, char **argv, nvlist_t **respp)
 		goto done;
 	}
 
-	ret = send_request(req, respp);
+	ret = send_request(req, &resp);
 
 done:
 	nvlist_free(req);
+	nvlist_free(resp);
 	return (ret);
 }
 
 static errf_t *
-do_show_recovery(int argc, char **argv, nvlist_t **respp)
+do_show_recovery(int argc, char **argv)
 {
 	errf_t *ret = ERRF_OK;
 	nvlist_t *req = NULL;
@@ -734,12 +711,12 @@ do_show_recovery(int argc, char **argv, nvlist_t **respp)
 
 done:
 	nvlist_free(req);
-	*respp = resp;
+	nvlist_free(resp);
 	return (ret);
 }
 
 static errf_t *
-do_activate_recovery(int argc, char **argv, nvlist_t **nvlp)
+do_activate_recovery(int argc, char **argv)
 {
 	errf_t *ret = ERRF_OK;
 	const char *dataset = NULL;
@@ -758,31 +735,24 @@ do_activate_recovery(int argc, char **argv, nvlist_t **nvlp)
 	    dataset)) != ERRF_OK)
 		goto done;
 
-	ret = send_request(req, nvlp);
+	ret = send_request(req, &resp);
 
 done:
 	nvlist_free(req);
+	nvlist_free(resp);
 	return (ret);
 }
 
 static errf_t *
-do_cancel_recovery(int argc, char **argv, nvlist_t **nvlp)
+do_cancel_recovery(int argc, char **argv)
 {
 	errf_t *ret = ERRF_OK;
 	const char *dataset = NULL;
 	nvlist_t *req = NULL;
-	int c;
+	nvlist_t *resp = NULL;
 
-	while ((c = getopt(argc, argv, "d:")) != -1) {
-		switch (c) {
-		case 'd':
-			dataset = optarg;
-			break;
-		case '?':
-			(void) fprintf(stderr, "Unknown option -%c\n",
-			    optopt);
-			usage();
-		}
+	if ((dataset = argv[optind]) == NULL) {
+		return (errf("ArgumentError", NULL, "dataset name is missing"));
 	}
 
 	if ((ret = req_new(KBM_CMD_CANCEL_RECOVERY, &req)) != ERRF_OK)
@@ -793,20 +763,20 @@ do_cancel_recovery(int argc, char **argv, nvlist_t **nvlp)
 	    dataset)) != ERRF_OK)
 		goto done;
 
-	ret = send_request(req, nvlp);
+	ret = send_request(req, &resp);
 
 done:
 	nvlist_free(req);
+	nvlist_free(resp);
 	return (ret);
 }
 
 static errf_t *
-do_set_syspool(int argc, char **argv, nvlist_t **nvlp)
+do_set_syspool(int argc, char **argv)
 {
 	errf_t *ret = ERRF_OK;
 	nvlist_t *req = NULL;
 	nvlist_t *resp = NULL;
-	int fd = -1;
 
 	if (argc < 2) {
 		usage();
@@ -818,27 +788,21 @@ do_set_syspool(int argc, char **argv, nvlist_t **nvlp)
 		goto done;
 	}
 
-	if ((ret = assert_door(&fd)) != ERRF_OK ||
-	    (ret = nv_door_call(fd, req, &resp)) != ERRF_OK) {
-		goto done;
-	}
-
-	ret = check_error(resp);
+	ret = send_request(req, &resp);
 
 done:
 	nvlist_free(req);
-	*nvlp = resp;
+	nvlist_free(resp);
 	return (ret);
 }
 
 static errf_t *
-do_set_systoken(int argc, char **argv, nvlist_t **nvlp)
+do_set_systoken(int argc, char **argv)
 {
 	errf_t *ret = ERRF_OK;
 	nvlist_t *req = NULL;
 	nvlist_t *resp = NULL;
 	uint8_t guid[GUID_LEN] = { 0 };
-	int fd = -1;
 
 	if (argc < 2) {
 		errx(EXIT_FAILURE, "No GUID supplied");
@@ -853,41 +817,30 @@ do_set_systoken(int argc, char **argv, nvlist_t **nvlp)
 		goto done;
 	}
 
-	if ((ret = assert_door(&fd)) != ERRF_OK ||
-	    (ret = nv_door_call(fd, req, &resp)) != ERRF_OK) {
-		goto done;
-	}
-
-	ret = check_error(resp);
+	ret = send_request(req, &resp);
 
 done:
 	nvlist_free(req);
-	*nvlp = resp;
+	nvlist_free(resp);
 	return (ret);
 }
 
 static errf_t *
-do_replace_pivtoken(int argc, char **argv, nvlist_t **nvlp)
+do_replace_pivtoken(int argc, char **argv)
 {
 	errf_t *ret = ERRF_OK;
 	nvlist_t *req = NULL;
 	nvlist_t *resp = NULL;
-	int fd = -1;
 
 	if ((ret = req_new(KBM_CMD_REPLACE_PIVTOKEN, &req)) != ERRF_OK) {
 		goto done;
 	}
 
-	if ((ret = assert_door(&fd)) != ERRF_OK ||
-	    (ret = nv_door_call(fd, req, &resp)) != ERRF_OK) {
-		goto done;
-	}
-
-	ret = check_error(resp);
+	ret = send_request(req, &resp);
 
 done:
 	nvlist_free(req);
-	*nvlp = resp;
+	nvlist_free(resp);
 	return (ret);
 }
 
@@ -1001,19 +954,13 @@ failnoclose:
 }
 
 errf_t *
-assert_door(int *fdp)
+assert_door(void)
 {
-	static int door_fd = -1;
-	int fd;
-
 	if (door_fd != -1) {
-		*fdp = door_fd;
 		return (ERRF_OK);
 	}
 
-	if ((fd = open(KBMD_DOOR_PATH, O_RDONLY|O_CLOEXEC)) >= 0) {
-		door_fd = fd;
-		*fdp = door_fd;
+	if ((door_fd = open(KBMD_DOOR_PATH, O_RDONLY|O_CLOEXEC)) >= 0) {
 		return (ERRF_OK);
 	}
 
@@ -1112,25 +1059,18 @@ done:
  * that do a single request/response over the kbmd door.
  */
 errf_t *
-send_request(nvlist_t *restrict req, nvlist_t **restrict resp)
+send_request(nvlist_t *restrict req, nvlist_t **restrict respp)
 {
 	errf_t *ret = ERRF_OK;
-	int fd = -1;
 
-	*resp = NULL;
+	*respp = NULL;
 
-	if ((ret = assert_door(&fd)) != ERRF_OK ||
-	    (ret = nv_door_call(fd, req, resp)) != ERRF_OK) {
-		goto done;
+	if ((ret = assert_door()) != ERRF_OK ||
+	    (ret = nv_door_call(door_fd, req, respp)) != ERRF_OK) {
+		return (ret);
 	}
 
-	ret = check_error(*resp);
-
-done:
-	if (fd >= 0) {
-		VERIFY0(close(fd));
-	}
-
+	ret = check_error(*respp);
 	return (ret);
 }
 
