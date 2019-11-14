@@ -104,11 +104,11 @@ usage(void)
 	    "Usage: %1$s create-zpool [-g guid] [-t template] -- "
 	    "<zpool create args>...\n"
 	    "       %1$s recover [-n] dataset\n"
-	    "       %1$s unlock [-r] [dataset...]\n"
-	    "       %1$s recovery add [-f] [-d dataset] [-t template] [-r recovery_token]\n"
+	    "       %1$s unlock [-r] dataset\n"
+	    "       %1$s recovery add [-f] [-t template] [-r recovery_token] dataset\n"
 	    "       %1$s recovery list [-p]\n"
-            "       %1$s recovery activate [-d dataset]\n"
-	    "       %1$s recovery cancel [-d dataset]\n"
+            "       %1$s recovery activate dataset\n"
+	    "       %1$s recovery cancel dataset\n"
 	    "       %1$s replace-pivtoken\n",
 	    name);
 /*END CSTYLED*/
@@ -323,11 +323,10 @@ do_create_zpool(int argc, char **argv, nvlist_t **respp)
 	const char *guidstr = NULL;
 	const char *template_f = NULL;
 	uint_t keylen = 0;
-	int fd = -1;
 	int c;
 	strarray_t args = STRARRAY_INIT;
 
-	while ((c = getopt(argc, argv, "dg:t:")) != -1) {
+	while ((c = getopt(argc, argv, "g:t:")) != -1) {
 		switch (c) {
 		case 'g':
 			guidstr = optarg;
@@ -394,10 +393,10 @@ do_create_zpool(int argc, char **argv, nvlist_t **respp)
 		goto done;	
 
 	if ((ret = envlist_add_string(req, KBM_NV_DATASET,
-	    dataset)) != ERRF_OK ||
-	    (ret = assert_door(&fd)) != ERRF_OK ||
-	    (ret = nv_door_call(fd, req, &resp)) ||
-	    (ret = check_error(resp)) != ERRF_OK)
+	    dataset)) != ERRF_OK)
+		goto done;
+
+	if ((ret = send_request(req, &resp)) != ERRF_OK)
 		goto done;
 
 	/*
@@ -430,8 +429,6 @@ do_create_zpool(int argc, char **argv, nvlist_t **respp)
 	ret = run_zpool_cmd(args.sar_strs, key, keylen);
 
 done:
-	if (fd >= 0)
-		(void) close(fd);
 	nvlist_free(req);
 	strarray_fini(&args);
 	*respp = resp;
@@ -461,18 +458,22 @@ run_zpool_cmd(char **argv, const uint8_t *key, size_t keylen)
 }
 
 static errf_t *
-unlock_dataset(int fd, const char *dataset)
+unlock_dataset(int fd, const char *dataset, nvlist_t **respp)
 {
 	errf_t *ret = ERRF_OK;
-	nvlist_t *req = NULL, *resp = NULL;
+	nvlist_t *req = NULL;
 
 	if ((ret = req_new(KBM_CMD_ZFS_UNLOCK, &req)) != ERRF_OK ||
 	    (ret = envlist_add_string(req, KBM_NV_ZFS_DATASET,
 	    dataset)) != ERRF_OK ||
-	    (ret = nv_door_call(fd, req, &resp)) != ERRF_OK)
-		return (ret);
+	    (ret = nv_door_call(fd, req, respp)) != ERRF_OK) {
+		goto done;
+	}
 
-	ret = check_error(resp);
+	ret = check_error(*respp);
+
+done:
+	nvlist_free(req);
 	return (ret);
 }
 
@@ -497,16 +498,23 @@ do_unlock(int argc, char **argv, nvlist_t **respp)
 		}
 	}
 
+	if (argv[optind] == NULL) {
+		return (errf("ArgumentError", NULL, "dataset name is missing"));
+	}
+
 	if ((ret = assert_door(&fd)) != ERRF_OK)
 		goto done;
 
 	for (int i = 1; i < argc; i++) {
-		ret = unlock_dataset(fd, argv[i]);
+		ret = unlock_dataset(fd, argv[i], &resp);
 		if (ret != ERRF_OK) {
 			if (errf_caused_by(ret, "RecoveryNeeded") &&
 			    recover_if_needed) {
 				warnfx(ret, "");
 				errf_free(ret);
+
+				nvlist_free(resp);
+				resp = NULL;
 
 				ret = recover(argv[i], 0, respp);
 			}
@@ -516,6 +524,9 @@ do_unlock(int argc, char **argv, nvlist_t **respp)
 			}
 		}
 
+		nvlist_free(resp);
+		resp = NULL;
+
 		if (IS_ZPOOL(argv[i])) {
 			mount_zpool(argv[i], NULL);
 		}
@@ -523,7 +534,7 @@ do_unlock(int argc, char **argv, nvlist_t **respp)
 
 done:
 	if (fd >= 0)
-		(void) close(fd);
+		VERIFY0(close(fd));
 	nvlist_free(req);
 	*respp = resp;
 	return (ret);
@@ -558,7 +569,10 @@ do_recover(int argc, char **argv, nvlist_t **respp)
 		}
 	}
 
-	dataset = argv[optind - 1];
+	if ((dataset = argv[optind - 1]) == NULL) {
+		return (errf("ArgumentError", NULL, "dataset name is missing"));
+	}
+
 	ret = recover(dataset, (uint32_t)cfgnum, respp);
 	return (ret);
 }
@@ -588,15 +602,12 @@ do_add_recovery(int argc, char **argv, nvlist_t **respp)
 	const char *template_f = NULL;
 	const char *rtoken_str = NULL;
 	errf_t *ret = ERRF_OK;
-	nvlist_t *req = NULL, *resp = NULL;
-	int c, fd;
+	nvlist_t *req = NULL;
+	int c;
 	boolean_t force = B_FALSE;
 
-	while ((c = getopt(argc, argv, "d:ft:r:")) != -1) {
+	while ((c = getopt(argc, argv, "ft:r:")) != -1) {
 		switch (c) {
-		case 'd':
-			dataset = optarg;
-			break;
 		case 'f':
 			force = B_TRUE;
 			break;
@@ -610,6 +621,10 @@ do_add_recovery(int argc, char **argv, nvlist_t **respp)
 			(void) fprintf(stderr, "Invalid flag -%c\n", optopt);
 			usage();
 		}
+	}
+
+	if ((dataset = argv[optind]) == NULL) {
+		return (errf("ArgumentError", NULL, "dataset name is missing"));
 	}
 
 	if ((ret = req_new(KBM_CMD_ADD_RECOVERY, &req)) != ERRF_OK) {
@@ -634,18 +649,11 @@ do_add_recovery(int argc, char **argv, nvlist_t **respp)
 		goto done;
 	}
 
-	if ((ret = assert_door(&fd)) != ERRF_OK ||
-	    (ret = nv_door_call(fd, req, &resp)) != ERRF_OK) {
-		goto done;
-	}
-
-	ret = check_error(resp);
+	ret = send_request(req, respp);
 
 done:
 	nvlist_free(req);
-	*respp = resp;
 	return (ret);
-
 }
 
 static errf_t *
@@ -656,7 +664,6 @@ do_show_recovery(int argc, char **argv, nvlist_t **respp)
 	nvlist_t *resp = NULL;
 	nvlist_t *cfgs = NULL;
 	nvpair_t *pair = NULL;
-	int fd = -1;
 	int c;
 	boolean_t opt_p = B_FALSE;
 	boolean_t opt_v = B_FALSE;
@@ -678,14 +685,8 @@ do_show_recovery(int argc, char **argv, nvlist_t **respp)
 	if ((ret = req_new(KBM_CMD_LIST_RECOVERY, &req)) != ERRF_OK)
 		return (ret);
 
-	if ((ret = assert_door(&fd)) != ERRF_OK ||
-	    (ret = nv_door_call(fd, req, &resp)) != ERRF_OK) {
+	if ((ret = send_request(req, &resp)) != ERRF_OK)
 		goto done;
-	}
-
-	if (resp == NULL || (ret = check_error(resp)) != ERRF_OK) {
-		goto done;
-	}
 
 	if ((ret = envlist_lookup_nvlist(resp, KBM_NV_CONFIGS,
 	    &cfgs)) != ERRF_OK) {
@@ -744,19 +745,9 @@ do_activate_recovery(int argc, char **argv, nvlist_t **nvlp)
 	const char *dataset = NULL;
 	nvlist_t *req = NULL;
 	nvlist_t *resp = NULL;
-	int fd = -1;
-	int c;
 
-	while ((c = getopt(argc, argv, "d:")) != -1) {
-		switch (c) {
-		case 'd':
-			dataset = optarg;
-			break;
-		case '?':
-			(void) fprintf(stderr, "Unknown option -%c\n",
-			    optopt);
-			usage();
-		}
+	if ((dataset = argv[1]) == NULL) {
+		return (errf("ArgumentError", NULL, "dataset name is missing"));
 	}
 
 	if ((ret = req_new(KBM_CMD_ACTIVATE_RECOVERY, &req)) != ERRF_OK)
@@ -767,17 +758,10 @@ do_activate_recovery(int argc, char **argv, nvlist_t **nvlp)
 	    dataset)) != ERRF_OK)
 		goto done;
 
-	if ((ret = assert_door(&fd)) != ERRF_OK ||
-	    (ret = nv_door_call(fd, req, &resp)) != ERRF_OK)
-		goto done;
-
-	ret = check_error(resp);
+	ret = send_request(req, nvlp);
 
 done:
-	if (fd >= 0)
-		(void) close(fd);
 	nvlist_free(req);
-	*nvlp = resp;
 	return (ret);
 }
 
@@ -787,8 +771,6 @@ do_cancel_recovery(int argc, char **argv, nvlist_t **nvlp)
 	errf_t *ret = ERRF_OK;
 	const char *dataset = NULL;
 	nvlist_t *req = NULL;
-	nvlist_t *resp = NULL;
-	int fd = -1;
 	int c;
 
 	while ((c = getopt(argc, argv, "d:")) != -1) {
@@ -811,17 +793,10 @@ do_cancel_recovery(int argc, char **argv, nvlist_t **nvlp)
 	    dataset)) != ERRF_OK)
 		goto done;
 
-	if ((ret = assert_door(&fd)) != ERRF_OK ||
-	    (ret = nv_door_call(fd, req, &resp)) != ERRF_OK)
-		goto done;
-
-	ret = check_error(resp);
+	ret = send_request(req, nvlp);
 
 done:
-	if (fd >= 0)
-		(void) close(fd);
 	nvlist_free(req);
-	*nvlp = resp;
 	return (ret);
 }
 
@@ -1129,6 +1104,33 @@ done:
 		VERIFY0(munmap(da.rbuf, da.rsize));
 	}
 	umem_free(buf, buflen);
+	return (ret);
+}
+
+/*
+ * Wrapper around assert_door, nv_door_call(), and check_error() for commands
+ * that do a single request/response over the kbmd door.
+ */
+errf_t *
+send_request(nvlist_t *restrict req, nvlist_t **restrict resp)
+{
+	errf_t *ret = ERRF_OK;
+	int fd = -1;
+
+	*resp = NULL;
+
+	if ((ret = assert_door(&fd)) != ERRF_OK ||
+	    (ret = nv_door_call(fd, req, resp)) != ERRF_OK) {
+		goto done;
+	}
+
+	ret = check_error(*resp);
+
+done:
+	if (fd >= 0) {
+		VERIFY0(close(fd));
+	}
+
 	return (ret);
 }
 
