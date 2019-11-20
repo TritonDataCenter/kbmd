@@ -26,7 +26,16 @@
 #include <stdio.h>
 #endif
 
+static errf_t *get_dataset(nvlist_t *, const char **);
 static const char *kbm_cmd_str(kbm_cmd_t);
+
+/*
+ * As a general note, all of the cmd_xxx functions defer freeing their
+ * request nvlist_t until immediately before they return, even though
+ * in many cases, it could be done sooner in the functions. This is deliberate
+ * so that the contents of the original nvlist are available for debugging
+ * purposes through the (almost) entire life of the function.
+ */
 
 errf_t *
 set_systoken(const uint8_t *guid, size_t guidlen)
@@ -87,11 +96,7 @@ kbmd_set_systoken(nvlist_t *req)
 
 done:
 	nvlist_free(req);
-	if (ret != ERRF_OK) {
-		kbmd_ret_error(ret);
-	}
-
-	kbmd_ret_nvlist(NULL);
+	kbmd_return(ret, NULL);
 }
 
 static errf_t *
@@ -244,11 +249,7 @@ kbmd_set_syspool(nvlist_t *req)
 
 done:
 	nvlist_free(req);
-	if (ret != ERRF_OK) {
-		kbmd_ret_error(ret);
-	}
-
-	kbmd_ret_nvlist(NULL);
+	kbmd_return(ret, NULL);
 }
 
 errf_t *
@@ -379,25 +380,16 @@ void
 kbmd_zfs_unlock(nvlist_t *req)
 {
 	errf_t *ret = ERRF_OK;
-	char *dataset = NULL;
+	const char *dataset = NULL;
 
-	if ((ret = envlist_lookup_string(req, KBM_NV_ZFS_DATASET,
-	    &dataset)) != ERRF_OK) {
-		(void) bunyan_warn(tlog,
-		    "Could not extract dataset name for unlock request",
-		    BUNYAN_T_END);
+	if ((ret = get_dataset(req, &dataset)) != ERRF_OK)
 		goto done;
-	}
 
 	ret = unlock_dataset(dataset);
 
 done:
 	nvlist_free(req);
-	if (ret != ERRF_OK) {
-		kbmd_ret_error(ret);
-	}
-
-	kbmd_ret_nvlist(NULL);
+	kbmd_return(ret, NULL);
 }
 
 static errf_t *
@@ -426,7 +418,7 @@ static void
 cmd_zpool_create(nvlist_t *req)
 {
 	errf_t *ret = ERRF_OK;
-	char *dataset = NULL;
+	const char *dataset = NULL;
 	struct ebox_tpl *rcfg = NULL;
 	uint8_t *guid = NULL;
 	uint8_t *rtoken = NULL;
@@ -434,9 +426,7 @@ cmd_zpool_create(nvlist_t *req)
 	uint_t rtoklen = 0;
 	nvlist_t *resp = NULL;
 
-	if ((ret = envlist_lookup_string(req, KBM_NV_DATASET,
-	    &dataset)) != ERRF_OK &&
-	    !errf_caused_by(ret, "ENOENT"))
+	if ((ret = get_dataset(req, &dataset)) != ERRF_OK)
 		goto done;
 
 	if ((ret = envlist_lookup_uint8_array(req, KBM_NV_GUID, &guid,
@@ -475,23 +465,22 @@ cmd_zpool_create(nvlist_t *req)
 
 done:
 	nvlist_free(req);
-	ebox_tpl_free(rcfg);
-	if (ret != ERRF_OK) {
-		nvlist_free(resp);
-		kbmd_ret_error(ret);
-	}
-	kbmd_ret_nvlist(resp);
+	kbmd_return(ret, resp);
 }
 
 static void
 cmd_add_recovery(nvlist_t *req)
 {
 	errf_t *ret = ERRF_OK;
+	const char *dataset = NULL;
 	struct ebox_tpl *tpl = NULL;
 	uint8_t *rtoken = NULL;
 	size_t rtokenlen = 0;
 	uint_t n = 0;
 	boolean_t stage = B_FALSE;
+
+	if ((ret = get_dataset(req, &dataset)) != ERRF_OK)
+		goto done;
 
 	if ((ret = get_request_template(req, &tpl)) != ERRF_OK)
 		goto done;
@@ -511,58 +500,58 @@ cmd_add_recovery(nvlist_t *req)
 		rtokenlen = n;
 	}
 
-	ret = add_recovery(tpl, stage, rtoken, rtokenlen);
+	ret = add_recovery(dataset, tpl, stage, rtoken, rtokenlen);
 
 done:
 	nvlist_free(req);
 	ebox_tpl_free(tpl);
-	if (ret != ERRF_OK) {
-		kbmd_ret_error(ret);
-	}
-
-	kbmd_ret_nvlist(NULL);
+	kbmd_return(ret, NULL);
 }
 
 static void
 cmd_activate_recovery(nvlist_t *req)
 {
 	errf_t *ret = ERRF_OK;
+	const char *dataset = NULL;
 
-	ret = activate_recovery();
+	if ((ret = get_dataset(req, &dataset)) != ERRF_OK)
+		goto done;
+
+	ret = activate_recovery(dataset);
+
+done:
 	nvlist_free(req);
-	if (ret != ERRF_OK)
-		kbmd_ret_error(ret);
-
-	kbmd_ret_nvlist(NULL);
+	kbmd_return(ret, NULL);
 }
 
 static void
 cmd_remove_recovery(nvlist_t *req)
 {
 	errf_t *ret = ERRF_OK;
+	const char *dataset = NULL;
 
-	ret = remove_recovery();
+	if ((ret = get_dataset(req, &dataset)) != ERRF_OK)
+		goto done;
+
+	ret = remove_recovery(dataset);
+
+done:
 	nvlist_free(req);
-	if (ret != ERRF_OK)
-		kbmd_ret_error(ret);
-
-	kbmd_ret_nvlist(NULL);
+	kbmd_return(ret, NULL);
 }
 
 static void
 cmd_replace_pivtoken(nvlist_t *req)
 {
-	errf_t *ret = ERRF_OK;
-
 	nvlist_free(req);
-	kbmd_ret_nvlist(NULL);
+	kbmd_return(ERRF_OK, NULL);
 }
 
 void
 dispatch_request(nvlist_t *req, pid_t req_pid)
 {
 
-	errf_t *ret;
+	errf_t *ret = ERRF_OK;
 	int cmdval;
 
 #ifdef DEBUG
@@ -582,9 +571,11 @@ dispatch_request(nvlist_t *req, pid_t req_pid)
 		    BUNYAN_T_INT32, "errno", errf_errno(ret),
 		    BUNYAN_T_STRING, "errmsg", errf_message(ret),
 		    BUNYAN_T_END);
-		nvlist_free(req);
-		kbmd_ret_error(errf("InvalidCommand", ret,
-		    "Unable to retrieve command value"));
+
+		ret = errf("InvalidCommand", ret,
+		    "Unable to retrieve command value");
+
+		goto fail;
 	}
 
 	(void) bunyan_info(tlog, "Received request",
@@ -628,11 +619,45 @@ dispatch_request(nvlist_t *req, pid_t req_pid)
 		cmd_replace_pivtoken(req);
 		break;
 	default:
-		nvlist_free(req);
-		kbmd_ret_error(errf("InvalidCommand", NULL,
-		    "Invalid command value %d", cmdval));
+		(void) bunyan_info(tlog, "Unknown command value in request",
+		    BUNYAN_T_INT32, "cmdval", cmdval,
+		    BUNYAN_T_END);
+
+		ret = errf("InvalidCommand", NULL, "Invalid command value %d",
+		    cmdval);
 		break;
 	}
+
+fail:
+	nvlist_free(req);
+	kbmd_return(ret, NULL);
+}
+
+static errf_t *
+get_dataset(nvlist_t *req, const char **dsp)
+{
+	errf_t *ret = ERRF_OK;
+	char *dataset = NULL;
+
+	ret = envlist_lookup_string(req, KBM_NV_ZFS_DATASET, &dataset);
+	if (ret != ERRF_OK) {
+		int cmdval;
+
+		/*
+		 * If we get here, we should have already verified we have
+		 * a valid command.
+		 */
+		VERIFY0(nvlist_lookup_int32(req, KBM_NV_CMD, &cmdval));
+
+		(void) bunyan_warn(tlog,
+		    "Failed to lookup dataset name for command",
+		    BUNYAN_T_STRING, "cmd", kbm_cmd_str((kbm_cmd_t)cmdval),
+		    BUNYAN_T_END);
+		return (errf("ArgumentError", ret, "dataset name is missing"));
+	}
+
+	*dsp = dataset;
+	return (ERRF_OK);
 }
 
 static const char *

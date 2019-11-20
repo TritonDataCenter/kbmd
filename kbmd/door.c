@@ -37,12 +37,21 @@ struct retbuf {
 };
 
 static int door_fd = -1;
+
+/*
+ * We allocate a per-door server thread buffer used to hold the packed
+ * nvlist. TSD is used so that we can attach a cleanup function if the
+ * thread is terminated. Unfortunately, there is no other way after a
+ * door_return(3C) call for the thread to clean up after itself. The
+ * alternative would be to put the contents on the stack, but that seems
+ * rife with peril if our responses get too large.
+ */
 static thread_key_t retkey = THR_ONCE_KEY;
 
 /*
  * A packed nvlist suitable for use with door_return(3C).  Created during
- * kbmd startup (by kbmd_door_setup) as a return value of last resort that
- * should always be available to return.
+ * kbmd startup (by kbmd_door_setup -- before we start the door server) as a
+ * return value of last resort that should always be available to return.
  */
 static char *generr;
 static size_t generr_sz;
@@ -104,13 +113,44 @@ retbuf_free(void *p)
 	umem_free(b, sizeof (*b));
 }
 
+static void __NORETURN
+kbmd_ret_generr(errf_t *restrict errval, nvlist_t *restrict resp)
+{
+
+	/*
+	 * If we end up here, things are pretty dire, but we'll try to log
+	 * what info we can.
+	 */
+	if (errval != ERRF_OK) {
+		(void) bunyan_error(tlog,
+		    "Returning general error",
+		    BUNYAN_T_STRING, "err_name", errf_name(errval),
+		    BUNYAN_T_STRING, "err_msg", errf_message(errval),
+		    BUNYAN_T_STRING, "err_func", errf_function(errval),
+		    BUNYAN_T_STRING, "err_file", errf_file(errval),
+		    BUNYAN_T_UINT32, "err_line", errf_line(errval),
+		    BUNYAN_T_END);
+	} else {
+		(void) bunyan_error(tlog, "Returning general error",
+		    BUNYAN_T_END);
+	}
+
+	session_log_end();
+	errf_free(errval);
+	nvlist_free(resp);
+	VERIFY0(door_return(generr, generr_sz, NULL, 0));
+
+	/* NOTREACHED */
+	abort();
+}
+
 /*
  * Packs and returns the given nvlist to the door caller.  resp may be NULL
  * if there is no data to return to the caller.
  * Note: the nvlist is freed by kbmd_ret_nvlist, and the request log instance
  * is freed.
  */
-void __NORETURN
+static void __NORETURN
 kbmd_ret_nvlist(nvlist_t *resp)
 {
 	errf_t *ret = ERRF_OK;
@@ -120,11 +160,10 @@ kbmd_ret_nvlist(nvlist_t *resp)
 
 	/*
 	 * Even if there is no data to return, we want to indicate
-	 * success.
+	 * success to the client.
 	 */
-	if (resp == NULL && (ret = envlist_alloc(&resp)) != ERRF_OK) {
-		kbmd_ret_error(ret);
-	}
+	if (resp == NULL && (ret = envlist_alloc(&resp)) != ERRF_OK)
+		kbmd_ret_generr(ret, resp);
 
 	if ((ret = envlist_lookup_boolean_value(resp, KBM_NV_SUCCESS,
 	    &success)) != ERRF_OK) {
@@ -135,15 +174,17 @@ kbmd_ret_nvlist(nvlist_t *resp)
 			(void) bunyan_error(tlog,
 			    "Failed to set success in response",
 			    BUNYAN_T_END);
-			goto do_generr;
+			kbmd_ret_generr(ret, resp);
 		}
 	}
 
+#ifdef DEBUG
 	flockfile(stderr);
 	fprintf(stderr, "Response:\n");
 	nvlist_print(stderr, resp);
 	fputc('\n', stderr);
 	funlockfile(stderr);
+#endif
 
 	VERIFY0(nvlist_size(resp, &nvlen, NV_ENCODE_NATIVE));
 	if (nvlen > DOOR_RET_MAX) {
@@ -151,7 +192,7 @@ kbmd_ret_nvlist(nvlist_t *resp)
 		    "Tried to return more than DOOR_RET_MAX",
 		    BUNYAN_T_UINT64, "retsize", nvlen,
 		    BUNYAN_T_END);
-		goto do_generr;
+		kbmd_ret_generr(ret, resp);
 	}
 
 	VERIFY0(thr_keycreate_once(&retkey, retbuf_free));
@@ -168,40 +209,45 @@ kbmd_ret_nvlist(nvlist_t *resp)
 	VERIFY0(nvlist_xpack(resp, &b->rt_buf, &b->rt_len, NV_ENCODE_NATIVE,
 	    &b->rt_nvalloc));
 
-	(void) bunyan_debug(tlog, "Returning success", BUNYAN_T_END);
+	/*
+	 * If a failure, kbmd_ret_error has already logged the failure,
+	 * so we only want to log success here.
+	 */
+	if (success)
+		(void) bunyan_debug(tlog, "Returning success", BUNYAN_T_END);
 
 	nvlist_free(resp);
 	session_log_end();
-	door_return(b->rt_buf, nvlen, NULL, 0);
-	/* NOTREACHED */
-	abort();
+	VERIFY0(door_return(b->rt_buf, nvlen, NULL, 0));
 
-do_generr:
-	nvlist_free(resp);
-	session_log_end();
-	door_return(generr, generr_sz, NULL, 0);
 	/* NOTREACHED */
 	abort();
 }
 
-void __NORETURN
+static void __NORETURN
 kbmd_ret_error(errf_t *ef)
 {
 	nvlist_t *nvret = NULL;
+
+	/*
+	 * This can be slightly confusing, but ef is the error we're trying
+	 * to return. However, it's possible (though hopefully unlikely) we'll
+	 * encounter an error while trying to construct the error reply. Most
+	 * likely this would be an out of memory condition. 'ret' reflects
+	 * out ability to create the error response for 'ef'.
+	 */
 	errf_t *ret = ERRF_OK;
 
-	if ((ret = envlist_alloc(&nvret)) != ERRF_OK) {
-		goto fail;
-	}
+	if ((ret = envlist_alloc(&nvret)) != ERRF_OK ||
+	    (ret = envlist_add_boolean_value(nvret, KBM_NV_SUCCESS,
+	    B_FALSE)) != ERRF_OK ||
+	    (ret = envlist_add_errf(nvret, KBM_NV_ERRMSG, ef)) != ERRF_OK)
+		kbmd_ret_generr(ret, nvret);
 
-	if (nvlist_add_boolean_value(nvret, KBM_NV_SUCCESS, B_FALSE) != 0) {
-		goto fail;
-	}
-
-	if ((ret = envlist_add_errf(nvret, KBM_NV_ERRMSG, ef)) != ERRF_OK) {
-		goto fail;
-	}
-
+	/*
+	 * We can't easily log the whole error chain, so we just log the
+	 * topmost one -- however the client gets the entire error chain.
+	 */
 	(void) bunyan_debug(tlog, "Returning error",
 	    BUNYAN_T_STRING, "err_name", errf_name(ef),
 	    BUNYAN_T_STRING, "err_msg", errf_message(ef),
@@ -210,23 +256,39 @@ kbmd_ret_error(errf_t *ef)
 	    BUNYAN_T_UINT32, "err_line", errf_line(ef),
 	    BUNYAN_T_END);
 
-	kbmd_ret_nvlist(nvret);
-
-fail:
 	errf_free(ef);
-	errf_free(ret);
-	nvlist_free(nvret);
-	door_return(generr, generr_sz, NULL, 0);
-	/* NOTREACHED */
-	abort();
+	kbmd_ret_nvlist(nvret);
+}
+
+/*
+ * Return function used by the various commands. If no errors are present,
+ * we return sucess with the given response (which may be NULL if there is
+ * no data to return to the client). If any errors are present, we ignore
+ * the contents of resp and send back the error. The assumption is that
+ * if resp is non-NULL it at best contains a partially constructed response
+ * that failed somewhere mid-way through handling the request. That is in
+ * the case of an error, we don't send any additional data beyond the
+ * data in errval.
+ *
+ * In all cases, both errval and resp are freed prior to calling door_return.
+ */
+void __NORETURN
+kbmd_return(errf_t *restrict errval, nvlist_t *restrict resp)
+{
+	if (errval != ERRF_OK) {
+		nvlist_free(resp);
+		kbmd_ret_error(errval);
+	}
+
+	kbmd_ret_nvlist(resp);
 }
 
 static void
 kbmd_door_server(void *cookie, char *argp, size_t arg_size, door_desc_t *dp,
     uint_t n_desc)
 {
-	door_cred_t dcred;
-	nvlist_t *req;
+	door_cred_t dcred = { 0 };
+	nvlist_t *req = NULL;
 	errf_t *ret = ERRF_OK;
 	int rc;
 
@@ -237,7 +299,7 @@ kbmd_door_server(void *cookie, char *argp, size_t arg_size, door_desc_t *dp,
 		    BUNYAN_T_INT32, "errno", (int32_t)errno,
 		    BUNYAN_T_STRING, "errmsg", strerror(errno),
 		    BUNYAN_T_END);
-		door_return(generr, generr_sz, NULL, 0);
+		VERIFY0(door_return(generr, generr_sz, NULL, 0));
 	}
 
 	session_log_start(&dcred);
@@ -249,7 +311,7 @@ kbmd_door_server(void *cookie, char *argp, size_t arg_size, door_desc_t *dp,
 		    BUNYAN_T_STRING, "errmsg", errf_message(ret),
 		    BUNYAN_T_END);
 		errf_free(ret);
-		door_return(generr, generr_sz, NULL, 0);
+		VERIFY0(door_return(generr, generr_sz, NULL, 0));
 	}
 
 	dispatch_request(req, dcred.dc_pid);

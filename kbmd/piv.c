@@ -31,6 +31,13 @@
 
 #define	ADMIN_KEY_LENGTH 24
 
+/*
+ * How long after initializing a PIV token we wait for the initialized PIV
+ * token to appear (in ms).
+ */
+uint_t init_timeout = 2000;
+uint_t init_wait = 500;
+
 kbmd_token_t *sys_piv;
 
 /*
@@ -809,6 +816,40 @@ done:
 	return (ERRF_OK);
 }
 
+/*
+ * After initializing a new piv token, it may perform a reset. Poll every
+ * init_wait ms (with an overall timeout of init_timeout ms) until
+ * the PIV token appears.
+ */
+static errf_t *
+get_new_piv(uint8_t guid[GUID_LEN], struct piv_token **pkp)
+{
+	errf_t *ret = ERRF_OK;
+	struct timespec wait_amt = { .tv_nsec = MSEC2NSEC(init_wait) };
+	hrtime_t deadline = gethrtime() + MSEC2NSEC(init_timeout);
+
+	ASSERT(MUTEX_HELD(&piv_lock));
+
+	while (gethrtime() < deadline) {
+		if ((ret = piv_find(piv_ctx, guid, GUID_LEN, pkp)) == ERRF_OK) {
+			return (ret);
+		}
+
+		if (!errf_caused_by(ret, "NotFoundError")) {
+			return (errf("PollError", ret,
+			    "Error while waiting for new PIV token to online"));
+		}
+
+		errf_free(ret);
+		ret = ERRF_OK;
+
+		(void) nanosleep(&wait_amt, NULL);
+	}
+
+	return (errf("TimeoutError", ret,
+	    "Timed out waiting for PIV token to come online"));
+}
+
 errf_t *
 kbmd_setup_token(kbmd_token_t **restrict ktp, struct ebox_tpl **restrict rcfgp)
 {
@@ -834,9 +875,13 @@ kbmd_setup_token(kbmd_token_t **restrict ktp, struct ebox_tpl **restrict rcfgp)
 	 * Once the token has been initalized, re-read all the info with
 	 * the new GUID, etc.
 	 */
-	if ((ret = piv_find(piv_ctx, guid, sizeof (guid), &pk)) != ERRF_OK) {
+	if ((ret = get_new_piv(guid, &pk)) != ERRF_OK) {
+		char gstr[GUID_STR_LEN] = { 0 };
+
+		guidtohex(guid, gstr, sizeof (gstr));
+
 		ret = errf("SetupError", ret,
-		    "could not find token after initialization");
+		    "could not find token '%s' after initialization", gstr);
 		goto fail;
 	}
 

@@ -1066,11 +1066,7 @@ done:
 	mutex_exit(&recovery_lock);
 	(void) bunyan_key_remove(tlog, "recover_id");
 
-	if (ret == ERRF_OK) {
-		kbmd_ret_nvlist(resp);
-	} else {
-		kbmd_ret_error(ret);
-	}
+	kbmd_return(ret, resp);
 }
 
 void
@@ -1158,7 +1154,7 @@ fail:
 	nvlist_free(req);
 	mutex_exit(&recovery_lock);
 	mutex_exit(&piv_lock);
-	kbmd_ret_error(ret);
+	kbmd_return(ret, NULL);
 }
 
 void
@@ -1172,7 +1168,7 @@ kbmd_recover_resp(nvlist_t *req, pid_t pid)
 	    &id)) != ERRF_OK) {
 		ret = errf("InternalError", ret,
 		    "response is missing a recovery id");
-		kbmd_ret_error(ret);
+		kbmd_return(ret, NULL);
 	}
 
 	mutex_enter(&recovery_lock);
@@ -1181,7 +1177,7 @@ kbmd_recover_resp(nvlist_t *req, pid_t pid)
 		ret = errf("NotFoundError", NULL,
 		   "no matching recovery session for id %" PRIu32 " found",
 		   id);
-		kbmd_ret_error(ret);
+		kbmd_return(ret, NULL);
 	}
 
 	(void) bunyan_info(tlog, "Received recovery response",
@@ -1315,7 +1311,7 @@ kbmd_list_recovery(nvlist_t *req)
 
 	if ((ret = envlist_alloc(&resp)) != ERRF_OK ||
 	    (ret = envlist_alloc(&cfgs)) != ERRF_OK) {
-		kbmd_ret_error(ret);
+		kbmd_return(ret, NULL);
 	}
 
 	mutex_enter(&piv_lock);
@@ -1331,11 +1327,5 @@ done:
 	mutex_exit(&piv_lock);
 
 	nvlist_free(cfgs);
-
-	if (ret == ERRF_OK) {
-		kbmd_ret_nvlist(resp);
-	}
-
-	nvlist_free(resp);
-	kbmd_ret_error(ret);
+	kbmd_return(ret, resp);
 }

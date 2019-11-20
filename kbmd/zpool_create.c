@@ -106,6 +106,9 @@ try_guid(const uint8_t *guid, const uint8_t *rtoken, uint_t rtokenlen,
 
 	ASSERT(MUTEX_HELD(&piv_lock));
 
+	if (guid == NULL)
+		return (ret);
+
 	if ((ret = kbmd_find_byguid(guid, GUID_LEN, &kt)) != ERRF_OK)
 		return (ret);
 
@@ -203,19 +206,19 @@ kbmd_assert_token(const uint8_t *guid, const uint8_t *rtoken, size_t rtokenlen,
 		return (ERRF_OK);
 	}
 
-	if ((ret = try_guid(guid, rtoken, rtokenlen, ktp)) == ERRF_OK) {
+	if ((ret = try_guid(guid, rtoken, rtokenlen, ktp)) != ERRF_OK) {
+		return (ret);
+	} else if (guid != NULL) {
+		ASSERT3P(*ktp, !=, NULL);
+
 		(void) bunyan_debug(tlog, "Using supplied PIV token",
 		    BUNYAN_T_STRING, "piv_guid",
 		    piv_token_guid_hex((*ktp)->kt_piv),
 		    BUNYAN_T_END);
+
 		kbmd_set_token(*ktp);
 		return (ERRF_OK);
 	}
-
-	if (!errf_caused_by(ret, "NotFoundError")) {
-		return (ret);
-	}
-	errf_free(ret);
 
 	if ((ret = kbmd_setup_token(ktp, rcfgp)) != ERRF_OK)
 		return (ret);
@@ -249,15 +252,12 @@ kbmd_zpool_create(const char *dataset, const uint8_t *guid,
 	    BUNYAN_T_STRING, "guid", gstr,
 	    BUNYAN_T_END);
 
-	mutex_enter(&piv_lock);
-
-	if (dataset == NULL)
-		dataset = sys_pool;
 	if (dataset == NULL) {
-		ret = errf("ParameterError", NULL,
-		    "system zpool not set and no dataset name given");
-		goto done;
+		return (errf("ParameterError", NULL,
+		    "system zpool not set and no dataset name given"));
 	}
+
+	mutex_enter(&piv_lock);
 
 	if ((ret = kbmd_assert_token(guid, rtoken, rtokenlen,
 	    &kt, &rcfg)) != ERRF_OK ||

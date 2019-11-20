@@ -30,6 +30,8 @@
 #include "kbmd.h"
 #include "pivy/errf.h"
 
+#define	EVENT_EXIT 1
+
 typedef struct kbm_event {
 	refhash_link_t	ke_link;
 	int		ke_fd;
@@ -208,6 +210,10 @@ kbmd_event_loop(void *arg __unused)
 		case PORT_SOURCE_FD:
 			fd_event(pe.portev_user, pe.portev_events);
 			break;
+		case PORT_SOURCE_ALERT:
+			(void) bunyan_info(tlog, "Received port alert",
+			    BUNYAN_T_END);
+			break;
 		}
 	}
 
@@ -241,6 +247,8 @@ kbmd_event_init(int dfd)
 void
 kbmd_event_fini(void)
 {
+	VERIFY0(port_alert(evport, PORT_ALERT_SET, EVENT_EXIT, NULL));
+
 	int rc = thr_join(event_tid, NULL, NULL);
 
 	if (rc != 0)

@@ -105,8 +105,7 @@ extern char *plugin_dir;
 void kbmd_dfatal(int, const char *, ...) __NORETURN;
 int kbmd_door_setup(const char *);
 
-void kbmd_ret_nvlist(struct nvlist *) __NORETURN;
-void kbmd_ret_error(errf_t *) __NORETURN;
+void kbmd_return(errf_t *restrict, struct nvlist *restrict) __NORETURN;
 
 void dispatch_request(struct nvlist *, pid_t);
 errf_t *kbmd_zpool_create(const char *, const uint8_t *,
@@ -183,10 +182,10 @@ errf_t *ebox_tpl_foreach_cfg(struct ebox_tpl *, ebox_tpl_cb_t, void *);
 errf_t *ebox_tpl_foreach_part(struct ebox_tpl_config *, ebox_tpl_part_cb_t,
     void *);
 
-errf_t *add_recovery(const struct ebox_tpl *, boolean_t, const uint8_t *,
-    size_t);
-errf_t *activate_recovery(void);
-errf_t *remove_recovery(void);
+errf_t *add_recovery(const char *, const struct ebox_tpl *, boolean_t,
+    const uint8_t *, size_t);
+errf_t *activate_recovery(const char *);
+errf_t *remove_recovery(const char *);
 
 /* zfs_unlock.c */
 errf_t *load_key(const char *, const uint8_t *, size_t);

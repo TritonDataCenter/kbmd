@@ -355,19 +355,21 @@ do_create_zpool(int argc, char **argv)
 	 * We first need to reset our state for getopt(3C) after processing
 	 * our arguments.
 	 */
-	argc -= optind;
-	argv += optind;
+	argc -= optind - 1;
+	argv += optind - 1;
 	optind = 1;
 
 	while ((c = getopt(argc, argv, ":fndBR:m:o:O:t:")) != -1)
 		;
 
-	if ((dataset = argv[optind]) == NULL) {
+	argc -= optind - 1;
+	argv += optind - 1;
+
+	if ((dataset = argv[1]) == NULL) {
 		return (errf("ArgumentError", NULL, "zpool name is missing"));
 	}
 
-	argc -= optind - 1;
-	argv += optind - 1;
+	fprintf(stderr, "dataset = %s\n", dataset);
 
 	if ((ret = req_new(KBM_CMD_ZPOOL_CREATE, &req)) != ERRF_OK)
 		goto done;

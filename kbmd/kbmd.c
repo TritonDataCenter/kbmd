@@ -146,6 +146,14 @@ main(int argc, char *argv[])
 
 	(void) bunyan_debug(tlog, "Starting up", BUNYAN_T_END);
 
+	if (getenv("KBMD_APDU_DEBUG") != NULL) {
+		piv_full_apdu_debug = B_TRUE;
+
+		(void) bunyan_warn(tlog,
+		    "APDU debugging enabled, sensitive data may be logged!",
+		    BUNYAN_T_END);
+	}
+
 	/*
 	 * XXX: Should a failure to get the CN UUID be fatal (i.e.
 	 * should we care about the return value?

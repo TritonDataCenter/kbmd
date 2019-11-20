@@ -396,44 +396,6 @@ ebox_tpl_foreach_cfg(struct ebox_tpl *tpl, ebox_tpl_cb_t cb, void *arg)
 	return (ERRF_OK);
 }
 
-#if 0
-/*
- * Place the key from src ebox (unlocked prior to calling) into a
- * new ebox w/ a new template
- */
-errf_t *
-kbmd_ebox_clone(struct ebox *restrict src, struct ebox **restrict dstp,
-    const struct ebox_tpl *restrict tpl, kbmd_token_t *restrict kt)
-{
-	errf_t *ret = ERRF_OK;
-	struct ebox *ebox = NULL;
-	const char *name = NULL;
-	const uint8_t *key = NULL;
-       	uint8_t *rtoken = NULL;
-	size_t keylen = 0, rtokenlen = 0;
-
-	VERIFY(MUTEX_HELD(&piv_lock));
-
-	VERIFY3P(key = ebox_key(src, &keylen), !=, NULL);
-	name = ebox_private(src);
-
-	if ((ret = kbmd_new_recovery_token(kt, &rtoken, &rtokenlen)) != ERRF_OK)
-		return (ret);
-
-	if ((ret = ebox_create(tpl, key, keylen, rtoken, rtokenlen,
-	    &ebox)) != ERRF_OK)
-		return (ret);
-
-	if ((ret = set_box_name(ebox, name)) != ERRF_OK) {
-		ebox_free(ebox);
-		return (ret);
-	}
-
-	*dstp = ebox;
-	return (ERRF_OK);
-}
-#endif
-
 static errf_t *
 find_part_pivtoken(struct ebox_part *part, kbmd_token_t **ktp)
 {
@@ -878,13 +840,12 @@ log_tpl(const struct ebox_tpl *rcfg, boolean_t stage)
 }
 
 errf_t *
-add_recovery(const struct ebox_tpl *rcfg, boolean_t stage,
+add_recovery(const char *dataset, const struct ebox_tpl *rcfg, boolean_t stage,
     const uint8_t *rtoken, size_t rtokenlen)
 {
 	errf_t *ret = ERRF_OK;
 	kbmd_token_t *kt = NULL;
 	struct ebox *ebox = NULL;
-	char *dataset = NULL;
 	const char *propstr = stage ? STAGEBOX_PROP : BOX_PROP;
 	char *eboxstr = NULL;
 	nvlist_t *zcp_args = NULL;
@@ -909,13 +870,12 @@ add_recovery(const struct ebox_tpl *rcfg, boolean_t stage,
 
 	mutex_enter(&piv_lock);
 
-	if (sys_piv == NULL || sys_pool == NULL) {
+	if (sys_piv == NULL) {
 		mutex_exit(&piv_lock);
 		return (errf("UnlockError", NULL,
 		    "system zpool dataset must be set and unlocked before "
 		    "updating its recovery template"));
 	}
-	dataset = sys_pool;
 	kt = sys_piv;
 
 	if (rtoken != NULL) {
@@ -953,7 +913,7 @@ add_recovery(const struct ebox_tpl *rcfg, boolean_t stage,
 		}
 	}
 
-	ret = run_channel_program(sys_pool, add_prog, zcp_args, &result);
+	ret = run_channel_program(dataset, add_prog, zcp_args, &result);
 
 done:
 	mutex_exit(&piv_lock);
@@ -971,11 +931,10 @@ done:
 }
 
 errf_t *
-activate_recovery(void)
+activate_recovery(const char *dataset)
 {
 	errf_t *ret = ERRF_OK;
 	kbmd_token_t *kt = NULL;
-	const char *dataset = NULL;
 	struct ebox *ebox = NULL;
 	nvlist_t *zcp_args = NULL;
 	nvlist_t *result = NULL;
@@ -989,7 +948,6 @@ activate_recovery(void)
 		    "system zpool must be set before activating a recovery"
 		    "config"));
 	}
-	dataset = sys_pool;
 
 	if ((ret = kbmd_get_ebox(dataset, B_TRUE, &ebox)) != ERRF_OK ||
 	    (ret = kbmd_unlock_ebox(ebox, &kt)) != ERRF_OK)
@@ -999,7 +957,7 @@ activate_recovery(void)
 
 	if ((ret = envlist_alloc(&zcp_args)) != ERRF_OK ||
 	    (ret = envlist_add_string(zcp_args, "dataset",
-	    sys_pool)) != ERRF_OK ||
+	    dataset)) != ERRF_OK ||
 	    (ret = envlist_add_string(zcp_args, "ebox", BOX_PROP)) != ERRF_OK ||
 	    (ret = envlist_add_string(zcp_args, "stagedebox",
 	    STAGEBOX_PROP)) != ERRF_OK ||
@@ -1007,7 +965,7 @@ activate_recovery(void)
 		goto done;
 	}
 
-	if ((ret = run_channel_program(sys_pool, activate_prog, zcp_args,
+	if ((ret = run_channel_program(dataset, activate_prog, zcp_args,
 	    &result)) != ERRF_OK) {
 		goto done;
 	}
@@ -1035,7 +993,7 @@ done:
 }
 
 errf_t *
-remove_recovery(void)
+remove_recovery(const char *dataset)
 {
 	errf_t *ret = ERRF_OK;
 	zfs_handle_t *zhp = NULL;
@@ -1052,7 +1010,7 @@ remove_recovery(void)
 
 	mutex_enter(&g_zfs_lock);
 
-	if ((ret = ezfs_open(g_zfs, sys_pool,
+	if ((ret = ezfs_open(g_zfs, dataset,
 	    ZFS_TYPE_FILESYSTEM|ZFS_TYPE_VOLUME, &zhp)) != ERRF_OK) {
 		mutex_exit(&piv_lock);
 		ret = errf("EBoxError", ret,
