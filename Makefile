@@ -187,8 +187,8 @@ out:
 
 $(PROGS) $(STATIC_LIBS): out
 
+# XXX: Should the submodule init be a separate target so it doesn't always run?
 pivy-stamp:
-	# Should this be a separate target go it doesn't always run?
 	git submodule update --init
 	$(MAKE) -C pivy \
 	    CC=$(CC) \
