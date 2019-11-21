@@ -26,17 +26,6 @@
             <service_fmri value="svc:/network/early-admin:default" />
         </dependency>
 
-        <!-- We need kbmd up and running before we can mount an encrypted
-             dataset. If kbmd is restarted however, we don't need to do
-             anything to filesystem/smartdc -->
-        <dependent
-            name="fs-joyent"
-            grouping="require_all"
-            restart_on="none"
-            override="true">
-            <service_fmri value="svc:/system/filesystem/smartdc:default" />
-        </dependent>
-
         <instance name="default" enabled='true'>
             <exec_method
                 type='method'
