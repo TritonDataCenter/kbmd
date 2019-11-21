@@ -408,7 +408,7 @@ do_create_zpool(int argc, char **argv)
 	 *	...
 	 * So we start at arg[1].
 	 */
-	for (size_t i = 0; i < argc; i++) {
+	for (size_t i = 1; i < argc; i++) {
 		if ((ret = strarray_append(&args, "%s", argv[i])) != ERRF_OK)
 			goto done;
 	}
