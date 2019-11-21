@@ -25,7 +25,7 @@ PROTOINC =	$(DESTDIR)/usr/include
 INSTALL =	/usr/sbin/install
 ELFWRAP =	/usr/bin/elfwrap
 
-_PROGS =	kbmd kbmadm
+_PROGS =	kbmd kbmadm reset-piv
 _STATIC_LIBS =	common.a pivy.a
 
 PROGS =		$(_PROGS:%=out/%)
@@ -102,6 +102,18 @@ KBMD_PLUGINS = triton unlock
 out/kbmd:	LDLIBS += $(KBMD_LIBS)
 # For flockfile and funlockfile
 out/kbmd:	CPPFLAGS += -D__EXTENSIONS__ -D_REENTRANT
+
+_RESET_PIV_SRCS =	reset-piv.c
+RESET_PIV_SRCS =	$(_RESET_PIV_SRCS:%=reset-piv/%)
+RESET_PIV_OBJS =	$(RESET_PIV_SRCS:%.c=%.o) kbmd/piv-bunyan.o
+RESET_PIV_LIBS =	\
+	out/pivy.a	\
+	$(LIBCRYPTO)	\
+	-lbunyan	\
+	-lpcsc		\
+	-lz
+
+out/reset-piv:	LDLIBS += $(RESET_PIV_LIBS)
 
 #
 # We explicitly statically link the pivy code.  We do not want any potentially
@@ -227,7 +239,10 @@ out/%: lua/%.lua
 $(ZCP_OBJS): $(ZCP_SRCS_NUL)
 	$(ELFWRAP) -64 -o $@ $(ZCP_SRCS_NUL)
 
-#
+out/reset-piv: $(RESET_PIV_OBJS) out/pivy.a out/kbmd
+	$(CC) -o $@ $(CFLAGS) $(RESET_PIV_OBJS) $(LDFLAGS) $(LDLIBS)
+	$(CTFCONVERT) -m $@
+
 # Install Targets
 #
 .PHONY: install manifest
@@ -236,6 +251,7 @@ install: all
 	$(INSTALL) -m 0555 -f $(DESTDIR)/usr/sbin pivy/pivy-tool
 	$(INSTALL) -m 0555 -f $(DESTDIR)/usr/sbin pivy/pivy-box
 	$(INSTALL) -m 0555 -f $(DESTDIR)/usr/sbin out/kbmadm
+	$(INSTALL) -m 0555 -f $(DESTDIR)/usr/sbin out/reset-piv
 	$(INSTALL) -m 0555 -f $(DESTDIR)/usr/lib/kbm out/kbmd
 	for plugin in $(KBMD_PLUGINS); do				\
 	    $(INSTALL) -m 0555 -f $(DESTDIR)/usr/lib/kbm/plugins	\
@@ -256,6 +272,7 @@ update:
 	git pull --rebase
 
 clean:
-	rm -f $(COMMON_OBJS) $(KBMADM_OBJS) $(KBMD_OBJS) pivy-stamp out/*
+	rm -f $(COMMON_OBJS) $(KBMADM_OBJS) $(KBMD_OBJS) $(RESET_PIV_OBJS) \
+	    pivy-stamp out/*
 	-rmdir out
 	(cd pivy; $(MAKE) clean)
