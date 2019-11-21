@@ -24,6 +24,13 @@
 #include "pivy/ebox.h"
 #include "pivy/libssh/sshbuf.h"
 
+/*
+ * If the PIV token registration fails, we cache the otherwise fully setup
+ * PIV token, and allow a subsequent zpool create command to just pick up
+ * where it left off and retry the registration step. Protected by piv_lock.
+ */
+static kbmd_token_t *incomplete_tok;
+
 static errf_t *
 add_opt(nvlist_t **nvl, const char *name, const char *val)
 {
@@ -190,8 +197,10 @@ kbmd_assert_token(const uint8_t *guid, const recovery_token_t *rtoken,
 {
 	errf_t *ret = ERRF_OK;
 
-	*rcfgp = NULL;
 	ASSERT(MUTEX_HELD(&piv_lock));
+
+	*ktp = NULL;
+	*rcfgp = NULL;
 
 	/*
 	 * If the system PIV has been designated, and is usable, we
@@ -202,7 +211,10 @@ kbmd_assert_token(const uint8_t *guid, const recovery_token_t *rtoken,
 		    BUNYAN_T_STRING, "piv_guid",
 		    piv_token_guid_hex(sys_piv->kt_piv),
 		    BUNYAN_T_END);
+
 		*ktp = sys_piv;
+		kbmd_token_free(incomplete_tok);
+		incomplete_tok = NULL;
 		return (ERRF_OK);
 	}
 
@@ -216,6 +228,31 @@ kbmd_assert_token(const uint8_t *guid, const recovery_token_t *rtoken,
 		    piv_token_guid_hex((*ktp)->kt_piv),
 		    BUNYAN_T_END);
 
+		kbmd_token_free(incomplete_tok);
+		incomplete_tok = NULL;
+		kbmd_set_token(*ktp);
+		return (ERRF_OK);
+	}
+
+	if (incomplete_tok != NULL) {
+		(void) bunyan_debug(tlog,
+		    "Using token info from previous attempt(s)",
+		    BUNYAN_T_STRING, "piv_guid",
+		    piv_token_guid_hex(incomplete_tok->kt_piv),
+		    BUNYAN_T_END);
+
+		if ((ret = register_pivtoken(incomplete_tok,
+		    rcfgp)) != ERRF_OK ) {
+
+			(void) bunyan_error(tlog,
+			    "Failed to register pivtoken, token data saved for "
+			    "retry", BUNYAN_T_END);
+
+			return (ret);
+		}
+
+		*ktp = incomplete_tok;
+		incomplete_tok = NULL;
 		kbmd_set_token(*ktp);
 		return (ERRF_OK);
 	}
@@ -223,8 +260,15 @@ kbmd_assert_token(const uint8_t *guid, const recovery_token_t *rtoken,
 	if ((ret = kbmd_setup_token(ktp)) != ERRF_OK)
 		return (ret);
 
-	if ((ret = register_pivtoken(*ktp, rcfgp)) != ERRF_OK)
+	if ((ret = register_pivtoken(*ktp, rcfgp)) != ERRF_OK) {
+		(void) bunyan_error(tlog,
+		    "Failed to register pivtoken; token data saved for retry",
+		    BUNYAN_T_END);
+
+		incomplete_tok = *ktp;
+		*ktp = NULL;
 		return (ret);
+	}
 
 	kbmd_set_token(*ktp);
 	return (ERRF_OK);

@@ -745,23 +745,33 @@ register_pivtoken(kbmd_token_t *restrict kt, struct ebox_tpl **restrict rcfgp)
 	*rcfgp = NULL;
 
 	if ((ret = ecustr_alloc(&input)) != ERRF_OK) {
+		ret = errf("RegisterError", ret,
+		    "failed to register PIV token");
 		goto done;
 	}
 
 	if ((ret = plugin_create_args(&args, REGISTER_TOK_CMD)) != ERRF_OK) {
+		ret = errf("RegisterError", ret,
+		    "failed to register PIV token");
 		goto done;
 	}
 
 	if ((ret = plugin_pivtoken_common(kt->kt_piv, kt->kt_pin,
 	    args.sar_strs[0], args.sar_strs, input, &output)) != ERRF_OK) {
+		ret = errf("RegisterError", ret,
+		    "failed to register PIV token");
 		goto done;
 	}
 
 	if ((ret = parse_register_output(output, &rtoken, &rcfg)) != ERRF_OK) {
+		ret = errf("RegisterError", ret,
+		    "failed to register PIV token");
 		goto done;
 	}
 
 	if ((ret = set_recovery_token(kt, rtoken)) != ERRF_OK) {
+		ret = errf("RegisterError", ret,
+		    "failed to register PIV token");
 		goto done;
 	}
 
