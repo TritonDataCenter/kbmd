@@ -197,6 +197,8 @@ fd_event(kbm_event_t *ke, int pevents)
 static void *
 kbmd_event_loop(void *arg __unused)
 {
+	VERIFY0(bunyan_child(blog, &tlog, BUNYAN_T_END));
+
 	while (!kbmd_quit) {
 		port_event_t pe = { 0 };
 
@@ -216,6 +218,9 @@ kbmd_event_loop(void *arg __unused)
 			break;
 		}
 	}
+
+	bunyan_fini(tlog);
+	tlog = NULL;
 
 	return (NULL);
 }
