@@ -851,9 +851,10 @@ get_new_piv(uint8_t guid[GUID_LEN], struct piv_token **pkp)
 }
 
 errf_t *
-kbmd_setup_token(kbmd_token_t **restrict ktp, struct ebox_tpl **restrict rcfgp)
+kbmd_setup_token(kbmd_token_t **restrict ktp)
 {
 	errf_t *ret = ERRF_OK;
+	kbmd_token_t *kt = NULL;
 	struct piv_token *pk = NULL;
 	uint8_t guid[GUID_LEN] = { 0 };
 
@@ -862,7 +863,9 @@ kbmd_setup_token(kbmd_token_t **restrict ktp, struct ebox_tpl **restrict rcfgp)
 	(void) bunyan_trace(tlog, "kbmd_setup_token: enter",
 	    BUNYAN_T_END);
 
-	if ((ret = zalloc(sizeof (kbmd_token_t), ktp)) != ERRF_OK)
+	*ktp = NULL;
+
+	if ((ret = zalloc(sizeof (kbmd_token_t), &kt)) != ERRF_OK)
 		return (ret);
 
 	if ((ret = init_token(guid)) != ERRF_OK) {
@@ -875,7 +878,7 @@ kbmd_setup_token(kbmd_token_t **restrict ktp, struct ebox_tpl **restrict rcfgp)
 	 * Once the token has been initalized, re-read all the info with
 	 * the new GUID, etc.
 	 */
-	if ((ret = get_new_piv(guid, &pk)) != ERRF_OK) {
+	if ((ret = get_new_piv(guid, &kt->kt_piv)) != ERRF_OK) {
 		char gstr[GUID_STR_LEN] = { 0 };
 
 		guidtohex(guid, gstr, sizeof (gstr));
@@ -884,6 +887,7 @@ kbmd_setup_token(kbmd_token_t **restrict ktp, struct ebox_tpl **restrict rcfgp)
 		    "could not find token '%s' after initialization", gstr);
 		goto fail;
 	}
+	pk = kt->kt_piv;
 
 	if ((ret = generate_certs(pk)) != ERRF_OK) {
 		ret = errf("SetupError", ret,
@@ -897,7 +901,7 @@ kbmd_setup_token(kbmd_token_t **restrict ktp, struct ebox_tpl **restrict rcfgp)
 	    sizeof (DEFAULT_ADMIN_KEY))) != ERRF_OK)
 		goto fail;
 
-	if ((ret = set_pins(pk, (*ktp)->kt_pin)) != ERRF_OK)
+	if ((ret = set_pins(pk, kt->kt_pin)) != ERRF_OK)
 		goto fail;
 
 	if ((ret = set_admin_key(pk)) != ERRF_OK)
@@ -905,32 +909,19 @@ kbmd_setup_token(kbmd_token_t **restrict ktp, struct ebox_tpl **restrict rcfgp)
 
 	piv_txn_end(pk);
 
-	(*ktp)->kt_piv = pk;
-	pk = NULL;
-
 	(void) bunyan_info(tlog, "New PIV token setup",
-	    BUNYAN_T_STRING, "guid", piv_token_guid_hex((*ktp)->kt_piv),
+	    BUNYAN_T_STRING, "guid", piv_token_guid_hex(pk),
 	    BUNYAN_T_END);
 
-	/*
-	 * XXX: If this fails due to network issues, it would be nice at
-	 * some point to support retrying without requiring the operator
-	 * to reset the token and then re-init it.
-	 */
-	if ((ret = kbmd_register_pivtoken(*ktp, rcfgp)) != ERRF_OK) {
-		goto fail;
-	}
-
+	*ktp = kt;
 	return (ERRF_OK);
 
 fail:
-	if (pk != NULL) {
-		if (piv_token_in_txn(pk))
-			piv_txn_end(pk);
-		piv_release(pk);
+	if (kt->kt_piv != NULL && piv_token_in_txn(kt->kt_piv)) {
+		piv_txn_end(pk);
 	}
-	kbmd_token_free(*ktp);
-	*ktp = NULL;
+	kbmd_token_free(kt);
+
 	return (ret);
 }
 
@@ -946,6 +937,7 @@ kbmd_token_free(kbmd_token_t *kt)
 			sys_piv = NULL;
 	}
 
+	piv_release(kt->kt_piv);
 	explicit_bzero(kt->kt_pin, sizeof (kt->kt_pin));
 	freezero(kt->kt_rtoken.rt_val, kt->kt_rtoken.rt_len);
 	free(kt);

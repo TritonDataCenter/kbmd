@@ -149,7 +149,7 @@ errf_t *kbmd_get_slot(kbmd_token_t *restrict, enum piv_slotid slotid,
 errf_t *kbmd_assert_pin(kbmd_token_t *);
 errf_t *kbmd_verify_pin(kbmd_token_t *);
 errf_t *kbmd_auth_pivtoken(kbmd_token_t *restrict, struct sshkey *restrict);
-errf_t *kbmd_setup_token(kbmd_token_t **restrict, struct ebox_tpl **restrict);
+errf_t *kbmd_setup_token(kbmd_token_t **restrict);
 void kbmd_set_token(kbmd_token_t *);
 void kbmd_token_free(kbmd_token_t *);
 errf_t *set_piv_rtoken(kbmd_token_t *, const recovery_token_t *);
@@ -158,10 +158,10 @@ const char *piv_pin_str(enum piv_pin pin_type);
 
 /* plugin.c */
 errf_t *kbmd_get_pin(const uint8_t guid[restrict], struct custr **restrict);
-errf_t *kbmd_register_pivtoken(kbmd_token_t *restrict,
+errf_t *register_pivtoken(kbmd_token_t *restrict,
     struct ebox_tpl **restrict);
-errf_t *kbmd_replace_pivtoken(const uint8_t *, size_t, const recovery_token_t *,
-    kbmd_token_t *);
+errf_t *replace_pivtoken(const uint8_t [], const recovery_token_t *,
+    kbmd_token_t *restrict , struct ebox_tpl **restrict);
 errf_t *new_recovery_token(kbmd_token_t *restrict);
 errf_t *post_recovery_config_update(void);
 void load_plugin(void);

@@ -703,8 +703,36 @@ strip_non_recovery(struct ebox_tpl_config *tcfg, void *arg)
 }
 
 /*
- * Create an ebox template for the given PIV token containing the
- * given recovery config.
+ * Allocate a new ebox template, optionally including any existing
+ * recovery configurations from rcfg (if rcfg is not NULL and contains
+ * any recovery configs).
+ */
+static errf_t *
+prepare_tpl(const struct ebox_tpl *rcfg, struct ebox_tpl **tplp)
+{
+	if (rcfg == NULL) {
+		*tplp = ebox_tpl_alloc();
+		if (*tplp == NULL) {
+			return (errf("TemplateError", NULL,
+			    "failed to create a new ebox template"));
+		}
+		return (ERRF_OK);
+	}
+
+	*tplp = ebox_tpl_clone((struct ebox_tpl *)rcfg);
+	if (*tplp == NULL) {
+		return (errf("TemplateError", NULL,
+		    "failed to clone recovery config"));
+	}
+
+	VERIFY0(ebox_tpl_foreach_cfg(*tplp, strip_non_recovery, *tplp));
+
+	return (ERRF_OK);
+}
+
+/*
+ * Create an ebox template for the PIV token kt containing the
+ * given recovery config rcfg.
  */
 errf_t *
 create_template(kbmd_token_t *restrict kt, const struct ebox_tpl *rcfg,
@@ -714,23 +742,18 @@ create_template(kbmd_token_t *restrict kt, const struct ebox_tpl *rcfg,
 	struct ebox_tpl *tpl = NULL;
 	struct ebox_tpl_config *cfg =  NULL;
 
+	VERIFY(piv_token_in_txn(kt->kt_piv));
 	*tplp = NULL;
 
-	if (rcfg != NULL) {
-		tpl = ebox_tpl_clone((struct ebox_tpl *)rcfg);
-		if (tpl == NULL) {
-			return (errf("TemplateError", ret,
-			    "failed to clone recovery config"));
-		}
-		VERIFY0(ebox_tpl_foreach_cfg(tpl, strip_non_recovery, tpl));
-	} else {
-		tpl = ebox_tpl_alloc();
-		if (tpl == NULL) {
-			return (errf("TemplateError", ret,
-			    "failed to create a new ebox template"));
-		}
+	/*
+	 * Create a new template with any recovery configs from rcfg
+	 * (if present).
+	 */
+	if ((ret = prepare_tpl(rcfg, &tpl)) != ERRF_OK) {
+		return (ret);
 	}
 
+	/* Add the EBOX_PRIMARY config for the PIV token kt */
 	if ((ret = create_piv_tpl_config(kt, &cfg)) != ERRF_OK) {
 		ret = errf("TemplateError", ret, "cannot create ebox template");
 		ebox_tpl_free(tpl);

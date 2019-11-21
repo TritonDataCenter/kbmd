@@ -220,7 +220,10 @@ kbmd_assert_token(const uint8_t *guid, const recovery_token_t *rtoken,
 		return (ERRF_OK);
 	}
 
-	if ((ret = kbmd_setup_token(ktp, rcfgp)) != ERRF_OK)
+	if ((ret = kbmd_setup_token(ktp)) != ERRF_OK)
+		return (ret);
+
+	if ((ret = register_pivtoken(*ktp, rcfgp)) != ERRF_OK)
 		return (ret);
 
 	kbmd_set_token(*ktp);
@@ -234,7 +237,8 @@ kbmd_zpool_create(const char *dataset, const uint8_t *guid,
 {
 	errf_t *ret = ERRF_OK;
 	struct ebox *ebox = NULL;
-	struct ebox_tpl *rcfg = NULL;
+	struct ebox_tpl *rcfg_tok = NULL;
+	const struct ebox_tpl *rcfg = NULL;
 	kbmd_token_t *kt = NULL;
 	uint8_t *key = NULL;
 	size_t keylen = 0;
@@ -259,14 +263,16 @@ kbmd_zpool_create(const char *dataset, const uint8_t *guid,
 
 	mutex_enter(&piv_lock);
 
-	if ((ret = kbmd_assert_token(guid, rtoken, &kt, &rcfg)) != ERRF_OK ||
+	if ((ret = kbmd_assert_token(guid, rtoken, &kt,
+	    &rcfg_tok)) != ERRF_OK ||
 	    (ret = kbmd_assert_pin(kt)) != ERRF_OK) {
 		goto done;
 	}
 
-	if ((ret = kbmd_create_ebox(kt,
-	    (rcfg_cmdline != NULL) ? rcfg_cmdline : rcfg, dataset, &key,
-	    &keylen, &ebox)) != ERRF_OK) {
+	rcfg = (rcfg_cmdline != NULL) ? rcfg_cmdline : rcfg_tok;
+
+	if ((ret = kbmd_create_ebox(kt, rcfg, dataset, &key, &keylen,
+	    &ebox)) != ERRF_OK) {
 		goto done;
 	}
 
@@ -275,7 +281,7 @@ kbmd_zpool_create(const char *dataset, const uint8_t *guid,
 done:
 	mutex_exit(&piv_lock);
 	ebox_free(ebox);
-	ebox_tpl_free(rcfg);
+	ebox_tpl_free(rcfg_tok);
 	freezero(key, keylen);
 	return (ret);
 }

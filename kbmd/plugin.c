@@ -731,8 +731,7 @@ done:
 }
 
 errf_t *
-kbmd_register_pivtoken(kbmd_token_t *restrict kt,
-    struct ebox_tpl **restrict rcfgp)
+register_pivtoken(kbmd_token_t *restrict kt, struct ebox_tpl **restrict rcfgp)
 {
 	errf_t *ret = ERRF_OK;
 	custr_t *input = NULL;
@@ -779,8 +778,9 @@ done:
 }
 
 errf_t *
-kbmd_replace_pivtoken(const uint8_t *guid, size_t guidlen,
-    const recovery_token_t *rtoken, kbmd_token_t *kt)
+replace_pivtoken(const uint8_t guid[GUID_LEN],
+    const recovery_token_t *rtoken, kbmd_token_t *restrict kt,
+    struct ebox_tpl **restrict rcfgp)
 {
 	errf_t *ret = ERRF_OK;
 	custr_t *input = NULL;
@@ -817,6 +817,9 @@ kbmd_replace_pivtoken(const uint8_t *guid, size_t guidlen,
 	}
 
 	ret = set_recovery_token(kt, new_rtoken);
+
+	/* TODO: get new recovery config, for now we return NULL */
+	*rcfgp = NULL;
 
 done:
 	strarray_fini(&args);

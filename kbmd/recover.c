@@ -705,11 +705,12 @@ done:
 struct update_data {
 	kbmd_token_t		*ud_tok;
 	const recovery_token_t	*ud_rtok;
+	struct ebox_tpl		*ud_rcfg;
 	size_t		ud_primary_count;
 };
 
 static errf_t *
-piv_update_cb(struct ebox_tpl_config *tcfg, void *arg)
+piv_replace_cb(struct ebox_tpl_config *tcfg, void *arg)
 {
 	errf_t *ret = ERRF_OK;
 	struct update_data *data = arg;
@@ -735,8 +736,8 @@ piv_update_cb(struct ebox_tpl_config *tcfg, void *arg)
 		    "EBOX_PRIMARY has no config parts"));
 	}
 
-	if ((ret = kbmd_replace_pivtoken(ebox_tpl_part_guid(tpart), GUID_LEN,
-	    data->ud_rtok, data->ud_tok)) != ERRF_OK) {
+	if ((ret = replace_pivtoken(ebox_tpl_part_guid(tpart), data->ud_rtok,
+	    data->ud_tok, &data->ud_rcfg)) != ERRF_OK) {
 		return (FOREACH_STOP);
 	}
 
@@ -752,8 +753,8 @@ piv_update_cb(struct ebox_tpl_config *tcfg, void *arg)
  * from the plugin.
  */
 static errf_t *
-do_piv_update(struct ebox *ebox, kbmd_token_t *newkt,
-    const recovery_token_t *rtoken)
+do_piv_replace(struct ebox *ebox, kbmd_token_t *newkt,
+    const recovery_token_t *rtoken, struct ebox_tpl **rcfgp)
 {
 	errf_t *ret = ERRF_OK;
 	struct update_data data = {
@@ -761,11 +762,15 @@ do_piv_update(struct ebox *ebox, kbmd_token_t *newkt,
 		.ud_rtok = rtoken,
 	};
 
-	if ((ret = ebox_tpl_foreach_cfg(ebox_tpl(ebox), piv_update_cb,
+	*rcfgp = NULL;
+
+	if ((ret = ebox_tpl_foreach_cfg(ebox_tpl(ebox), piv_replace_cb,
 	    &data)) != ERRF_OK) {
 		ret = errf("RecoveryError", ret,
 		    "failed to create ebox template with new PIV token");
 	}
+
+	*rcfgp = data.ud_rcfg;
 
 	return (ret);
 }
@@ -778,6 +783,8 @@ post_recovery(recovery_t *r)
 	struct ebox *new_ebox = NULL;
 	struct ebox_tpl *tpl = NULL;
 	struct ebox_tpl *rcfg = NULL;
+	struct ebox_tpl *rcfg_oldebox = NULL;
+	struct ebox_tpl *rcfg_newpiv = NULL;
 	const char *dataset = NULL;
 	const uint8_t *key = NULL;
 	size_t keylen = 0;
@@ -790,11 +797,14 @@ post_recovery(recovery_t *r)
 	}
 
 	dataset = ebox_private(r->r_ebox);
+
 	key = ebox_key(r->r_ebox, &keylen);
+	VERIFY3P(key, !=, NULL);
+
 	rtoken.rt_val = (uint8_t *)ebox_recovery_token(r->r_ebox,
 	    &rtoken.rt_len);
 
-	VERIFY3P(key, !=, NULL);
+	rcfg_oldebox = ebox_tpl(r->r_ebox);
 
 	/*
 	 * If we can determine if the dataset key is already loaded,
@@ -809,7 +819,7 @@ post_recovery(recovery_t *r)
 
 	mutex_enter(&piv_lock);
 
-	if ((ret = kbmd_setup_token(&kt, &rcfg)) != ERRF_OK) {
+	if ((ret = kbmd_setup_token(&kt)) != ERRF_OK) {
 		if (errf_caused_by(ret, "NotFoundError")) {
 			/*
 			 * XXX: Might we also want to spit this out to
@@ -829,6 +839,27 @@ post_recovery(recovery_t *r)
 		return (ret);
 	}
 
+	/*
+	 * This sets kt's recovery token to the new value from
+	 * the plugin on success (see above).
+	 *
+	 * TODO: If we setup a new PIV token, but failed to do the
+	 * replacement, we want a way to retry the recovery without
+	 * re-initializing the PIV token and just retry the replacement.
+	 */
+	if ((ret = do_piv_replace(r->r_ebox, kt, &rtoken,
+	    &rcfg_newpiv)) != ERRF_OK) {
+		kbmd_token_free(kt);
+		return (ret);
+	}
+
+	/*
+	 * If the replacement plugin gives us a recovery token, we use that.
+	 * Otherwise we use the recovery configuration from the ebox we
+	 * recovered.
+	 */
+	rcfg = (rcfg_newpiv != NULL) ? rcfg_newpiv : rcfg_oldebox;
+
 	if ((ret = piv_txn_begin(kt->kt_piv)) != ERRF_OK ||
 	    (ret = piv_select(kt->kt_piv)) != ERRF_OK ||
 	    (ret = create_template(kt, rcfg, &tpl)) != ERRF_OK) {
@@ -839,22 +870,16 @@ post_recovery(recovery_t *r)
 		ebox_tpl_free(rcfg);
 		return (ret);
 	}
-	ebox_tpl_free(rcfg);
+	ebox_tpl_free(rcfg_newpiv);
 	piv_txn_end(kt->kt_piv);
 	mutex_exit(&piv_lock);
 
 	/*
-	 * This sets kt's recovery token to the new value from
-	 * the plugin on success (see above).
-	 */
-	if ((ret = do_piv_update(r->r_ebox, kt, &rtoken)) != ERRF_OK) {
-		kbmd_token_free(kt);
-		return (ret);
-	}
-
-	/*
 	 * The new/replacement ebox needs to use the new/replacement
 	 * recovery token in kt -- not the old one in rtoken!
+	 *
+	 * TODO: Figure out how to handle a staged ebox when doing a
+	 * recovery.
 	 */
 	if ((ret = ebox_create(tpl, key, keylen, kt->kt_rtoken.rt_val,
 	    kt->kt_rtoken.rt_len, &new_ebox)) != ERRF_OK ||
