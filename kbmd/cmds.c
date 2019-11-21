@@ -414,6 +414,23 @@ get_request_template(nvlist_t *restrict nvl, struct ebox_tpl **restrict tplp)
 	return (ret);
 }
 
+static errf_t *
+get_nvrtoken(nvlist_t *nvl, const char *name, recovery_token_t *rtok)
+{
+	errf_t *ret = ERRF_OK;
+	uint8_t *val = NULL;
+	uint_t len = 0;
+
+	if ((ret = envlist_lookup_uint8_array(nvl, name, &val,
+	    &len)) != ERRF_OK) {
+		return (ret);
+	}
+
+	rtok->rt_val = val;
+	rtok->rt_len = len;
+	return (ret);
+}
+
 static void
 cmd_zpool_create(nvlist_t *req)
 {
@@ -421,9 +438,8 @@ cmd_zpool_create(nvlist_t *req)
 	const char *dataset = NULL;
 	struct ebox_tpl *rcfg = NULL;
 	uint8_t *guid = NULL;
-	uint8_t *rtoken = NULL;
 	uint_t guidlen = 0;
-	uint_t rtoklen = 0;
+	recovery_token_t rtoken = { 0 };
 	nvlist_t *resp = NULL;
 
 	if ((ret = get_dataset(req, &dataset)) != ERRF_OK)
@@ -449,8 +465,7 @@ cmd_zpool_create(nvlist_t *req)
 		ret = ERRF_OK;
 	}
 
-	if ((ret = envlist_lookup_uint8_array(req, KBM_NV_RTOKEN, &rtoken,
-	    &rtoklen)) != ERRF_OK) {
+	if ((ret = get_nvrtoken(req, KBM_NV_RTOKEN, &rtoken)) != ERRF_OK) {
 		if (!errf_caused_by(ret, "ENOENT"))
 			goto done;
 		errf_free(ret);
@@ -460,10 +475,10 @@ cmd_zpool_create(nvlist_t *req)
 	if ((ret = envlist_alloc(&resp)) != ERRF_OK)
 		goto done;
 
-	ret = kbmd_zpool_create(dataset, guid, rcfg, rtoken, (size_t)rtoklen,
-	    resp);
+	ret = kbmd_zpool_create(dataset, guid, rcfg, &rtoken, resp);
 
 done:
+	explicit_bzero(rtoken.rt_val, rtoken.rt_len);
 	nvlist_free(req);
 	kbmd_return(ret, resp);
 }
@@ -474,9 +489,7 @@ cmd_add_recovery(nvlist_t *req)
 	errf_t *ret = ERRF_OK;
 	const char *dataset = NULL;
 	struct ebox_tpl *tpl = NULL;
-	uint8_t *rtoken = NULL;
-	size_t rtokenlen = 0;
-	uint_t n = 0;
+	recovery_token_t rtoken = { 0 };
 	boolean_t stage = B_FALSE;
 
 	if ((ret = get_dataset(req, &dataset)) != ERRF_OK)
@@ -489,20 +502,18 @@ cmd_add_recovery(nvlist_t *req)
 	    &stage)) != ERRF_OK)
 		goto done;
 
-	if ((ret = envlist_lookup_uint8_array(req, KBM_NV_RTOKEN, &rtoken,
-	    &n)) != ERRF_OK) {
+	if ((ret = get_nvrtoken(req, KBM_NV_RTOKEN, &rtoken)) != ERRF_OK) {
 		if (!errf_caused_by(ret, "ENOENT")) {
 			goto done;
 		}
 		errf_free(ret);
 		ret = ERRF_OK;
-	} else {
-		rtokenlen = n;
 	}
 
-	ret = add_recovery(dataset, tpl, stage, rtoken, rtokenlen);
+	ret = add_recovery(dataset, tpl, stage, &rtoken);
 
 done:
+	explicit_bzero(rtoken.rt_val, rtoken.rt_len);
 	nvlist_free(req);
 	ebox_tpl_free(tpl);
 	kbmd_return(ret, NULL);

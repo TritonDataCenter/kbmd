@@ -947,7 +947,7 @@ kbmd_token_free(kbmd_token_t *kt)
 	}
 
 	explicit_bzero(kt->kt_pin, sizeof (kt->kt_pin));
-	freezero(kt->kt_rtoken, kt->kt_rtoklen);
+	freezero(kt->kt_rtoken.rt_val, kt->kt_rtoken.rt_len);
 	free(kt);
 }
 
@@ -1175,23 +1175,37 @@ kbmd_find_byslot(enum piv_slotid slotid, const struct sshkey *key,
 }
 
 errf_t *
-set_piv_rtoken(kbmd_token_t *kt, const uint8_t *rtoken, size_t rtokenlen)
+set_piv_rtoken(kbmd_token_t *kt, const recovery_token_t *rtoken)
 {
 	errf_t *ret = ERRF_OK;
+	recovery_token_t *dest = &kt->kt_rtoken;
 	void *tokcopy = NULL;
 
-	if ((ret = zalloc(rtokenlen, &tokcopy)) != ERRF_OK)
+	if (rtoken == NULL) {
+		freezero(dest->rt_val, dest->rt_len);
+		dest->rt_val = NULL;
+		dest->rt_len = 0;
 		return (ret);
-
-	if (kt->kt_rtoken != NULL) {
-		freezero(kt->kt_rtoken, kt->kt_rtoklen);
-		kt->kt_rtoken = NULL;
-		kt->kt_rtoklen = 0;
 	}
 
-	bcopy(rtoken, tokcopy, rtokenlen);
-	kt->kt_rtoken = tokcopy;
-	kt->kt_rtoklen =  rtokenlen;
+	if (!RECOVERY_TOKEN_INRANGE(rtoken)) {
+		return (errf("RangeError", NULL,
+		    "recovery token length (%zu) out of range [%u; %u]",
+		    rtoken->rt_len, RECOVERY_TOKEN_MINLEN,
+		    RECOVERY_TOKEN_MAXLEN));
+	}
+
+	if ((ret = zalloc(rtoken->rt_len, &tokcopy)) != ERRF_OK)
+		return (ret);
+
+	if (dest->rt_val != NULL) {
+		freezero(dest->rt_val, dest->rt_len);
+	}
+
+	bcopy(rtoken->rt_val, tokcopy, rtoken->rt_len);
+	dest->rt_val = tokcopy;
+	dest->rt_len = rtoken->rt_len;
+
 	return (ret);
 }
 

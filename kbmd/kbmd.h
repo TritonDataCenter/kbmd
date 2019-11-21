@@ -80,8 +80,7 @@ struct zfs_handle;
 typedef struct kbmd_token {
 	struct piv_token	*kt_piv;
 	char			kt_pin[PIN_MAX_LENGTH + 1];
-	uint8_t			*kt_rtoken;	/* The recovery token */
-	size_t			kt_rtoklen;	/* Recovery token len */
+	recovery_token_t	kt_rtoken;
 } kbmd_token_t;
 
 extern uuid_t sys_uuid;
@@ -109,7 +108,7 @@ void kbmd_return(errf_t *restrict, struct nvlist *restrict) __NORETURN;
 
 void dispatch_request(struct nvlist *, pid_t);
 errf_t *kbmd_zpool_create(const char *, const uint8_t *,
-    const struct ebox_tpl *, const uint8_t *, size_t, nvlist_t *);
+    const struct ebox_tpl *, const recovery_token_t *, nvlist_t *);
 void kbmd_recover_init(int);
 void kbmd_recover_start(struct nvlist *, pid_t);
 void kbmd_recover_resp(struct nvlist *, pid_t);
@@ -153,7 +152,7 @@ errf_t *kbmd_auth_pivtoken(kbmd_token_t *restrict, struct sshkey *restrict);
 errf_t *kbmd_setup_token(kbmd_token_t **restrict, struct ebox_tpl **restrict);
 void kbmd_set_token(kbmd_token_t *);
 void kbmd_token_free(kbmd_token_t *);
-errf_t *set_piv_rtoken(kbmd_token_t *, const uint8_t *, size_t);
+errf_t *set_piv_rtoken(kbmd_token_t *, const recovery_token_t *);
 
 const char *piv_pin_str(enum piv_pin pin_type);
 
@@ -161,7 +160,7 @@ const char *piv_pin_str(enum piv_pin pin_type);
 errf_t *kbmd_get_pin(const uint8_t guid[restrict], struct custr **restrict);
 errf_t *kbmd_register_pivtoken(kbmd_token_t *restrict,
     struct ebox_tpl **restrict);
-errf_t *kbmd_replace_pivtoken(const uint8_t *, size_t, const uint8_t *, size_t,
+errf_t *kbmd_replace_pivtoken(const uint8_t *, size_t, const recovery_token_t *,
     kbmd_token_t *);
 errf_t *new_recovery_token(kbmd_token_t *restrict);
 errf_t *post_recovery_config_update(void);
@@ -183,7 +182,7 @@ errf_t *ebox_tpl_foreach_part(struct ebox_tpl_config *, ebox_tpl_part_cb_t,
     void *);
 
 errf_t *add_recovery(const char *, const struct ebox_tpl *, boolean_t,
-    const uint8_t *, size_t);
+    const recovery_token_t *);
 errf_t *activate_recovery(const char *);
 errf_t *remove_recovery(const char *);
 

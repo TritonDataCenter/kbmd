@@ -762,9 +762,9 @@ kbmd_create_ebox(kbmd_token_t *restrict kt, const struct ebox_tpl *rcfg,
 	*keylenp = EBOX_KEY_LEN;
 
 	VERIFY(MUTEX_HELD(&piv_lock));
-	VERIFY3P(kt->kt_rtoken, !=, NULL);
-	VERIFY3U(kt->kt_rtoklen, >=, RECOVERY_TOKEN_MINLEN);
-	VERIFY3U(kt->kt_rtoklen, <=, RECOVERY_TOKEN_MAXLEN);
+	VERIFY3P(kt->kt_rtoken.rt_val, !=, NULL);
+	VERIFY3U(kt->kt_rtoken.rt_len, >=, RECOVERY_TOKEN_MINLEN);
+	VERIFY3U(kt->kt_rtoken.rt_len, <=, RECOVERY_TOKEN_MAXLEN);
 
 	if ((ret = piv_txn_begin(kt->kt_piv)) != ERRF_OK ||
 	    (ret = piv_select(kt->kt_piv)) != ERRF_OK ||
@@ -773,8 +773,8 @@ kbmd_create_ebox(kbmd_token_t *restrict kt, const struct ebox_tpl *rcfg,
 	}
 
 	arc4random_buf(key, sizeof (key));
-	if ((ret = ebox_create(tpl, key, sizeof (key), kt->kt_rtoken,
-	    kt->kt_rtoklen, &ebox)) != ERRF_OK) {
+	if ((ret = ebox_create(tpl, key, sizeof (key), kt->kt_rtoken.rt_val,
+	    kt->kt_rtoken.rt_len, &ebox)) != ERRF_OK) {
 		goto done;
 	}
 
@@ -842,7 +842,7 @@ log_tpl(const struct ebox_tpl *rcfg, boolean_t stage)
 
 errf_t *
 add_recovery(const char *dataset, const struct ebox_tpl *rcfg, boolean_t stage,
-    const uint8_t *rtoken, size_t rtokenlen)
+    const recovery_token_t *rtoken)
 {
 	errf_t *ret = ERRF_OK;
 	kbmd_token_t *kt = NULL;
@@ -859,11 +859,12 @@ add_recovery(const char *dataset, const struct ebox_tpl *rcfg, boolean_t stage,
 		    "no recovery configuration given"));
 	}
 
-	if (rtoken != NULL && !RECOVERY_TOKEN_INRANGE(rtokenlen)) {
+	if (rtoken != NULL && !RECOVERY_TOKEN_INRANGE(rtoken)) {
 		return (errf("RangeError", NULL,
 		    "incorrect recovery token size (%zu) out of range; "
 		    "must be at least in range [%u, %u] bytes",
-		    rtokenlen, RECOVERY_TOKEN_MINLEN, RECOVERY_TOKEN_MAXLEN));
+		    rtoken->rt_len,
+		    RECOVERY_TOKEN_MINLEN, RECOVERY_TOKEN_MAXLEN));
 	}
 
 	if ((ret = log_tpl(rcfg, stage)) != ERRF_OK) {
@@ -881,16 +882,9 @@ add_recovery(const char *dataset, const struct ebox_tpl *rcfg, boolean_t stage,
 	kt = sys_piv;
 
 	if (rtoken != NULL) {
-		uint8_t *buf = NULL;
-
-		if ((ret = zalloc(rtokenlen, &buf)) != ERRF_OK) {
+		if ((ret = set_piv_rtoken(kt, rtoken)) != ERRF_OK) {
 			goto done;
 		}
-
-		bcopy(rtoken, buf, rtokenlen);
-		freezero(kt->kt_rtoken, kt->kt_rtoklen);
-		kt->kt_rtoken = buf;
-		kt->kt_rtoklen = rtokenlen;
 	} else {
 		if ((ret = new_recovery_token(kt)) != ERRF_OK)
 			goto done;

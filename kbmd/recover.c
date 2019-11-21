@@ -703,9 +703,9 @@ done:
 }
 
 struct update_data {
-	kbmd_token_t	*ud_tok;
-	const uint8_t	*ud_rtoken;
-	size_t		ud_rtokenlen;
+	kbmd_token_t		*ud_tok;
+	const recovery_token_t	*ud_rtok;
+	size_t		ud_primary_count;
 };
 
 static errf_t *
@@ -719,16 +719,24 @@ piv_update_cb(struct ebox_tpl_config *tcfg, void *arg)
 		return (ERRF_OK);
 	}
 
+	if (data->ud_primary_count++ > 0) {
+		return (errf("TemplateError", NULL,
+		    "template has multiple EBOX_PRIMARY configs"));
+	}
+
 	/*
 	 * Since this is an EBOX_PRIMARY config, we assume a single
 	 * template part.  We also shouldn't have been able to create an
 	 * ebox without an EBOX_PRIMARY config without a part.
 	 */
 	tpart = ebox_tpl_config_next_part(tcfg, NULL);
-	VERIFY3P(tpart, !=, NULL);
+	if (tpart == NULL) {
+		return (errf("TemplateError", NULL,
+		    "EBOX_PRIMARY has no config parts"));
+	}
 
 	if ((ret = kbmd_replace_pivtoken(ebox_tpl_part_guid(tpart), GUID_LEN,
-	    data->ud_rtoken, data->ud_rtokenlen, data->ud_tok)) == ERRF_OK) {
+	    data->ud_rtok, data->ud_tok)) != ERRF_OK) {
 		return (FOREACH_STOP);
 	}
 
@@ -736,36 +744,30 @@ piv_update_cb(struct ebox_tpl_config *tcfg, void *arg)
 	return (ERRF_OK);
 }
 
+/*
+ * Using the ebox template, determine the GUID of the old PIV token,
+ * and call the replace pivtoken plugin using rtoken as the recovery
+ * token/key for the replacement and newkt as the new recovery token.
+ * On success, newkt's recovery token is set to the new value returned
+ * from the plugin.
+ */
 static errf_t *
-do_piv_update(struct ebox *ebox, kbmd_token_t *newkt, const uint8_t *rtoken,
-    size_t rtokenlen)
+do_piv_update(struct ebox *ebox, kbmd_token_t *newkt,
+    const recovery_token_t *rtoken)
 {
+	errf_t *ret = ERRF_OK;
 	struct update_data data = {
 		.ud_tok = newkt,
-		.ud_rtoken = rtoken,
-		.ud_rtokenlen = rtokenlen
+		.ud_rtok = rtoken,
 	};
 
-	/*
-	 * It's possible, though rare that an ebox could have multiple
-	 * primary configs, in which case we're not sure which GUID from
-	 * the template will successfully match w/ the recovered token
-	 * when we call the update plugin.  So try each one until we succeed
-	 * or exhaust the list.
-	 */
-	VERIFY0(ebox_tpl_foreach_cfg(ebox_tpl(ebox), piv_update_cb, &data));
-
-	if (newkt->kt_rtoken != NULL) {
-		return (ERRF_OK);
+	if ((ret = ebox_tpl_foreach_cfg(ebox_tpl(ebox), piv_update_cb,
+	    &data)) != ERRF_OK) {
+		ret = errf("RecoveryError", ret,
+		    "failed to create ebox template with new PIV token");
 	}
 
-	/*
-	 * XXX: Not thrilled with this error message -- basically trying
-	 * to replace the token in KBMAPI failed, but if we're also planning
-	 * to make this Triton agnostic, mentioning KBMAPI seems wrong.
-	 */
-	return (errf("RecoverError", NULL,
-	    "failed to update PIV token information"));
+	return (ret);
 }
 
 static errf_t *
@@ -777,8 +779,9 @@ post_recovery(recovery_t *r)
 	struct ebox_tpl *tpl = NULL;
 	struct ebox_tpl *rcfg = NULL;
 	const char *dataset = NULL;
-	const uint8_t *key = NULL, *rtoken = NULL;
-	size_t keylen = 0, rtokenlen = 0;
+	const uint8_t *key = NULL;
+	size_t keylen = 0;
+	recovery_token_t rtoken = { 0 };
 	boolean_t is_encrypted = B_TRUE, is_locked = B_TRUE;
 
 	if ((ret = ebox_recover(r->r_ebox, r->r_cfg)) != ERRF_OK &&
@@ -788,9 +791,9 @@ post_recovery(recovery_t *r)
 
 	dataset = ebox_private(r->r_ebox);
 	key = ebox_key(r->r_ebox, &keylen);
-	rtoken = ebox_recovery_token(r->r_ebox, &rtokenlen);
+	rtoken.rt_val = (uint8_t *)ebox_recovery_token(r->r_ebox,
+	    &rtoken.rt_len);
 
-	VERIFY3P(rtoken, !=, NULL);
 	VERIFY3P(key, !=, NULL);
 
 	/*
@@ -840,14 +843,21 @@ post_recovery(recovery_t *r)
 	piv_txn_end(kt->kt_piv);
 	mutex_exit(&piv_lock);
 
-	if ((ret = do_piv_update(r->r_ebox, kt, rtoken,
-	    rtokenlen)) != ERRF_OK) {
+	/*
+	 * This sets kt's recovery token to the new value from
+	 * the plugin on success (see above).
+	 */
+	if ((ret = do_piv_update(r->r_ebox, kt, &rtoken)) != ERRF_OK) {
 		kbmd_token_free(kt);
 		return (ret);
 	}
 
-	if ((ret = ebox_create(tpl, key, keylen, rtoken, rtokenlen,
-	    &new_ebox)) != ERRF_OK ||
+	/*
+	 * The new/replacement ebox needs to use the new/replacement
+	 * recovery token in kt -- not the old one in rtoken!
+	 */
+	if ((ret = ebox_create(tpl, key, keylen, kt->kt_rtoken.rt_val,
+	    kt->kt_rtoken.rt_len, &new_ebox)) != ERRF_OK ||
 	    (ret = kbmd_put_ebox(new_ebox, B_FALSE)) != ERRF_OK) {
 		ebox_free(new_ebox);
 		return (ret);

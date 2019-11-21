@@ -628,54 +628,49 @@ done:
 }
 
 static errf_t *
-set_recovery_token(kbmd_token_t *restrict kt, custr_t *restrict rtoken)
+set_recovery_token(kbmd_token_t *restrict kt, custr_t *restrict rtokstr)
 {
 	errf_t *ret = ERRF_OK;
 	struct sshbuf *buf = NULL;
+	const void *ptr = NULL;
+	recovery_token_t rtoken = { 0 };
 	size_t len;
 	int rc;
 
-	if (custr_len(rtoken) == 0) {
-		return (errf("DecodeError", NULL, "empty recovery token"));
+	if ((buf = sshbuf_new()) == NULL) {
+		ret = errf("DecodeError", errfno("sshbuf_new", errno, ""),
+		    "failed to allocate buffer to decode recovery token");
+		goto done;
 	}
 
-	if ((buf = sshbuf_new()) == NULL)
-		return (errfno("sshbuf_new", errno, ""));
+	if (custr_len(rtokstr) == 0) {
+		ret = errf("DecodeError", NULL, "empty recovery token");
+		goto done;
+	}
 
-	rc = sshbuf_b64tod(buf, custr_cstr(rtoken));
+	rc = sshbuf_b64tod(buf, custr_cstr(rtokstr));
 	if (rc != SSH_ERR_SUCCESS) {
-		sshbuf_free(buf);
-		ret = ssherrf("sshbuf_b64tod", rc);
-		return (errf("DecodeError", ret,
-		    "failed to decode recovery token"));
+		ret = errf("DecodeError", ssherrf("sshbuf_b64tod", rc),
+		    "failed to decode recovery token");
+		goto done;
 	}
 
+	ptr = sshbuf_ptr(buf);
 	len = sshbuf_len(buf);
-	if (!RECOVERY_TOKEN_INRANGE(len)) {
-		sshbuf_free(buf);
-		return (errf("RangeError", NULL,
-		    "recovery token length (%zu) out of range; "
-		    "must be in range [%u, %u] bytes", len,
-		    RECOVERY_TOKEN_MINLEN, RECOVERY_TOKEN_MAXLEN));
+	if (ptr == NULL && len > 0) {
+		ret = errf("DecodeError", NULL, "sshbuf failed sanity check");
+		goto done;
+	}
+	rtoken.rt_val = (uint8_t *)ptr;
+	rtoken.rt_len = len;
+
+	if ((ret = set_piv_rtoken(kt, &rtoken)) != ERRF_OK) {
+		ret = errf("DecodeError", ret, "failed to save recovery token");
 	}
 
-	if ((ret = zalloc(len, &kt->kt_rtoken)) != ERRF_OK) {
-		sshbuf_free(buf);
-		return (ret);
-	}
-
-	rc = sshbuf_get(buf, kt->kt_rtoken, len);
-	if (rc != SSH_ERR_SUCCESS) {
-		ret = ssherrf("sshbuf_get", rc);
-		sshbuf_free(buf);
-		freezero(kt->kt_rtoken, len);
-		kt->kt_rtoken = NULL;
-		return (ret);
-	}
-
-	kt->kt_rtoklen = len;
+done:
 	sshbuf_free(buf);
-	return (ERRF_OK);
+	return (ret);
 }
 
 static errf_t *
@@ -785,7 +780,7 @@ done:
 
 errf_t *
 kbmd_replace_pivtoken(const uint8_t *guid, size_t guidlen,
-    const uint8_t *rtoken, size_t rtokenlen, kbmd_token_t *kt)
+    const recovery_token_t *rtoken, kbmd_token_t *kt)
 {
 	errf_t *ret = ERRF_OK;
 	custr_t *input = NULL;
@@ -800,7 +795,8 @@ kbmd_replace_pivtoken(const uint8_t *guid, size_t guidlen,
 		goto done;
 	}
 
-	if ((ret = ecustr_append_b64(rtok64, rtoken, rtokenlen)) != ERRF_OK) {
+	if ((ret = ecustr_append_b64(rtok64, rtoken->rt_val,
+	    rtoken->rt_len)) != ERRF_OK) {
 		goto done;
 	}
 

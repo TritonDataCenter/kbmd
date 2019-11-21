@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2019, Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 
 #include <bunyan.h>
@@ -98,7 +98,7 @@ add_create_data(nvlist_t *restrict resp, struct ebox *restrict ebox,
 }
 
 static errf_t *
-try_guid(const uint8_t *guid, const uint8_t *rtoken, uint_t rtokenlen,
+try_guid(const uint8_t *guid, const recovery_token_t *rtoken,
     kbmd_token_t **restrict ktp)
 {
 	errf_t *ret = ERRF_OK;
@@ -112,7 +112,7 @@ try_guid(const uint8_t *guid, const uint8_t *rtoken, uint_t rtokenlen,
 	if ((ret = kbmd_find_byguid(guid, GUID_LEN, &kt)) != ERRF_OK)
 		return (ret);
 
-	if ((ret = set_piv_rtoken(kt, rtoken, rtokenlen)) != ERRF_OK) {
+	if ((ret = set_piv_rtoken(kt, rtoken)) != ERRF_OK) {
 		kbmd_token_free(kt);
 		return (ret);
 	}
@@ -125,7 +125,7 @@ try_guid(const uint8_t *guid, const uint8_t *rtoken, uint_t rtokenlen,
 }
 
 static boolean_t
-try_sys_piv(const uint8_t *guid, const uint8_t *rtoken, size_t rtokenlen)
+try_sys_piv(const uint8_t *guid, const recovery_token_t *rtoken)
 {
 	errf_t *ret = ERRF_OK;
 	const uint8_t *sys_piv_guid = NULL;
@@ -159,16 +159,16 @@ try_sys_piv(const uint8_t *guid, const uint8_t *rtoken, size_t rtokenlen)
 		return (B_FALSE);
 	}
 
-	if (sys_piv->kt_rtoken == NULL && rtoken == NULL) {
+	if (sys_piv->kt_rtoken.rt_val == NULL && rtoken == NULL) {
 		(void) bunyan_trace(tlog, "System PIV not set",
 		    BUNYAN_T_END);
 		return (B_FALSE);
 	}
 
-	if (sys_piv->kt_rtoken != NULL)
+	if (sys_piv->kt_rtoken.rt_val != NULL)
 		return (B_TRUE);
 
-	if ((ret = set_piv_rtoken(sys_piv, rtoken, rtokenlen)) != ERRF_OK) {
+	if ((ret = set_piv_rtoken(sys_piv, rtoken)) != ERRF_OK) {
 		/*
 		 * This can only fail due to no memory, so we don't
 		 * care about the exact error message.
@@ -185,7 +185,7 @@ try_sys_piv(const uint8_t *guid, const uint8_t *rtoken, size_t rtokenlen)
  * retry recreating the zpool.
  */
 static errf_t *
-kbmd_assert_token(const uint8_t *guid, const uint8_t *rtoken, size_t rtokenlen,
+kbmd_assert_token(const uint8_t *guid, const recovery_token_t *rtoken,
     kbmd_token_t **restrict ktp, struct ebox_tpl **restrict rcfgp)
 {
 	errf_t *ret = ERRF_OK;
@@ -197,7 +197,7 @@ kbmd_assert_token(const uint8_t *guid, const uint8_t *rtoken, size_t rtokenlen,
 	 * If the system PIV has been designated, and is usable, we
 	 * use that.
 	 */
-	if (try_sys_piv(guid, rtoken, rtokenlen)) {
+	if (try_sys_piv(guid, rtoken)) {
 		(void) bunyan_debug(tlog, "Using system token",
 		    BUNYAN_T_STRING, "piv_guid",
 		    piv_token_guid_hex(sys_piv->kt_piv),
@@ -206,7 +206,7 @@ kbmd_assert_token(const uint8_t *guid, const uint8_t *rtoken, size_t rtokenlen,
 		return (ERRF_OK);
 	}
 
-	if ((ret = try_guid(guid, rtoken, rtokenlen, ktp)) != ERRF_OK) {
+	if ((ret = try_guid(guid, rtoken, ktp)) != ERRF_OK) {
 		return (ret);
 	} else if (guid != NULL) {
 		ASSERT3P(*ktp, !=, NULL);
@@ -229,8 +229,8 @@ kbmd_assert_token(const uint8_t *guid, const uint8_t *rtoken, size_t rtokenlen,
 
 errf_t *
 kbmd_zpool_create(const char *dataset, const uint8_t *guid,
-    const struct ebox_tpl *rcfg_cmdline, const uint8_t *rtoken,
-    size_t rtokenlen, nvlist_t *resp)
+    const struct ebox_tpl *rcfg_cmdline, const recovery_token_t *rtoken,
+    nvlist_t *resp)
 {
 	errf_t *ret = ERRF_OK;
 	struct ebox *ebox = NULL;
@@ -259,12 +259,10 @@ kbmd_zpool_create(const char *dataset, const uint8_t *guid,
 
 	mutex_enter(&piv_lock);
 
-	if ((ret = kbmd_assert_token(guid, rtoken, rtokenlen,
-	    &kt, &rcfg)) != ERRF_OK ||
+	if ((ret = kbmd_assert_token(guid, rtoken, &kt, &rcfg)) != ERRF_OK ||
 	    (ret = kbmd_assert_pin(kt)) != ERRF_OK) {
 		goto done;
 	}
-	VERIFY3P(kt->kt_rtoken, !=, NULL);
 
 	if ((ret = kbmd_create_ebox(kt,
 	    (rcfg_cmdline != NULL) ? rcfg_cmdline : rcfg, dataset, &key,
