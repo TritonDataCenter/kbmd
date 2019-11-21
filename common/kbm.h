@@ -26,11 +26,16 @@ extern "C" {
 #endif
 
 /*
- * The size (in bytes) of a raw (not base64 encoded) recovery token. It is
- * based on the size allowed in an ebox which itself is limited by the
- * size of data that the Shamir secret sharing code allows.
+ * The ranges of sizes we allow for the recovery token. While there is
+ * no technical reason a recovery token smaller than 16 bytes couldn't be
+ * used, we require 16 bytes as a minimum. The maximum is due to the
+ * way pivy's ebox_create() function serializes the recovery token which
+ * limits it to 255 bytes.
  */
-#define	RECOVERY_TOKEN_LEN	32U
+#define	RECOVERY_TOKEN_MINLEN	16U
+#define	RECOVERY_TOKEN_MAXLEN	255U
+#define	RECOVERY_TOKEN_INRANGE(_x) \
+	(((_x) >= RECOVERY_TOKEN_MINLEN) && ((_x) <= RECOVERY_TOKEN_MAXLEN))
 
 /*
  * For most daemons, we'd set their equivalent of KBMD_RUNDIR to /var/run/xxx.

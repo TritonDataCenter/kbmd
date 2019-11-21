@@ -763,7 +763,8 @@ kbmd_create_ebox(kbmd_token_t *restrict kt, const struct ebox_tpl *rcfg,
 
 	VERIFY(MUTEX_HELD(&piv_lock));
 	VERIFY3P(kt->kt_rtoken, !=, NULL);
-	VERIFY3U(kt->kt_rtoklen, ==, RECOVERY_TOKEN_LEN);
+	VERIFY3U(kt->kt_rtoklen, >=, RECOVERY_TOKEN_MINLEN);
+	VERIFY3U(kt->kt_rtoklen, <=, RECOVERY_TOKEN_MAXLEN);
 
 	if ((ret = piv_txn_begin(kt->kt_piv)) != ERRF_OK ||
 	    (ret = piv_select(kt->kt_piv)) != ERRF_OK ||
@@ -858,10 +859,11 @@ add_recovery(const char *dataset, const struct ebox_tpl *rcfg, boolean_t stage,
 		    "no recovery configuration given"));
 	}
 
-	if (rtoken != NULL && rtokenlen != RECOVERY_TOKEN_LEN) {
-		return (errf("ArgumentError", NULL,
-		    "incorrect recovery token size (%zu); expected %u",
-		    rtokenlen, RECOVERY_TOKEN_LEN));
+	if (rtoken != NULL && !RECOVERY_TOKEN_INRANGE(rtokenlen)) {
+		return (errf("RangeError", NULL,
+		    "incorrect recovery token size (%zu) out of range; "
+		    "must be at least in range [%u, %u] bytes",
+		    rtokenlen, RECOVERY_TOKEN_MINLEN, RECOVERY_TOKEN_MAXLEN));
 	}
 
 	if ((ret = log_tpl(rcfg, stage)) != ERRF_OK) {

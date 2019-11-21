@@ -651,6 +651,14 @@ set_recovery_token(kbmd_token_t *restrict kt, custr_t *restrict rtoken)
 	}
 
 	len = sshbuf_len(buf);
+	if (!RECOVERY_TOKEN_INRANGE(len)) {
+		sshbuf_free(buf);
+		return (errf("RangeError", NULL,
+		    "recovery token length (%zu) out of range; "
+		    "must be in range [%u, %u] bytes", len,
+		    RECOVERY_TOKEN_MINLEN, RECOVERY_TOKEN_MAXLEN));
+	}
+
 	if ((ret = zalloc(len, &kt->kt_rtoken)) != ERRF_OK) {
 		sshbuf_free(buf);
 		return (ret);
