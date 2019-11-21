@@ -203,6 +203,7 @@ spawn(const char *restrict cmd, char *const argv[restrict],
     char *const env[restrict], pid_t *restrict pidp, int fds[restrict])
 {
 	errf_t *ret = ERRF_OK;
+	custr_t *cmdline = NULL;
 	posix_spawn_file_actions_t fact = { 0 };
 	posix_spawnattr_t attr = { 0 };
 	pid_t pid;
@@ -210,9 +211,35 @@ spawn(const char *restrict cmd, char *const argv[restrict],
 
 	*pidp = (pid_t)-1;
 
-	if ((ret = kspawn_attr_init(&attr)) != ERRF_OK)
+	if ((ret = ecustr_alloc(&cmdline)) != ERRF_OK) {
 		return (ret);
+	}
+
+	/*
+	 * This is for diagnostic purposes, so we're not bothering with
+	 * correctly escaping the cmdline since we already have the
+	 * values in an acceptable format for posix_spawn()
+	 */
+
+	for (size_t i = 0; argv[i] != NULL; i++) {
+		if (i > 0 && (ret = ecustr_appendc(cmdline, ' ')) != ERRF_OK) {
+			custr_free(cmdline);
+			return (ret);
+		}
+
+		if ((ret = ecustr_append(cmdline, argv[i])) != ERRF_OK) {
+			custr_free(cmdline);
+			return (ret);
+		}
+	}
+
+	if ((ret = kspawn_attr_init(&attr)) != ERRF_OK) {
+		custr_free(cmdline);
+		return (ret);
+	}
+
 	if ((ret = kspawn_fact_init(&fact)) != ERRF_OK) {
+		custr_free(cmdline);
 		VERIFY0(posix_spawnattr_destroy(&attr));
 		return (ret);
 	}
@@ -248,6 +275,7 @@ spawn(const char *restrict cmd, char *const argv[restrict],
 
 	(void) bunyan_debug(tlog, "Spawned process",
 	    BUNYAN_T_STRING, "command", cmd,
+	    BUNYAN_T_STRING, "cmdline", custr_cstr(cmdline),
 	    BUNYAN_T_INT32, "pid", (int32_t)pid,
 	    BUNYAN_T_END);
 
@@ -277,6 +305,7 @@ fail:
 
 	VERIFY0(posix_spawn_file_actions_destroy(&fact));
 	VERIFY0(posix_spawnattr_destroy(&attr));
+	custr_free(cmdline);
 	return (ret);
 }
 
