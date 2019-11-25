@@ -1,0 +1,48 @@
+.\"
+.\" This file and its contents are supplied under the terms of the
+.\" Common Development and Distribution License ("CDDL"), version 1.0.
+.\" You may only use this file in accordance with the terms of version
+.\" 1.0 of the CDDL.
+.\"
+.\" A full copy of the text of the CDDL should have accompanied this
+.\" source.  A copy of the CDDL is also available via the Internet at
+.\" http://www.illumos.org/license/CDDL.
+.\"
+.\"
+.\" Copyright 2019 Joyent, Inc.
+.\"
+.Dd November 25, 2019
+.Dt KBMD 1M
+.Os
+.Sh NAME
+.Nm kbmd
+.Nd Key Backup and Management Daemon
+.Sh SYNOPSIS
+.Nm
+.Op Fl d
+.Sh DESCRIPTION
+.Nm
+manages the ebox-protected keys for encrypted datasets.
+.Nm
+stores the eboxes of encrypted datasets in the
+.Sy rfd77:ebox
+and
+.Sy rfd77:stagedebox
+.Xr zfs 1M
+properties.
+These properties should only be manipulated by
+.Nm
+via the use of the
+.Xr kbmadm 1M
+utility.
+.Ss OPTIONS
+.Bl -tag -width Fl
+.It Fl d
+Start in debug mode.
+.Nm
+stays in the foreground and logs more detail.
+.El
+.Sh INTERFACE STABILITY
+Private
+.Sh SEE ALSO
+.Xr kbmadm 1m

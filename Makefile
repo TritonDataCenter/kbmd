@@ -261,6 +261,18 @@ install: all
 	$(LN) -s triton  $(DESTDIR)/usr/lib/kbm/plugins/kbm-plugin-1
 	$(INSTALL) -m 0644 -f $(DESTDIR)/lib/svc/manifest/system smf/kbmd.xml
 	$(INSTALL) -m 0555 -f $(DESTDIR)/lib/svc/method smf/kbmd
+	$(INSTALL) -m 0444 -f $(DESTDIR)/usr/share/man/man1m man/kbmd.1m
+	$(INSTALL) -m 0444 -f $(DESTDIR)/usr/share/man/man1m man/kbmadm.1m
+
+manifest:
+	cp manifest $(DESTDIR)/$(DESTNAME)
+
+mancheck_conf:
+
+.PHONY: update
+update:
+	git pull --rebase
+
 
 manifest:
 	cp manifest $(DESTDIR)/$(DESTNAME)
