@@ -105,13 +105,15 @@ void kbmd_dfatal(int, const char *, ...) __NORETURN;
 int kbmd_door_setup(const char *);
 
 void kbmd_return(errf_t *restrict, struct nvlist *restrict) __NORETURN;
+uid_t req_uid(void);
+pid_t req_pid(void);
 
-void dispatch_request(struct nvlist *, pid_t);
+void dispatch_request(struct nvlist *);
 errf_t *kbmd_zpool_create(const char *, const uint8_t *,
     const struct ebox_tpl *, const recovery_token_t *, nvlist_t *);
 void kbmd_recover_init(int);
-void kbmd_recover_start(struct nvlist *, pid_t);
-void kbmd_recover_resp(struct nvlist *, pid_t);
+void kbmd_recover_start(struct nvlist *);
+void kbmd_recover_resp(struct nvlist *);
 void kbmd_update_recovery(struct nvlist *);
 void kbmd_list_recovery(struct nvlist *);
 void kbmd_set_syspool(struct nvlist *);

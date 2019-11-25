@@ -19,6 +19,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <pwd.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <strings.h>
@@ -26,91 +27,211 @@
 #include <thread.h>
 #include <unistd.h>
 #include <umem.h>
+#include <sys/sysmacros.h>
 #include "kbmd.h"
 
-#define	DOOR_RET_MAX 16384
-
-struct retbuf {
-	char		*rt_buf;
-	size_t		rt_len;
-	nv_alloc_t	rt_nvalloc;
-};
-
-static int door_fd = -1;
+/*
+ * Arbitrary limit on the amount of data (as a packed nvlist) we expect to
+ * return for any given request.  Used to size tdata_t->td_buf
+ */
+static size_t door_ret_max = 16384;
 
 /*
- * We allocate a per-door server thread buffer used to hold the packed
- * nvlist. TSD is used so that we can attach a cleanup function if the
- * thread is terminated. Unfortunately, there is no other way after a
- * door_return(3C) call for the thread to clean up after itself. The
- * alternative would be to put the contents on the stack, but that seems
- * rife with peril if our responses get too large.
+ * Per-door thread data
  */
-static thread_key_t retkey = THR_ONCE_KEY;
+typedef struct tdata {
+	ucred_t		*td_ucred;
+	boolean_t	td_ucred_set;
+	int		td_errfd;
+	char		td_tty[_POSIX_PATH_MAX];
+	bunyan_logger_t *td_log;
+	size_t		td_buflen;
+	char		td_buf[];
+} tdata_t;
+
+static int door_fd = -1;
+static thread_key_t tdatakey = THR_ONCE_KEY;
 
 /*
  * A packed nvlist suitable for use with door_return(3C).  Created during
  * kbmd startup (by kbmd_door_setup -- before we start the door server) as a
  * return value of last resort that should always be available to return.
+ * Once created during setup, it is never altered and is treated as constant
+ * data (i.e. no locking required to use either value).
  */
 static char *generr;
 static size_t generr_sz;
 
-static void
-session_log_start(door_cred_t *dc)
+static boolean_t
+tdata_init(tdata_t *td, door_desc_t *dp, uint_t n_desc)
 {
-	bunyan_logger_t *child;
+	static const char *rem_keys[] = {
+		"req_pid", "req_uid", "req_tty", "user",
+	};
 
-	VERIFY0(bunyan_child(blog, &child,
-	    BUNYAN_T_UINT32, "req_pid", (uint32_t)dc->dc_pid,
-	    BUNYAN_T_UINT32, "req_uid", (uint32_t)dc->dc_ruid,
-	    BUNYAN_T_END));
+	struct passwd *pw = NULL;
+	ucred_t *uc = NULL;
 
-	tlog = child;
-}
+	bzero(td->td_buf, td->td_buflen);
+	bzero(td->td_tty, sizeof (td->td_tty));
+	td->td_errfd = -1;
+	td->td_ucred_set = B_FALSE;
 
-static void
-session_log_end(void)
-{
-	bunyan_fini(tlog);
-	tlog = NULL;
-}
-
-static struct retbuf *
-retbuf_alloc(void)
-{
-	struct retbuf *b;
-
-	if ((b = umem_zalloc(sizeof (*b), UMEM_DEFAULT)) == NULL)
-		return (NULL);
-
-	if ((b->rt_buf = umem_zalloc(DOOR_RET_MAX, UMEM_DEFAULT)) == NULL) {
-		umem_free(b, sizeof (*b));
-		return (NULL);
+	for (size_t i = 0; i < ARRAY_SIZE(rem_keys); i++) {
+		(void) bunyan_key_remove(tlog, rem_keys[i]);
 	}
 
-	b->rt_len = DOOR_RET_MAX;
-	if (nv_alloc_init(&b->rt_nvalloc, nv_fixed_ops, b->rt_buf,
-	    b->rt_len) != 0) {
-		umem_free(b->rt_buf, b->rt_len);
-		umem_free(b, sizeof (*b));
-		return (NULL);
+	/*
+	 * We're not anticipating the kernel calling us. If that changes,
+	 * we should alter this check.
+	 */
+	if (door_ucred(&td->td_ucred) != 0) {
+		(void) bunyan_error(tlog,
+		    "Unable to obtain caller credentials",
+		    BUNYAN_T_INT32, "errno", (int32_t)errno,
+		    BUNYAN_T_STRING, "errmsg", strerror(errno),
+		    BUNYAN_T_END);
+		return (B_FALSE);
+	}
+	uc = td->td_ucred;
+	td->td_ucred_set = B_TRUE;
+
+	pw = getpwuid(ucred_getruid(uc));
+	if (pw != NULL) {
+		if (bunyan_key_add(tlog,
+		    BUNYAN_T_STRING, "user", pw->pw_name,
+		    BUNYAN_T_END) != 0)
+			return (B_FALSE);
 	}
 
-	return (b);
+	/*
+	 * We rely on bunyan overwriting an existing key with a new
+	 * value for this.
+	 */
+	if (bunyan_key_add(tlog,
+	    BUNYAN_T_UINT32, "req_pid", (uint32_t)ucred_getpid(uc),
+	    BUNYAN_T_UINT32, "req_uid", (uint32_t)ucred_getruid(uc),
+	    BUNYAN_T_END) != 0) {
+		return (B_FALSE);
+	}
+
+	if (n_desc > 1) {
+		pid_t pid = ucred_getpid(td->td_ucred);
+		uid_t uid = ucred_getruid(td->td_ucred);
+
+		(void) bunyan_error(tlog,
+		    "Unexpected number of descrptors passed",
+		    BUNYAN_T_UINT32, "n_desc", n_desc,
+		    BUNYAN_T_UINT32, "req_pid", (uint32_t)pid,
+		    BUNYAN_T_UINT32, "req_uid", (uint32_t)uid,
+		    BUNYAN_T_END);
+
+		return (B_FALSE);
+	}
+
+	if (n_desc == 0) {
+		(void) strlcpy(td->td_tty, "<none>", sizeof (td->td_tty));
+	} else {
+		int rc;
+
+		if ((dp->d_attributes & DOOR_DESCRIPTOR) == 0) {
+			(void) bunyan_error(tlog,
+			    "Passed unknown attribute in door_desc_t",
+			    BUNYAN_T_INT32, "attr", dp->d_attributes,
+			    BUNYAN_T_END);
+			return (B_FALSE);
+		}
+
+		td->td_errfd = dp->d_data.d_desc.d_descriptor;
+		rc = ttyname_r(td->td_errfd, td->td_tty, sizeof (td->td_tty));
+		if (rc == 0) {
+			(void) strlcpy(td->td_tty, "<none>",
+			    sizeof (td->td_tty));
+		}
+	}
+
+	if (bunyan_key_add(tlog,
+	    BUNYAN_T_STRING, "req_tty", td->td_tty,
+	    BUNYAN_T_END) != 0) {
+		return (B_FALSE);
+	}
+
+	return (B_TRUE);
+}
+
+static tdata_t *
+tdata_alloc(size_t buflen)
+{
+	tdata_t *td = NULL;
+	size_t tdlen = sizeof (*td) + buflen;
+
+	if ((td = umem_zalloc(tdlen, UMEM_DEFAULT)) == NULL)
+		return (NULL);
+
+	if (bunyan_child(blog, &td->td_log, BUNYAN_T_END) != 0) {
+		umem_free(td, tdlen);
+		return (NULL);
+	}
+	tlog = td->td_log;
+
+	td->td_buflen = buflen;
+	td->td_errfd = -1;
+	return (td);
 }
 
 static void
-retbuf_free(void *p)
+tdata_free(void *p)
 {
 	if (p == NULL)
 		return;
 
-	struct retbuf *b = p;
+	tdata_t *td = p;
+	size_t tdlen = 0;
 
-	nv_alloc_fini(&b->rt_nvalloc);
-	umem_free(b->rt_buf, b->rt_len);
-	umem_free(b, sizeof (*b));
+	bunyan_fini(td->td_log);
+	tlog = NULL;
+
+	tdlen = sizeof (*td) + td->td_buflen;
+	umem_free(td, tdlen);
+}
+
+static tdata_t *
+tdata_get(void)
+{
+	tdata_t *td = NULL;
+
+	VERIFY0(thr_keycreate_once(&tdatakey, tdata_free));
+	VERIFY0(thr_getspecific(tdatakey, (void **)td));
+
+	if (td != NULL)
+		return (td);
+
+	/*
+	 * TODO: Eventually we should make the kbmd door have a private
+	 * preallocated thread pool, with each thread's tdata being
+	 * a required part of the thread creation.
+	 */
+	td = tdata_alloc(door_ret_max);
+	VERIFY3P(td, !=, NULL);
+
+	VERIFY0(thr_setspecific(tdatakey, td));
+	return (td);
+}
+
+uid_t
+req_uid(void)
+{
+	tdata_t *td = tdata_get();
+
+	return (ucred_getruid(td->td_ucred));
+}
+
+pid_t
+req_pid(void)
+{
+	tdata_t *td = tdata_get();
+
+	return (ucred_getpid(td->td_ucred));
 }
 
 static void __NORETURN
@@ -135,7 +256,6 @@ kbmd_ret_generr(errf_t *restrict errval, nvlist_t *restrict resp)
 		    BUNYAN_T_END);
 	}
 
-	session_log_end();
 	errf_free(errval);
 	nvlist_free(resp);
 	VERIFY0(door_return(generr, generr_sz, NULL, 0));
@@ -154,7 +274,8 @@ static void __NORETURN
 kbmd_ret_nvlist(nvlist_t *resp)
 {
 	errf_t *ret = ERRF_OK;
-	struct retbuf *b = NULL;
+	tdata_t *td = tdata_get();
+	char *buf = td->td_buf;
 	size_t nvlen;
 	boolean_t success;
 
@@ -187,27 +308,17 @@ kbmd_ret_nvlist(nvlist_t *resp)
 #endif
 
 	VERIFY0(nvlist_size(resp, &nvlen, NV_ENCODE_NATIVE));
-	if (nvlen > DOOR_RET_MAX) {
+	if (nvlen > td->td_buflen) {
 		(void) bunyan_error(tlog,
-		    "Tried to return more than DOOR_RET_MAX",
+		    "Tried to return more data than allowed",
 		    BUNYAN_T_UINT64, "retsize", nvlen,
+		    BUNYAN_T_UINT64, "allowed", td->td_buflen,
 		    BUNYAN_T_END);
 		kbmd_ret_generr(ret, resp);
 	}
 
-	VERIFY0(thr_keycreate_once(&retkey, retbuf_free));
-	VERIFY0(thr_getspecific(retkey, (void **)&b));
-	if (b == NULL) {
-		if ((b = retbuf_alloc()) == NULL)
-			door_return(generr, generr_sz, NULL, 0);
-		VERIFY0(thr_setspecific(retkey, b));
-	}
-
-	bzero(b->rt_buf, b->rt_len);
-
 	/* The nvlist_size() check above should guarantee this doesn't fail */
-	VERIFY0(nvlist_xpack(resp, &b->rt_buf, &b->rt_len, NV_ENCODE_NATIVE,
-	    &b->rt_nvalloc));
+	VERIFY0(nvlist_pack(resp, &buf, &td->td_buflen, NV_ENCODE_NATIVE, 0));
 
 	/*
 	 * If a failure, kbmd_ret_error has already logged the failure,
@@ -217,8 +328,7 @@ kbmd_ret_nvlist(nvlist_t *resp)
 		(void) bunyan_debug(tlog, "Returning success", BUNYAN_T_END);
 
 	nvlist_free(resp);
-	session_log_end();
-	VERIFY0(door_return(b->rt_buf, nvlen, NULL, 0));
+	VERIFY0(door_return(td->td_buf, nvlen, NULL, 0));
 
 	/* NOTREACHED */
 	abort();
@@ -287,22 +397,22 @@ static void
 kbmd_door_server(void *cookie, char *argp, size_t arg_size, door_desc_t *dp,
     uint_t n_desc)
 {
-	door_cred_t dcred = { 0 };
-	nvlist_t *req = NULL;
 	errf_t *ret = ERRF_OK;
-	int rc;
+	nvlist_t *req = NULL;
+	tdata_t *td = tdata_get();
 
-	rc = door_cred(&dcred);
-	if (rc != 0) {
-		(void) bunyan_error(blog,
-		    "Unable to obtain caller credentials",
-		    BUNYAN_T_INT32, "errno", (int32_t)errno,
-		    BUNYAN_T_STRING, "errmsg", strerror(errno),
-		    BUNYAN_T_END);
+	/*
+	 * If we make the kbmd door server use a private thread pool,
+	 * each thread should gets it's own preallocated tdata_t and
+	 * we can remove this check.
+	 */
+	if (td == NULL) {
 		VERIFY0(door_return(generr, generr_sz, NULL, 0));
 	}
 
-	session_log_start(&dcred);
+	if (!tdata_init(td, dp, n_desc)) {
+		VERIFY0(door_return(generr, generr_sz, NULL, 0));
+	}
 
 	ret = envlist_unpack(argp, arg_size, &req);
 	if (ret != ERRF_OK) {
@@ -314,7 +424,7 @@ kbmd_door_server(void *cookie, char *argp, size_t arg_size, door_desc_t *dp,
 		VERIFY0(door_return(generr, generr_sz, NULL, 0));
 	}
 
-	dispatch_request(req, dcred.dc_pid);
+	dispatch_request(req);
 }
 
 static void

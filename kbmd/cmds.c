@@ -559,7 +559,7 @@ cmd_replace_pivtoken(nvlist_t *req)
 }
 
 void
-dispatch_request(nvlist_t *req, pid_t req_pid)
+dispatch_request(nvlist_t *req)
 {
 
 	errf_t *ret = ERRF_OK;
@@ -592,7 +592,6 @@ dispatch_request(nvlist_t *req, pid_t req_pid)
 	(void) bunyan_info(tlog, "Received request",
 	    BUNYAN_T_STRING, "request", kbm_cmd_str(cmdval),
 	    BUNYAN_T_INT32, "reqval", cmdval,
-	    BUNYAN_T_INT32, "pid", req_pid,
 	    BUNYAN_T_END);
 
 	switch ((kbm_cmd_t)cmdval) {
@@ -603,10 +602,10 @@ dispatch_request(nvlist_t *req, pid_t req_pid)
 		cmd_zpool_create(req);
 		break;
 	case KBM_CMD_RECOVER_START:
-		kbmd_recover_start(req, req_pid);
+		kbmd_recover_start(req);
 		break;
 	case KBM_CMD_RECOVER_RESP:
-		kbmd_recover_resp(req, req_pid);
+		kbmd_recover_resp(req);
 		break;
 	case KBM_CMD_ADD_RECOVERY:
 		cmd_add_recovery(req);

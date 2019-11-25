@@ -1105,15 +1105,15 @@ done:
 }
 
 void
-kbmd_recover_start(nvlist_t *req, pid_t pid)
+kbmd_recover_start(nvlist_t *req)
 {
 	errf_t *ret = ERRF_OK;
 	struct ebox *ebox = NULL;
 	recovery_t *r = NULL;
 	uint32_t cfgnum = 0;
+	pid_t pid = req_pid();
 
 	(void) bunyan_info(tlog, "Request to start recovery",
-	    BUNYAN_T_INT32, "request_pid", pid,
 	    BUNYAN_T_END);
 
 	mutex_enter(&piv_lock);
@@ -1193,10 +1193,11 @@ fail:
 }
 
 void
-kbmd_recover_resp(nvlist_t *req, pid_t pid)
+kbmd_recover_resp(nvlist_t *req)
 {
 	errf_t *ret = NULL;
 	recovery_t *r = NULL;
+	pid_t pid = req_pid();
 	uint32_t id;
 
 	if ((ret = envlist_lookup_uint32(req, KBM_NV_RECOVER_ID,

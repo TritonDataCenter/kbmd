@@ -33,7 +33,7 @@ STATIC_LIBS =	$(_STATIC_LIBS:%=out/%)
 
 PIVY_TARGETS =	pivy-tool pivy-box
 
-CPPFLAGS =	-I$(PROTOINC) -Icommon -I.
+CPPFLAGS =	-I$(PROTOINC) -Icommon -I. -D_POSIX_PTHREAD_SEMANTICS
 CFLAGS =	-g -msave-args -m64 -std=gnu99 -fstack-protector-all \
 		-Wall -Wno-unknown-pragmas
 LDFLAGS =	-L$(DESTDIR)/lib/amd64 -L$(DESTDIR)/usr/lib/amd64
