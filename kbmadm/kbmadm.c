@@ -91,7 +91,7 @@ usage(void)
 	(void) fprintf(stderr,
 	    "Usage: %1$s create-zpool [-g guid] [-t template] -- "
 	    "<zpool create args>...\n"
-	    "       %1$s recover [-n] dataset\n"
+	    "       %1$s recover [-c cfgnum] dataset\n"
 	    "       %1$s unlock [-r] dataset\n"
 	    "       %1$s recovery add [-f] [-t template] [-r recovery_token] dataset\n"
 	    "       %1$s recovery list [-p]\n"

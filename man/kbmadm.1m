@@ -26,7 +26,7 @@
 .Ar zpool-create-args
 .Nm
 .Cm recover
-.Op Fl n
+.Op Fl c Ar cfgnum
 .Ar dataset
 .Nm
 .Cm unlock
@@ -129,6 +129,109 @@ Note that stdin of the
 .Cm create
 command is not available.
 .El
+.\"
+.\" recover
+.\"
+.It Xo
+.Nm
+.Cm recover
+.Op Fl c Ar cfgnum
+.Ar dataset
+.Xc
+Start a recovery session for
+.Ar dataset
+using the active recovery configuration template.
+If the active reconfiguration template contains multiple recovery
+configuartions, the
+.Fl c Ar cfgnum
+option may be used to specifify which configuration to use.
+If the
+.Fl c Ar cfgnum
+option is not present, the recovery process will prompt the operator to
+first select a recovery configuration from the active recovery template
+before starting the challenge/response process.
+.\"
+.\" unlock
+.\"
+.It Xo
+.Nm
+.Cm unlock
+.Op Fl r
+.Ar dataset
+.Xc
+Unlock the ebox associated with the given dataset, load the key from the ebox,
+and mount the dataset (if appropriate).
+If the
+.Fl r
+option is given, a failed unlock attempt will immediately start a recovery
+session for
+.Ar dataset .
+.Pp
+The mounting that occurs is similar to that which occurs when
+.Nm zpool Cm import
+normally runs.
+.\"
+.\" recovery add
+.\"
+.It Xo
+.Nm
+.Cm recovery add
+.Op Fl f
+.Op Fl r Ar recovery_token
+.Fl t Ar template
+.Ar dataset
+.Xc
+Add a recovery template
+.Ar template
+with a recovery token
+.Ar recovery_token
+.Pq base 64 encoded
+to the dataset.
+.Pp
+If the
+.Fl f
+option is given, or no active recovery template is present, the given recovery
+template is immediately made the active recovery configuration.
+If the
+.Fl f
+option is not present, the given recovery template is added as the staged
+recovery configuration.
+.\"
+.\" recovery activate
+.\"
+.It Xo
+.Nm
+.Cm recovery activate
+.Ar dataset
+.Xc
+Activate the staged recovery configuration for
+.Ar dataset .
+If no recovery configuration has been staged using the
+.Nm Cm recovery add
+command, this command has no effect.
+.\"
+.\" recovery list
+.\"
+.It Xo
+.Nm
+.Cm recovery list
+.Op Fl p
+.Xc
+List the recovery template configuration (active and staged if present) on the
+system.
+If the
+.Fl p
+option is given, the output is presented in a machine parseable format.
+.\"
+.\" recovery cancel
+.\"
+.It Xo
+.Nm
+.Cm recovery cancel
+.Ar dataset
+.Xc
+Removes any staged recovery configuration templates present for
+.Ar dataset .
 .El
 .Sh EXIT STATUS
 .Ex -std
