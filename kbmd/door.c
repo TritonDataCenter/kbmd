@@ -201,7 +201,7 @@ tdata_get(void)
 	tdata_t *td = NULL;
 
 	VERIFY0(thr_keycreate_once(&tdatakey, tdata_free));
-	VERIFY0(thr_getspecific(tdatakey, (void **)td));
+	VERIFY0(thr_getspecific(tdatakey, (void **)&td));
 
 	if (td != NULL)
 		return (td);
