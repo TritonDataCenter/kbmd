@@ -208,21 +208,38 @@ errf_t *
 template_hash(const struct ebox_tpl *tpl, uint8_t **hashp, size_t *lenp)
 {
 	errf_t *ret = ERRF_OK;
+	struct ebox_tpl *tpl_clone = NULL;
 	struct sshbuf *buf = NULL;
+	char *b64str = NULL;
 
 	*hashp = NULL;
 	*lenp = 0;
+
+	if ((tpl_clone = ebox_tpl_clone(tpl)) == NULL) {
+		ret = errf("OutOfMemory", NULL, "ebox_tpl_clone failed");
+		goto done;
+	}
 
 	if ((buf = sshbuf_new()) == NULL) {
 		ret = errfno("sshbuf_new", errno, "cannot create sshbuf");
 		goto done;
 	}
 
+	if ((ret = ebox_tpl_foreach_cfg(tpl_clone, strip_primary_cb,
+	    tpl_clone)) != ERRF_OK) {
+		goto done;
+	}
+
 	/*
-	 * Serialize the template and then hash the serialized form.
+	 * Serialize the template and then hash the base64 serialized form.
 	 */
-	if ((ret = sshbuf_put_ebox_tpl(buf,
-	    (struct ebox_tpl *)tpl)) != ERRF_OK) {
+	if ((ret = sshbuf_put_ebox_tpl(buf, tpl_clone)) != ERRF_OK) {
+		goto done;
+	}
+
+	if ((b64str = sshbuf_dtob64(buf)) == NULL) {
+		ret = errf("sshbuf_dtob64", NULL,
+		    "unable to convert ebox template to base64");
 		goto done;
 	}
 
@@ -236,10 +253,12 @@ template_hash(const struct ebox_tpl *tpl, uint8_t **hashp, size_t *lenp)
 	 * Since we supply our own buffer, we don't need to worry about the
 	 * return value.
 	 */
-	(void) SHA512(sshbuf_ptr(buf), sshbuf_len(buf), *hashp);
+	(void) SHA512(b64str, strlen(b64str), *hashp);
 
 done:
+	free(b64str);
 	sshbuf_free(buf);
+	ebox_tpl_free(tpl_clone);
 	return (ret);
 }
 
