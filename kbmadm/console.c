@@ -16,6 +16,8 @@
 #include <bunyan.h>
 #include <errno.h>
 #include <libcustr.h>
+#include <libtecla.h>
+#include <port.h>
 #include <stdio.h>
 #include <termio.h>
 #include <sys/types.h>
@@ -24,6 +26,12 @@
 #include <sys/vt.h>
 #include <sys/kd.h>
 #include "common.h"
+
+typedef struct tty {
+	GetLine	*tty_gl;
+	char	tty_name[64];
+	int	tty_fd;
+} tty_t;
 
 #define	DEFAULT_CONSOLE "/dev/console"
 
