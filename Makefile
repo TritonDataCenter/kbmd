@@ -273,16 +273,6 @@ mancheck_conf:
 update:
 	git pull --rebase
 
-
-manifest:
-	cp manifest $(DESTDIR)/$(DESTNAME)
-
-mancheck_conf:
-
-.PHONY: update
-update:
-	git pull --rebase
-
 clean:
 	rm -f $(COMMON_OBJS) $(KBMADM_OBJS) $(KBMD_OBJS) $(RESET_PIV_OBJS) \
 	    pivy-stamp out/*

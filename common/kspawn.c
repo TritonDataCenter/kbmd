@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2019, Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #include <errno.h>
@@ -448,12 +448,32 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
 		if (rc == 0)
 			continue;
 
+		/*
+		 * Since newer standards allow read(2) and write(2) to
+		 * return 0 outside of an EOF condition (even with non-blocking
+		 * fds), we always use the POLLHUP event instead. Note:
+		 * per poll(2), POLLHUP is always set in revents, regardless
+		 * if we requested it when calling poll(2).
+		 */
+
+		if (pfds[0].revents & POLLHUP) {
+			(void) bunyan_trace(ilog, "Output descriptor closed",
+			    BUNYAN_T_INT32, "fd", pfds[0].fd,
+			    BUNYAN_T_END);
+
+			(void) close(pfds[0].fd);
+			pfds[0].fd = -1;
+			pfds[0].events = 0;
+			pfds[0].revents = 0;
+			fds[0] = -1;
+		}
+
 		if (pfds[0].revents & POLLOUT) {
 			ret = write_fd(pfds[0].fd, input, inputlen,
 			    written, &n);
 			written += n;
 
-			if (n == 0 || written == inputlen || ret != ERRF_OK) {
+			if (written == inputlen || ret != ERRF_OK) {
 				if (ret == ERRF_OK) {
 					(void) bunyan_trace(ilog,
 					    "finished writing output",
@@ -470,17 +490,16 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
 					return (errf("IOError", ret, ""));
 			}
 
-			if (n > 0) {
-				(void) bunyan_trace(ilog, "wrote data",
-				    BUNYAN_T_INT32, "fd", pfds[0].fd,
-				    BUNYAN_T_UINT64, "amt_written", (uint64_t)n,
-				    BUNYAN_T_END);
-			}
+			(void) bunyan_trace(ilog, "wrote data",
+			    BUNYAN_T_INT32, "fd", pfds[0].fd,
+			    BUNYAN_T_UINT64, "amt_written", (uint64_t)n,
+			    BUNYAN_T_END);
 		}
 
 		for (size_t i = 1; i < 3; i++) {
-			if (!(pfds[i].events & POLLIN))
+			if (!(pfds[i].revents & (POLLIN|POLLHUP))) {
 				continue;
+			}
 
 			boolean_t esc_nl = B_FALSE;
 
@@ -488,30 +507,35 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
 				esc_nl = B_TRUE;
 			}
 
-			ret = read_fd(pfds[i].fd, output[i - 1], &n, esc_nl);
+			if ((ret = read_fd(pfds[i].fd, output[i - 1], &n,
+			    esc_nl)) != ERRF_OK) {
+				return (errf("IOError", ret, ""));
+			}
 
-			if (n == 0 || ret != ERRF_OK) {
-				if (ret == ERRF_OK) {
-					(void) bunyan_trace(ilog,
-					    "finished reading data on fd",
-					    BUNYAN_T_INT32, "fd", pfds[i].fd,
-					    BUNYAN_T_END);
-				}
+			(void) bunyan_trace(ilog, "read data",
+			    BUNYAN_T_INT32, "fd", pfds[i].fd,
+			    BUNYAN_T_UINT64, "amt_read", (uint64_t)n,
+			    BUNYAN_T_END);
+
+			/*
+			 * poll(2) states that while POLLOUT and POLLHUP
+			 * will never be set at the same time in revents
+			 * (they are mutually exclusive), it is possible
+			 * that POLLHUP and POLLIN could both be set in
+			 * revents. Therefore, we always process any pending
+			 * reads, then close the fd if required.
+			 */
+			if (pfds[i].revents & POLLHUP) {
+				(void) bunyan_trace(ilog,
+				    "finished reading data on fd",
+				    BUNYAN_T_INT32, "fd", pfds[i].fd,
+				    BUNYAN_T_END);
 
 				(void) close(pfds[i].fd);
 				pfds[i].fd = -1;
 				pfds[i].events = 0;
 				pfds[i].revents = 0;
 				fds[i] = -1;
-				if (ret != ERRF_OK)
-					return (errf("IOError", ret, ""));
-			}
-
-			if (n > 0) {
-				(void) bunyan_trace(ilog, "read data",
-				    BUNYAN_T_INT32, "fd", pfds[i].fd,
-				    BUNYAN_T_UINT64, "amt_read", (uint64_t)n,
-				    BUNYAN_T_END);
 			}
 		}
 	}
