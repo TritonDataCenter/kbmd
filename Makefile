@@ -10,8 +10,8 @@
 #
 
 #
-# Copyright 2019 Joyent, Inc.
+# Copyright 2020 Joyent, Inc.
 #
 
-default:
+default clean install update:
 	@echo Stub for SmartOS build -- nothing to build yet!
