@@ -335,7 +335,8 @@ do_create_zpool(int argc, char **argv)
 	 * complexity of interpreting the zpool creation arguments, we
 	 * ideally want to just pass them through, with the necessary
 	 * options for creating the ebox as a dataset property prepended
-	 * to the argument list (i.e. -O rfd77:config=... -O encryption=on ...).
+	 * to the argument list (i.e.
+	 * -O com.joyent.kbm:ebox=... -O encryption=on ...).
 	 * However, we want to be able to link the ebox with the dataset at
 	 * creation time.  As the intention is that most of the kbmd
 	 * functionality will hopefully eventually be usable outside of Triton,

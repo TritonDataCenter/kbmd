@@ -116,7 +116,7 @@ typedef struct recovery_token {
  *    Response (success):
  *	success=B_TRUE
  *	args=[(option=XXX,value=xxx)...] (e.g.
- *		(option=rfd77:config,value=xxx),
+ *		(option=com.joyent.kbm:ebox,value=xxx),
  *		(option=encryption,value=on)...)
  *	zpool-key=<raw encryption key for zpool>
  *

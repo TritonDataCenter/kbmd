@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2019, Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #ifndef _KBMD_H
@@ -48,8 +48,8 @@ extern "C" {
 #define	UID_KBMD	0
 #define	GID_KBMD	0
 
-#define	BOX_PROP	"rfd77:ebox"
-#define	STAGEBOX_PROP	"rfd77:stagedebox"
+#define	BOX_PROP	"com.joyent.kbm:ebox"
+#define	STAGEBOX_PROP	"com.joyent.kbm:stagedebox"
 
 /* These come from NIST 800-73-4 */
 #define	PIN_MIN_LENGTH	6
