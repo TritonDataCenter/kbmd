@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2019, Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #include <errno.h>
@@ -29,6 +29,11 @@
 #include "pivy/errf.h"
 
 char panicstr[256];
+
+typedef struct kbmlog {
+	mutex_t	kbmlog_lock;
+	int	kbmlog_fd;
+} kbmlog_t;
 
 static kbmlog_t kbmlog = {
 	.kbmlog_lock = ERRORCHECKMUTEX,
@@ -110,8 +115,10 @@ tohex(const uint8_t *restrict bytes, size_t len, char *restrict str,
 	}
 	VERIFY3U(len, <, (SIZE_MAX - 1) / 2);
 
-	if (len * 2 + 1 > slen)
-		len = (slen - 1) / 2;
+	if (len * 2 + 1 > slen) {
+		panic("tohex output buffer too small "
+		    "(%zu bytes, need at least %zu bytes)", slen, len * 2 + 1);
+	}
 
 	for (i = j = 0; i < len; i++) {
 		uint8_t v = bytes[i];

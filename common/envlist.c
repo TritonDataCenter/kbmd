@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2019, Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #include <errno.h>
@@ -109,13 +109,6 @@ envlist_add_string(nvlist_t *nvl, const char *name, const char *val)
 {
 	int ret = nvlist_add_string(nvl, name, val);
 	return (ADDERR(ret, "nvlist_add_string", name));
-}
-
-errf_t *
-envlist_add_boolean(nvlist_t *nvl, const char *name)
-{
-	int ret = nvlist_add_boolean(nvl, name);
-	return (ADDERR(ret, "nvlist_add_boolean", name));
 }
 
 errf_t *
@@ -280,14 +273,6 @@ envlist_lookup_uint8_array(nvlist_t *nvl, const char *name, uint8_t **valp,
 {
 	int ret = nvlist_lookup_uint8_array(nvl, name, valp, lenp);
 	return (LOOKUPERR(ret, "nvlist_lookup_uint8_array", name));
-}
-
-errf_t *
-envlist_lookup_string_array(nvlist_t *nvl, const char *name, char ***sarp,
-    uint_t *lenp)
-{
-	int ret = nvlist_lookup_string_array(nvl, name, sarp, lenp);
-	return (LOOKUPERR(ret, "nvlist_lookup_string_array", name));
 }
 
 static errf_t *

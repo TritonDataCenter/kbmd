@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2019, Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #include <errno.h>
@@ -139,39 +139,4 @@ ecustr_append_b64(custr_t *cu, const uint8_t *bytes, size_t len)
 	freezero(temp, templen);
 
 	return (ret);
-}
-
-errf_t *
-ecustr_fromb64(custr_t *restrict cu, uint8_t **restrict bufp,
-    size_t *restrict lenp)
-{
-	errf_t *ret = ERRF_OK;
-	uint8_t *buf = NULL;
-	size_t clen = custr_len(cu);
-	int buflen = 0;
-
-	*bufp = NULL;
-	*lenp = 0;
-
-	if ((ret = zalloc(clen, &buf)) != ERRF_OK) {
-		return (ret);
-	}
-
-	buflen = b64_pton(custr_cstr(cu), (uchar_t *)buf, clen);
-	if (buflen == -1) {
-		freezero(buf, clen);
-		return (errf("FormatError", NULL,
-		    "failed to decode base64 data"));
-	}
-
-	if ((ret = zalloc(buflen, bufp)) != ERRF_OK) {
-		freezero(buf, clen);
-		return (ret);
-	}
-
-	bcopy(buf, *bufp, buflen);
-	*lenp = buflen;
-	freezero(buf, clen);
-
-	return (ERRF_OK);
 }

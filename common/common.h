@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2019, Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #ifndef _COMMON_H
@@ -28,11 +28,6 @@ extern "C" {
 #endif
 
 #define	GUID_STR_LEN (GUID_LEN * 2 + 1)
-
-typedef struct kbmlog {
-	mutex_t	kbmlog_lock;
-	int	kbmlog_fd;
-} kbmlog_t;
 
 extern bunyan_logger_t *blog;
 extern __thread bunyan_logger_t *tlog;

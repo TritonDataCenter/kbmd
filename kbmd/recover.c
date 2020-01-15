@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2019 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #include <errno.h>
@@ -975,7 +975,8 @@ challenge(nvlist_t *restrict req, nvlist_t *restrict resp,
 		 * will actually be working correctly.
 		 *
 		 */
-		(void) nvlist_add_boolean(resp, KBM_NV_RECOVERY_COMPLETE);
+		(void) nvlist_add_boolean_value(resp, KBM_NV_RECOVERY_COMPLETE,
+		    B_TRUE);
 
 		kbmd_unwatch_pid(r->r_pid);
 		refhash_remove(recovery_hash, r);
@@ -1060,6 +1061,7 @@ recover_common(nvlist_t *restrict req, recovery_t *restrict r)
 {
 	errf_t *ret = ERRF_OK;
 	nvlist_t *resp = NULL;
+	boolean_t quit;
 
 	ASSERT(MUTEX_HELD(&recovery_lock));
 
@@ -1076,12 +1078,13 @@ recover_common(nvlist_t *restrict req, recovery_t *restrict r)
 		goto done;
 	}
 
-	if ((nvlist_lookup_boolean(req, KBM_NV_RESP_QUIT)) == 0) {
+	if ((nvlist_lookup_boolean_value(req, KBM_NV_RESP_QUIT, &quit)) == 0 ||
+	    quit) {
 		(void) bunyan_info(tlog, "User terminated recovery",
 		    BUNYAN_T_END);
 
-		if ((ret = envlist_add_boolean(resp,
-		    KBM_NV_RESP_QUIT)) != ERRF_OK) {
+		if ((ret = envlist_add_boolean_value(resp,
+		    KBM_NV_RESP_QUIT, B_TRUE)) != ERRF_OK) {
 			goto done;
 		}
 		goto done;

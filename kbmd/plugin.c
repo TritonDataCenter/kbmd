@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2019 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #include <bunyan.h>
@@ -250,13 +250,13 @@ plugin_create_args(strarray_t *args, const char *subcmd)
 	errf_t *ret = ERRF_OK;
 
 	mutex_enter(&plugin_mutex);
-	ret = strarray_append(args, custr_cstr(kbmd_plugin));
+	ret = strarray_append(args, "%s", custr_cstr(kbmd_plugin));
 	mutex_exit(&plugin_mutex);
 
 	if (ret != ERRF_OK)
 		return (ret);
 
-	return (strarray_append(args, subcmd));
+	return (strarray_append(args, "%s", subcmd));
 }
 
 errf_t *
@@ -276,7 +276,7 @@ kbmd_get_pin(const uint8_t guid[restrict], custr_t **restrict pinp)
 		return (errf("PluginError", ret, ""));
 	}
 
-	if ((ret = strarray_append(&args, gstr)) != ERRF_OK) {
+	if ((ret = strarray_append(&args, "%s", gstr)) != ERRF_OK) {
 		return (errf("PluginError", ret, ""));
 	}
 
@@ -983,7 +983,8 @@ check_plugin_version(custr_t *restrict plugin,
 	int fds[3] = { -1, -1, -1 };
 	pid_t pid;
 
-	if ((ret = strarray_append(&args, custr_cstr(plugin))) != ERRF_OK ||
+	if ((ret = strarray_append(&args, "%s",
+	    custr_cstr(plugin))) != ERRF_OK ||
 	    (ret = strarray_append(&args, "info")) != ERRF_OK)
 		goto done;
 

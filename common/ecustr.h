@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2019, Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #ifndef _ECUSTR_H
@@ -32,7 +32,6 @@ struct errf *ecustr_appendc(custr_t *, char);
 struct errf *ecustr_append_printf(custr_t *, const char *, ...);
 struct errf *ecustr_append_vprintf(custr_t *, const char *, va_list);
 struct errf *ecustr_append_b64(custr_t *, const uint8_t *, size_t);
-struct errf *ecustr_fromb64(custr_t *, uint8_t **, size_t *);
 
 #ifdef __cplusplus
 }

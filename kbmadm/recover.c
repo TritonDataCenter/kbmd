@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2019 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #include <ctype.h>
@@ -113,15 +113,14 @@ recover(const char *dataset, uint32_t cfgnum)
 		goto done;
 	}
 
-	nvlist_free(req);
-	req = NULL;
-
 	while (!recovery_complete(resp)) {
 		kbm_act_t action;
 
 		if ((ret = get_action(resp, &action)) != ERRF_OK)
 			goto done;
 
+		nvlist_free(req);
+		req = NULL;
 		if ((ret = req_new(KBM_CMD_RECOVER_RESP, &req)) != ERRF_OK ||
 		    (ret = envlist_add_uint32(req, KBM_NV_RECOVER_ID,
 		    id)) != ERRF_OK)
@@ -235,7 +234,9 @@ show_configs(nvlist_t **cfgs, uint_t ncfgs, boolean_t verbose)
 			}
 
 			guidtohex(guid, gstr, sizeof (gstr));
-			(void) printf("\t%32s %4x %*s%s%s\n", gstr, slot,
+			(void) printf("\t%*s %4x %*s%s%s\n",
+			    -(GUID_STR_LEN-1), gstr,
+			    slot,
 			    namewidth, (name == NULL) ? "" : name,
 			    verbose ? " " : "", verbose ? pubkey : "");
 		}
@@ -366,11 +367,11 @@ challenge(nvlist_t *restrict q, nvlist_t *restrict req)
 		custr_reset(desc);
 		if ((ret = ecustr_append_printf(desc, "GUID: %s",
 		    gstr)) != ERRF_OK)
-			return (ret);
+			goto done;
 		if (name != NULL &&
 		    (ret = ecustr_append_printf(desc, " (Name: %s)",
 		    name)) != ERRF_OK)
-			return (ret);
+			goto done;
 
 		(void) printf("--- BEGIN CHALLENGE for %s ---\n",
 		    custr_cstr(desc));
@@ -451,8 +452,12 @@ get_action(nvlist_t *restrict resp, kbm_act_t *restrict actp)
 static boolean_t
 recovery_complete(nvlist_t *resp)
 {
-	if (nvlist_lookup_boolean(resp, KBM_NV_RECOVERY_COMPLETE) == 0)
-		return (B_TRUE);
+	boolean_t val;
+
+	if (nvlist_lookup_boolean_value(resp, KBM_NV_RECOVERY_COMPLETE,
+	    &val) == 0) {
+		return (val);
+	}
 	return (B_FALSE);
 }
 
@@ -503,6 +508,14 @@ readline(GetLine *restrict gl, const char *prompt, custr_t *line)
 	}
 }
 
+/*
+ * Strips _all_ whitespace (leading, trailing, and intra string).
+ * Pivy box will breakup it's output into (currently) 60-byte long lines,
+ * (like the text form of a X.509 certificate), and it's likely responses
+ * will be copy/pasted into our terminal, so we need to join all the lines
+ * and remove any embedded whitespace which might get introduced during pasting
+ * (in addition to the newlines) so we can later base64 decode the result.
+ */
 static void
 strip_whitespace(custr_t *cus)
 {

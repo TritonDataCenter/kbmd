@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2019, Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #ifndef _ENVLIST_H
@@ -30,7 +30,6 @@ struct errf *envlist_alloc(nvlist_t **);
 struct errf *envlist_pack(nvlist_t *, char **, size_t *);
 struct errf *envlist_unpack(char *, size_t, nvlist_t **);
 struct errf *envlist_add_string(nvlist_t *, const char *, const char *);
-struct errf *envlist_add_boolean(nvlist_t *, const char *);
 struct errf *envlist_add_boolean_value(nvlist_t *, const char *, boolean_t);
 struct errf *envlist_add_int32(nvlist_t *, const char *, int32_t);
 struct errf *envlist_add_uint32(nvlist_t *, const char *, uint32_t);
@@ -54,8 +53,6 @@ struct errf *envlist_lookup_nvlist(nvlist_t *, const char *, nvlist_t **);
 struct errf *envlist_lookup_nvlist_array(nvlist_t *, const char *, nvlist_t ***,
     uint_t *);
 struct errf *envlist_lookup_uint8_array(nvlist_t *, const char *, uint8_t **,
-    uint_t *);
-struct errf *envlist_lookup_string_array(nvlist_t *, const char *, char ***,
     uint_t *);
 
 /*

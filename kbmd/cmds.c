@@ -79,7 +79,7 @@ set_systoken(const uint8_t *guid, size_t guidlen)
 	return (ERRF_OK);
 }
 
-void
+static void
 kbmd_set_systoken(nvlist_t *req)
 {
 	errf_t *ret = ERRF_OK;
@@ -176,7 +176,7 @@ do_set_sysbox(const char *zpool)
 	return (ERRF_OK);
 }
 
-errf_t *
+static errf_t *
 set_syspool(const char *zpool)
 {
 	errf_t *ret = ERRF_OK;
@@ -233,7 +233,7 @@ set_syspool(const char *zpool)
 	return (ret);
 }
 
-void
+static void
 kbmd_set_syspool(nvlist_t *req)
 {
 	errf_t *ret = ERRF_OK;

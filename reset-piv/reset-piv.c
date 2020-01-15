@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2019 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #include <bunyan.h>
@@ -23,11 +23,9 @@
 #include <unistd.h>
 #include "pivy/errf.h"
 #include "pivy/piv.h"
-
-void alloc_init(void);
+#include "common.h"
 
 SCARDCONTEXT ctx;
-extern __thread bunyan_logger_t *tlog;
 
 static void
 usage(void)

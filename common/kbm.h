@@ -71,7 +71,6 @@ typedef struct recovery_token {
 
 #define	KBM_NV_CONFIG_HASH	"config hash"	/* uint8 array */
 #define	KBM_NV_CONFIG_NUM	"config num"	/* uint32_t */
-#define	KBM_NV_DESC		"desc"		/* string */
 #define	KBM_NV_GUID		"guid"		/* uint8_t array */
 #define	KBM_NV_NAME		"name"		/* string */
 #define	KBM_NV_CHALLENGE	"challenge"	/* string */

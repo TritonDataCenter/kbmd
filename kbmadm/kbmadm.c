@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2019 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #include <bunyan.h>
@@ -37,8 +37,7 @@
 #include "pivy/errf.h"
 #include "pivy/libssh/sshbuf.h"
 
-#define	ZPOOL_CMD		"zpool"
-#define	SYSTEM_POOL_MARKER	".system_pool"
+#define	ZPOOL_CMD		"/sbin/zpool"
 
 typedef struct cmd {
 	const char *name;
@@ -92,7 +91,7 @@ usage(void)
 	    "Usage: %1$s create-zpool [-g guid] [-t template] -- "
 	    "<zpool create args>...\n"
 	    "       %1$s recover [-c cfgnum] dataset\n"
-	    "       %1$s unlock [-r] dataset\n"
+	    "       %1$s unlock [-r] dataset...\n"
 	    "       %1$s recovery add [-f] [-t template] [-r recovery_token] dataset\n"
 	    "       %1$s recovery list [-p]\n"
             "       %1$s recovery activate dataset\n"
@@ -231,6 +230,17 @@ parse_guid(const char *str, uint8_t guid[GUID_LEN])
 			n++;
 		}
 	}
+
+	if (n != GUID_LEN) {
+		return (errf("LengthError", NULL, "'%s' is not a valid GUID",
+		    str));
+	}
+
+	/*
+	 * If the GUID length is correct, we shouldn't have an odd number of
+	 * bytes.
+	 */
+	ASSERT0(shift);
 
 	return (ERRF_OK);
 }
@@ -382,7 +392,7 @@ do_create_zpool(int argc, char **argv)
 	if (template_f != NULL &&
 	    (ret = add_template_file(req, KBM_NV_TEMPLATE,
 	    template_f)) != ERRF_OK)
-		goto done;	
+		goto done;
 
 	if ((ret = envlist_add_string(req, KBM_NV_DATASET,
 	    dataset)) != ERRF_OK)
@@ -733,9 +743,7 @@ do_activate_recovery(int argc, char **argv)
 	if ((ret = req_new(KBM_CMD_ACTIVATE_RECOVERY, &req)) != ERRF_OK)
 		goto done;
 
-	if (dataset != NULL &&
-	    (ret = envlist_add_string(req, KBM_NV_DATASET,
-	    dataset)) != ERRF_OK)
+	if ((ret = envlist_add_string(req, KBM_NV_DATASET, dataset)) != ERRF_OK)
 		goto done;
 
 	ret = send_request(req, &resp);
@@ -762,8 +770,7 @@ do_cancel_recovery(int argc, char **argv)
 		goto done;
 
 	if (dataset != NULL &&
-	    (ret = envlist_add_string(req, KBM_NV_DATASET,
-	    dataset)) != ERRF_OK)
+	    (ret = envlist_add_string(req, KBM_NV_DATASET, dataset)) != ERRF_OK)
 		goto done;
 
 	ret = send_request(req, &resp);
@@ -774,6 +781,9 @@ done:
 	return (ret);
 }
 
+/*
+ * Undocumented option for use by fs-joyent
+ */
 static errf_t *
 do_set_syspool(int argc, char **argv)
 {
@@ -1038,8 +1048,8 @@ nv_door_call(int fd, nvlist_t *in, nvlist_t **out)
 	if ((ret = edoor_call(fd, &da)) != ERRF_OK)
 		goto done;
 
-	if (da.rbuf != NULL) {
-		ret = envlist_unpack(da.rbuf, da.rsize, out);
+	if (da.data_ptr != NULL) {
+		ret = envlist_unpack(da.data_ptr, da.data_size, out);
 	} else {
 		*out = NULL;
 	}

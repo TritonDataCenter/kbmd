@@ -116,8 +116,6 @@ void kbmd_recover_start(struct nvlist *);
 void kbmd_recover_resp(struct nvlist *);
 void kbmd_update_recovery(struct nvlist *);
 void kbmd_list_recovery(struct nvlist *);
-void kbmd_set_syspool(struct nvlist *);
-void kbmd_set_systoken(struct nvlist *);
 
 errf_t *
 template_hash(const struct ebox_tpl *, uint8_t **, size_t *);

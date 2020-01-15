@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <strings.h>
 #include <sys/debug.h>
+#include <sys/sysmacros.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -33,21 +34,27 @@
 #include "kspawn.h"
 
 /*
- * This is shared between kbmd and kbmadm, including piv.h would bring
- * in too many things, so we redefine the GUID length here.
+ * We grow the size of a strarray_t by CHUNK_SIZE (arbitrary value) entries
+ * whenever we run out of entries in a strarray_t.
  */
-#define	GUID_LEN 16
+#define	CHUNK_SIZE 16
 
-#define	CHUNK 16
+/*
+ * The number of fds we use when spawning a process (stdin, stdout, stderr)
+ */
+#define	SPAWN_NFDS 3
 
 static errf_t *
 strarray_cklen(strarray_t *sar)
 {
+	/*
+	 * Make sure there's room for at least 1 entry + terminating NULL entry
+	 */
 	if (sar->sar_n + 2 < sar->sar_alloc)
 		return (ERRF_OK);
 
 	char **new;
-	size_t newlen = sar->sar_alloc + CHUNK;
+	size_t newlen = sar->sar_alloc + CHUNK_SIZE;
 
 	new = recallocarray(sar->sar_strs, sar->sar_alloc, newlen,
 	    sizeof (char *));
@@ -86,7 +93,7 @@ strarray_append(strarray_t *restrict sar, const char *restrict fmt, ...)
 errf_t *
 strarray_append_guid(strarray_t *restrict sar, const uint8_t guid[restrict])
 {
-	char str[GUID_LEN * 2 + 1] = { 0 };
+	char str[GUID_STR_LEN] = { 0 };
 
 	guidtohex(guid, str, sizeof (str));
 	return (strarray_append(sar, "%s", str));
@@ -207,7 +214,7 @@ spawn(const char *restrict cmd, char *const argv[restrict],
 	posix_spawn_file_actions_t fact = { 0 };
 	posix_spawnattr_t attr = { 0 };
 	pid_t pid;
-	int pipe_fds[3][2] = { { -1, -1 }, { -1, -1 }, { -1, -1 } };
+	int pipe_fds[SPAWN_NFDS][2] = { { -1, -1 }, { -1, -1 }, { -1, -1 } };
 
 	*pidp = (pid_t)-1;
 
@@ -248,7 +255,7 @@ spawn(const char *restrict cmd, char *const argv[restrict],
 	VERIFY0(posix_spawnattr_setflags(&attr,
 	    POSIX_SPAWN_NOSIGCHLD_NP | POSIX_SPAWN_WAITPID_NP));
 
-	for (size_t i = 0; i < 3; i++) {
+	for (size_t i = 0; i < SPAWN_NFDS; i++) {
 		if (fds[i] == i)
 			continue;
 
@@ -282,7 +289,7 @@ spawn(const char *restrict cmd, char *const argv[restrict],
 	VERIFY0(posix_spawn_file_actions_destroy(&fact));
 	VERIFY0(posix_spawnattr_destroy(&attr));
 
-	for (size_t i = 0; i < 3; i++) {
+	for (size_t i = 0; i < SPAWN_NFDS; i++) {
 		if (pipe_fds[i][1] < 0) {
 			VERIFY3S(fds[i], >=, 0);
 			continue;
@@ -296,7 +303,7 @@ spawn(const char *restrict cmd, char *const argv[restrict],
 	return (ret);
 
 fail:
-	for (size_t i = 0; i < 3; i++) {
+	for (size_t i = 0; i < SPAWN_NFDS; i++) {
 		if (pipe_fds[i][0] >= 0)
 			(void) close(pipe_fds[i][0]);
 		if (pipe_fds[i][1] >= 0)
@@ -384,8 +391,8 @@ write_fd(int fd, const void *data, size_t datalen, size_t offset,
 	const uint8_t *p = data;
 	ssize_t n;
 
+	*np = 0;
 	if (offset >= datalen) {
-		*np = 0;
 		return (ERRF_OK);
 	}
 
@@ -404,8 +411,8 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
     custr_t *output[restrict], int *restrict exitvalp, boolean_t esc_stderr)
 {
 	bunyan_logger_t *ilog = NULL;
-	struct pollfd pfds[3]= { 0 };
-	nfds_t nfds = 3;
+	struct pollfd pfds[SPAWN_NFDS]= { 0 };
+	nfds_t nfds = ARRAY_SIZE(pfds);
 	size_t written = 0;
 	int rc = 0;
 
@@ -416,7 +423,7 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
 		pfds[0].fd = -1;
 	}
 
-	for (size_t i = 1; i < 3; i++) {
+	for (size_t i = 1; i < ARRAY_SIZE(pfds); i++) {
 		if (output[i - 1] != NULL) {
 			pfds[i].fd = fds[i];
 			pfds[i].events = POLLIN;
@@ -496,8 +503,8 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
 			    BUNYAN_T_END);
 		}
 
-		for (size_t i = 1; i < 3; i++) {
-			if (!(pfds[i].revents & (POLLIN|POLLHUP))) {
+		for (size_t i = 1; i < SPAWN_NFDS; i++) {
+			if (!(pfds[i].events & POLLIN)) {
 				continue;
 			}
 
@@ -549,9 +556,9 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
  * If any fds are left open by spawn, close them
  */
 void
-close_fds(int fds[3])
+close_fds(int fds[SPAWN_NFDS])
 {
-	for (size_t i = 0; i < 3; i++) {
+	for (size_t i = 0; i < SPAWN_NFDS; i++) {
 		if (fds[i] == -1)
 			continue;
 		VERIFY0(close(fds[i]));

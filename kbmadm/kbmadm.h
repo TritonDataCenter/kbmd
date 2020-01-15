@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2019 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #ifndef _KBMADM_H
@@ -30,9 +30,6 @@ extern "C" {
 
 /*
  * Is a dataset name the pool name?
- *
- * XXX: Might need to expand this to check for other special characters
- * (e.g. '@' or '%').
  */
 #define	IS_ZPOOL(_name) (strchr(_name, '/') == NULL)
 

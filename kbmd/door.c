@@ -192,6 +192,7 @@ tdata_free(void *p)
 	tlog = NULL;
 
 	tdlen = sizeof (*td) + td->td_buflen;
+	bzero(td, tdlen);
 	umem_free(td, tdlen);
 }
 
@@ -291,7 +292,6 @@ kbmd_ret_nvlist(nvlist_t *resp)
 		errf_free(ret);
 		if ((ret = envlist_add_boolean_value(resp, KBM_NV_SUCCESS,
 		    B_TRUE)) != ERRF_OK) {
-			errf_free(ret);
 			(void) bunyan_error(tlog,
 			    "Failed to set success in response",
 			    BUNYAN_T_END);
@@ -405,12 +405,22 @@ kbmd_door_server(void *cookie, char *argp, size_t arg_size, door_desc_t *dp,
 	 * If we make the kbmd door server use a private thread pool,
 	 * each thread should gets it's own preallocated tdata_t and
 	 * we can remove this check.
+	 *
+	 * If these fail, we can't assume we have a bunyan logger to use.
+	 * The best we can do is write out to stderr and hope the message
+	 * gets captured in the service log for the operator.
 	 */
 	if (td == NULL) {
+		(void) fprintf(stderr,
+		    "%s: %d: Failed to get server thread data\n",
+		    __func__, __LINE__);
 		VERIFY0(door_return(generr, generr_sz, NULL, 0));
 	}
 
 	if (!tdata_init(td, dp, n_desc)) {
+		(void) fprintf(stderr,
+		    "%s: %d: Failed to init server thread data\n",
+		    __func__, __LINE__);
 		VERIFY0(door_return(generr, generr_sz, NULL, 0));
 	}
 
