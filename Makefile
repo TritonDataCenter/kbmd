@@ -121,7 +121,7 @@ out/reset-piv:	LDLIBS += $(RESET_PIV_LIBS)
 # sharing could open up kbmd to timing attacks in any code that's handling
 # key material, which could make it vulnerable to unintentional disclosure.
 
-_LIBSSH_OBJS = 			\
+_LIBSSH_OBJS =			\
 	atomicio.o		\
 	authfd.o		\
 	base64.o		\
@@ -187,7 +187,6 @@ out:
 
 $(PROGS) $(STATIC_LIBS): out
 
-# XXX: Should the submodule init be a separate target so it doesn't always run?
 pivy-stamp:
 	git submodule update --init
 	$(MAKE) -C pivy \
@@ -233,8 +232,9 @@ out/kbmd: $(KBMD_OBJS) $(STATIC_LIBS)
 	$(CTFCONVERT) -m $@
 
 out/%: lua/%.lua
-	cp $^ $@
-	printf '\0' >> $@
+	cp $^ $@.tmp
+	printf '\0' >> $@.tmp
+	mv $@.tmp $@
 
 $(ZCP_OBJS): $(ZCP_SRCS_NUL)
 	$(ELFWRAP) -64 -o $@ $(ZCP_SRCS_NUL)
@@ -273,6 +273,7 @@ mancheck_conf:
 update:
 	git pull --rebase
 
+.PHONY: clean
 clean:
 	rm -f $(COMMON_OBJS) $(KBMADM_OBJS) $(KBMD_OBJS) $(RESET_PIV_OBJS) \
 	    pivy-stamp out/*
