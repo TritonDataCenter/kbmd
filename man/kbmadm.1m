@@ -9,9 +9,9 @@
 .\" http://www.illumos.org/license/CDDL.
 .\"
 .\"
-.\" Copyright 2019 Joyent, Inc.
+.\" Copyright 2020 Joyent, Inc.
 .\"
-.Dd November 25, 2019
+.Dd January 16, 2020
 .Dt KBMADM 1M
 .Os
 .Sh NAME
@@ -222,6 +222,10 @@ system.
 If the
 .Fl p
 option is given, the output is presented in a machine parseable format.
+Currently, only the type of template (active or staged) and the hash of the
+template are output with the
+.Fl p
+option.
 .\"
 .\" recovery cancel
 .\"

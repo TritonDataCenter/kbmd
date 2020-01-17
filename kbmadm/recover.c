@@ -273,11 +273,6 @@ select_config(nvlist_t *restrict q, nvlist_t *restrict req)
 		return (ret);
 	}
 
-	/*
-	 * If no prompt was given, we use a default value
-	 */
-	(void) nvlist_lookup_string(q, KBM_NV_PROMPT, (char **)&prompt);
-
 	(void) printf("Select recovery configuration:\n");
 
 	if ((ret = show_configs(cfg, ncfg, B_FALSE)) != ERRF_OK) {
@@ -286,6 +281,9 @@ select_config(nvlist_t *restrict q, nvlist_t *restrict req)
 		return (ret);
 	}
 
+	/*
+	 * If no prompt was given, we use a default value of '> '
+	 */
 	prompt = get_prompt(q, "> ");
 
 	if ((ret = readline(gl, prompt, response)) != ERRF_OK) {

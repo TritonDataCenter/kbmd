@@ -9,9 +9,9 @@
 .\" http://www.illumos.org/license/CDDL.
 .\"
 .\"
-.\" Copyright 2019 Joyent, Inc.
+.\" Copyright 2020 Joyent, Inc.
 .\"
-.Dd November 25, 2019
+.Dd January 16, 2020
 .Dt KBMD 1M
 .Os
 .Sh NAME
@@ -25,9 +25,9 @@
 manages the ebox-protected keys for encrypted datasets.
 .Nm
 stores the eboxes of encrypted datasets in the
-.Sy rfd77:ebox
+.Sy com.joyent.kbm:ebox
 and
-.Sy rfd77:stagedebox
+.Sy com.joyent.kbm:stagedebox
 .Xr zfs 1M
 properties.
 These properties should only be manipulated by

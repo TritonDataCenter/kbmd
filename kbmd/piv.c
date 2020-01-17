@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2019 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #include <sys/sysmacros.h>
@@ -50,6 +50,8 @@ static const uint8_t DEFAULT_ADMIN_KEY[ADMIN_KEY_LENGTH] = {
 };
 static const char DEFAULT_PIN[] = "123456";
 static const char DEFAULT_PUK[] = "12345678";
+
+static const char *piv_pin_str(enum piv_pin);
 
 /*
  * Set the given PIN type to a new random pin pin_len characters long and
@@ -1205,7 +1207,7 @@ set_piv_rtoken(kbmd_token_t *kt, const recovery_token_t *rtoken)
  * XXX: It might make more sense to have the pin_type->string
  * code in pivy instead of here
  */
-const char *
+static const char *
 piv_pin_str(enum piv_pin pin_type)
 {
 	switch (pin_type) {

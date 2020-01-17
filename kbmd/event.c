@@ -10,7 +10,17 @@
  */
 
 /*
- * Copyright 2019 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
+ */
+
+/*
+ * This implements a simple event loop for kbmd, using an event port as
+ * the mechanism for receiving events. Currently it's only used to
+ * watch the pid of a kbmadm process doing a recovery (similar to how
+ * pwait(1) works) so that we can clean up any cross-door call state in
+ * the event the (recovery) invoking process exits prematurely. Eventually
+ * it would be nice to add support for PIV reader events as well as
+ * PIV slot events using the same facility.
  */
 
 #include <err.h>
@@ -83,10 +93,8 @@ event_free(void *ep)
 }
 
 /*
- * This is _extremely_ rough.  Once the ccid port event design is better
- * flushed out, as well as the gossip protocol requirements, this will
- * be expanded into something a bit more generic.  We'll also likely employ
- * finer-grained locking and probably refhashes to track events.
+ * Watch the given pid, similar to pwait(1). Call back is invoked
+ * when pid exits.
  */
 errf_t *
 kbmd_watch_pid(pid_t pid, void (*cb)(pid_t, void *), void *arg)
@@ -192,6 +200,7 @@ fd_event(kbm_event_t *ke, int pevents)
 		mutex_exit(&ev_lock);
 		return;
 	}
+	mutex_exit(&ev_lock);
 }
 
 static void *

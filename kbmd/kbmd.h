@@ -128,10 +128,7 @@ errf_t *get_template(kbmd_token_t *, struct ebox_tpl **);
 errf_t *create_template(kbmd_token_t *restrict, const struct ebox_tpl *,
     struct ebox_tpl **restrict);
 
-errf_t *set_box_name(struct ebox *, const char *);
 errf_t *kbmd_get_ebox(const char *restrict, boolean_t, struct ebox **restrict);
-errf_t *get_ebox_common(struct zfs_handle *restrict, boolean_t,
-    struct ebox **restrict);
 errf_t *kbmd_put_ebox(struct ebox *, boolean_t);
 errf_t *ebox_to_str(struct ebox *restrct, char **restrict);
 
@@ -154,8 +151,6 @@ void kbmd_set_token(kbmd_token_t *);
 void kbmd_token_free(kbmd_token_t *);
 errf_t *set_piv_rtoken(kbmd_token_t *, const recovery_token_t *);
 
-const char *piv_pin_str(enum piv_pin pin_type);
-
 /* plugin.c */
 errf_t *kbmd_get_pin(const uint8_t guid[restrict], struct custr **restrict);
 errf_t *register_pivtoken(kbmd_token_t *restrict,
@@ -168,7 +163,6 @@ void load_plugin(void);
 
 /* box.c */
 errf_t *kbmd_unlock_ebox(struct ebox *restrict, struct kbmd_token **restrict);
-errf_t *kbmd_rotate_zfs_ebox(const char *);
 errf_t *kbmd_create_ebox(kbmd_token_t *restrict, const struct ebox_tpl *,
     const char *, uint8_t **restrict, size_t *restrict, struct ebox **restrict);
 
@@ -189,7 +183,6 @@ errf_t *remove_recovery(const char *);
 /* zfs_unlock.c */
 errf_t *load_key(const char *, const uint8_t *, size_t);
 void kbmd_mount_zpool(const char *, const char *);
-void kbmd_zfs_unlock(struct nvlist *);
 
 #ifdef __cplusplus
 }

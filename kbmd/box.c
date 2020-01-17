@@ -35,6 +35,8 @@ static const char *activate_prog = &activate_prog_start;
 
 struct ebox *sys_box;
 
+static errf_t *set_box_name(struct ebox *restrict, const char *);
+
 errf_t *
 ezfs_open(libzfs_handle_t *hdl, const char *path, int types,
     zfs_handle_t **zhpp)
@@ -110,14 +112,6 @@ run_channel_program(const char *pool, const char *prog, nvlist_t *args,
 		    BUNYAN_T_END);
 	}
 
-#ifdef DEBUG
-	/* XXX: Just for testing */
-	flockfile(stderr);
-	(void) fprintf(stderr, "Channel program results:\n");
-	nvlist_print(stderr, *result);
-	funlockfile(stderr);
-#endif
-
 	return (ret);
 }
 
@@ -145,6 +139,14 @@ str_to_ebox(const char *restrict dsname, const char *restrict str,
 	if ((ret = sshbuf_get_ebox(boxbuf, &ebox)) != ERRF_OK) {
 		ret = errf("ConversionError", ret,
 		    "unable to parse the ebox contents for %s", dsname);
+		goto done;
+	}
+
+	if ((ret = set_box_name(ebox, dsname)) != ERRF_OK) {
+		ret = errf("ConversionError", ret,
+		    "failed to set ebox name for %s", dsname);
+		ebox_free(ebox);
+		ebox = NULL;
 		goto done;
 	}
 
@@ -190,7 +192,7 @@ done:
 	return (ret);
 }
 
-errf_t *
+static errf_t *
 set_box_name(struct ebox *restrict ebox, const char *name)
 {
 	size_t len = strlen(name) + 1;
@@ -240,7 +242,7 @@ get_ebox_string(zfs_handle_t *restrict zhp, boolean_t staged,
 	    "dataset %s does not contain an ebox", zfs_get_name(zhp)));
 }
 
-errf_t *
+static errf_t *
 get_ebox_common(zfs_handle_t *restrict zhp, boolean_t staged,
     struct ebox **restrict eboxp)
 {
@@ -252,8 +254,7 @@ get_ebox_common(zfs_handle_t *restrict zhp, boolean_t staged,
 	VERIFY(MUTEX_HELD(&g_zfs_lock));
 
 	if ((ret = get_ebox_string(zhp, staged, &str)) != ERRF_OK ||
-	    (ret = str_to_ebox(dataset, str, &ebox)) != ERRF_OK ||
-	    (ret = set_box_name(ebox, dataset)) != ERRF_OK)
+	    (ret = str_to_ebox(dataset, str, &ebox)) != ERRF_OK)
 		return (ret);
 
 	*eboxp = ebox;
@@ -444,6 +445,7 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 	struct ebox_part *part = NULL;
 	kbmd_token_t *kt = NULL;
 	const char *boxname;
+	uint32_t cfgnum;
 
 	VERIFY(MUTEX_HELD(&piv_lock));
 
@@ -455,7 +457,8 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 	    BUNYAN_T_STRING, "eboxname", boxname,
 	    BUNYAN_T_END);
 
-	while ((config = ebox_next_config(ebox, config)) != NULL) {
+	for (cfgnum = 0, config = ebox_next_config(ebox, NULL); config != NULL;
+	    config = ebox_next_config(ebox, config), cfgnum++) {
 		struct ebox_tpl_config *tconfig = NULL;
 		struct ebox_tpl_part *tpart = NULL;
 		const char *tname = NULL;
@@ -468,6 +471,17 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 		if (ebox_tpl_config_type(tconfig) != EBOX_PRIMARY)
 			continue;
 
+		if (ebox_tpl_config_n(tconfig) != 1) {
+			(void) bunyan_warn(tlog,
+			    "Ebox contains a primary config with n > 1; "
+			    "ignoring",
+			    BUNYAN_T_UINT32, "n",
+			    (uint32_t)ebox_tpl_config_n(tconfig),
+			    BUNYAN_T_UINT32, "cfgnum", cfgnum,
+			    BUNYAN_T_END);
+			continue;
+		}
+			
 		part = ebox_config_next_part(config, NULL);
 		tpart = ebox_part_tpl(part);
 		if (tpart != NULL) {
@@ -484,12 +498,14 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 		if (!piv_box_has_guidslot(dhbox)) {
 			(void) bunyan_debug(tlog,
 			    "Ebox config part does not have GUID; skipping",
+			    BUNYAN_T_UINT32, "cfgnum", cfgnum,
 			    BUNYAN_T_STRING, "partname", tname,
 			    BUNYAN_T_END);
 			continue;
 		}
 
 		(void) bunyan_debug(tlog, "Trying part",
+		    BUNYAN_T_UINT32, "cfgnum", cfgnum,
 		    BUNYAN_T_STRING, "partname", tname,
 		    BUNYAN_T_STRING, "guid", gstr,
 		    BUNYAN_T_END);
@@ -515,7 +531,8 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 
 				(void) bunyan_debug(tlog,
 				    "PIV token not present for part; trying "
-				    "next part",
+				    "next config",
+		    		    BUNYAN_T_UINT32, "cfgnum", cfgnum,
 				    BUNYAN_T_STRING, "partname", tname,
 				    BUNYAN_T_END);
 				continue;
@@ -523,6 +540,7 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 
 			(void) bunyan_debug(tlog,
 			    "Fatal failure finding PIV token for part",
+		   	    BUNYAN_T_UINT32, "cfgnum", cfgnum,
 			    BUNYAN_T_STRING, "partname", tname,
 			    BUNYAN_T_END);
 
@@ -537,6 +555,7 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 		    piv_token_guid_hex(kt->kt_piv));
 
 		(void) bunyan_debug(tlog, "Found PIV token for part",
+	   	    BUNYAN_T_UINT32, "cfgnum", cfgnum,
 		    BUNYAN_T_STRING, "partname", tname,
 		    BUNYAN_T_END);
 
@@ -932,6 +951,12 @@ add_recovery(const char *dataset, const struct ebox_tpl *rcfg, boolean_t stage,
 		}
 	}
 
+	/*
+	 * The 'add_prog' zfs channel program (zcp) sets the ebox property on
+	 * the dataset. If setting the active ebox, we must also set
+	 * the key at the same time. The add_prog zcp will also set the key
+	 * (in the same txg as setting the ebox property) as needed.
+	 */
 	ret = run_channel_program(dataset, add_prog, zcp_args, &result);
 
 done:

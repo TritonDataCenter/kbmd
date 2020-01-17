@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2019 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #include <bunyan.h>
@@ -21,10 +21,6 @@
 #include <synch.h>
 #include "pivy/libssh/sshbuf.h"
 #include "kbmd.h"
-
-#ifdef DEBUG
-#include <stdio.h>
-#endif
 
 static errf_t *get_dataset(nvlist_t *, const char **);
 static const char *kbm_cmd_str(kbm_cmd_t);
@@ -198,6 +194,7 @@ set_syspool(const char *zpool)
 
 	if ((zhp = zpool_open_canfail(g_zfs, zpool)) == NULL) {
 		mutex_exit(&g_zfs_lock);
+		mutex_enter(&piv_lock);
 		return (errf("zpool_open_canfail", NULL,
 		    "could not determine existence of '%s'", zpool));
 	}
@@ -212,6 +209,7 @@ set_syspool(const char *zpool)
 	}
 
 	if (!exists) {
+		mutex_exit(&piv_lock);
 		return (errf("NotFoundError", NULL, "zpool '%s' not found",
 		    zpool));
 	}
@@ -328,7 +326,7 @@ done:
 	return (ret);
 }
 
-errf_t *
+static errf_t *
 unlock_dataset(const char *dataset)
 {
 	errf_t *ret = ERRF_OK;
@@ -367,16 +365,16 @@ unlock_dataset(const char *dataset)
 	}
 
 	key = ebox_key(ebox, &keylen);
-	if ((ret = load_key(dataset, key, keylen)) != ERRF_OK) {
-		goto done;
-	}
+	ret = load_key(dataset, key, keylen);
 
 done:
 	mutex_exit(&piv_lock);
+	if (ebox != sys_box)
+		ebox_free(ebox);
 	return (ret);
 }
 
-void
+static void
 kbmd_zfs_unlock(nvlist_t *req)
 {
 	errf_t *ret = ERRF_OK;
@@ -564,17 +562,6 @@ dispatch_request(nvlist_t *req)
 
 	errf_t *ret = ERRF_OK;
 	int cmdval;
-
-#ifdef DEBUG
-	/*
-	 * XXX: These will probably be removed before integration
-	 */
-	flockfile(stderr);
-	(void) fprintf(stderr, "Request\n");
-	nvlist_print(stderr, req);
-	(void) fputc('\n', stderr);
-	funlockfile(stderr);
-#endif
 
 	ret = envlist_lookup_int32(req, KBM_NV_CMD, &cmdval);
 	if (ret != ERRF_OK) {

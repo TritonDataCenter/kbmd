@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2019, Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #include <bunyan.h>
@@ -464,7 +464,7 @@ kbmd_door_setup(const char *path)
 	if (door_fd == -1)
 		return (errno);
 
-	if ((fd = open(path, O_CREAT|O_RDWR, 0666)) == -1) {
+	if ((fd = open(path, O_CREAT|O_RDWR, 0600)) == -1) {
 		ret = errno;
 		if (door_revoke(door_fd) != 0)
 			err(EXIT_FAILURE, "failed to revoke door");
