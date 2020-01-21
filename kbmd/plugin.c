@@ -1158,10 +1158,10 @@ load_plugin(void)
 		if (strlen(de->d_name) < sizeof (PLUGIN_PREFIX))
 			continue;
 
-		errno = 0;
-		version = strtoul(de->d_name + sizeof (PLUGIN_PREFIX) - 1,
-		    NULL, 10);
-		if (errno != 0 || version == 0) {
+		if ((ret = eparse_ulong(de->d_name + sizeof (PLUGIN_PREFIX) -1,
+		    &version)) != ERRF_OK) {
+			errf_free(ret);
+			ret = ERRF_OK;
 			continue;
 		}
 

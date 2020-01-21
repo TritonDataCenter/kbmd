@@ -202,7 +202,7 @@ show_configs(nvlist_t **cfgs, uint_t ncfgs, boolean_t verbose)
 		(void) printf("CONFIG #%zu\n", i + 1);
 		(void) printf("\tN = %" PRIu32 "\n", n);
 		(void) printf("\t%-32s %-4s %*s%s\n", "GUID", "SLOT",
-		    namewidth, "NAME", verbose ? " PUBKEY" : "");
+		    -namewidth, "NAME", verbose ? " PUBKEY" : "");
 
 		for (size_t j = 0; j < m; j++) {
 			char gstr[GUID_STR_LEN] = { 0 };

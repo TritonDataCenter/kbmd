@@ -19,12 +19,10 @@
 #include <bunyan.h>
 #include <synch.h>
 
+#include "pivy/piv.h" /* for GUID_LEN */
+
 #ifdef __cplusplus
 extern "C" {
-#endif
-
-#ifndef GUID_LEN
-#define	GUID_LEN 16
 #endif
 
 #define	GUID_STR_LEN (GUID_LEN * 2 + 1)
@@ -47,6 +45,8 @@ zalloc(size_t sz, void *p)
 	return (ecalloc(1, sz, p));
 }
 
+
+struct errf *eparse_ulong(const char *, ulong_t *);
 
 #ifdef __cplusplus
 }

@@ -144,6 +144,30 @@ ecalloc(size_t n, size_t sz, void *p)
 	return (ERRF_OK);
 }
 
+errf_t *
+eparse_ulong(const char *str, ulong_t *valp)
+{
+	char *endptr = NULL;
+	ulong_t val = 0;
+
+	*valp = 0;
+
+	errno = 0;
+	val = strtoul(str, &endptr, 10);
+	if (errno != 0) {
+		return (errfno("strtoul", errno,
+		    "cannot parse '%s' as a number", str));
+	}
+
+	if (*endptr != '\0') {
+		return (errfno("strtoul", EINVAL,
+		    "'%s' has trailing characters", str));
+	}
+
+	*valp = val;
+	return (ERRF_OK);
+}
+
 static int
 kbm_stream_log(nvlist_t *nvl, const char *js, void *arg)
 {

@@ -539,18 +539,22 @@ do_recover(int argc, char **argv)
 	while ((c = getopt(argc, argv, "c:")) != -1) {
 		switch (c) {
 		case 'c':
-			errno = 0;
-			cfgnum = strtoul(optarg, NULL, 10);
-			if (cfgnum != 0 || cfgnum != ULONG_MAX) {
-				break;
+			if ((ret = eparse_ulong(optarg, &cfgnum)) == ERRF_OK) {
+				if (cfgnum == 0) {
+					ret = errf("RangeError", NULL,
+					    "'0' is not a valid config number");
+				} else if (cfgnum > UINT32_MAX) {
+					ret = errf("RangeError", NULL,
+					    "config number %lu is too large",
+					    cfgnum);
+				}
 			}
-			if (errno != 0) {
-				err(EXIT_FAILURE,
-				    "could not parse '%s' as a number", optarg);
+
+			if (ret != ERRF_OK) {
+				errfx(EXIT_FAILURE, ret,
+				    "Invalid config number '%s'", optarg);
 			}
-			if (cfgnum > UINT32_MAX) {
-				err(EXIT_FAILURE, "%lu is too large\n");
-			}
+
 			break;
 		default:
 			errx(EXIT_FAILURE, "Invalid option %-c", optopt);

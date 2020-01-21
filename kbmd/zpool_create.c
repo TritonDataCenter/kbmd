@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2019 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #include <bunyan.h>
@@ -128,6 +128,8 @@ try_guid(const uint8_t *guid, const recovery_token_t *rtoken,
 	    BUNYAN_T_STRING, "token", piv_token_guid_hex(kt->kt_piv),
 	    BUNYAN_T_END);
 
+	*ktp = kt;
+
 	return (ERRF_OK);
 }
 
@@ -218,9 +220,10 @@ kbmd_assert_token(const uint8_t *guid, const recovery_token_t *rtoken,
 		return (ERRF_OK);
 	}
 
-	if ((ret = try_guid(guid, rtoken, ktp)) != ERRF_OK) {
+	if ((ret = try_guid(guid, rtoken, ktp)) != ERRF_OK)
 		return (ret);
-	} else if (guid != NULL) {
+
+	if (guid != NULL) {
 		ASSERT3P(*ktp, !=, NULL);
 
 		(void) bunyan_debug(tlog, "Using supplied PIV token",
