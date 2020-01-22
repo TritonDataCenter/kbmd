@@ -11,7 +11,7 @@
 .\"
 .\" Copyright 2020 Joyent, Inc.
 .\"
-.Dd January 16, 2020
+.Dd January 22, 2020
 .Dt KBMD 1M
 .Os
 .Sh NAME
@@ -41,6 +41,58 @@ utility.
 Start in debug mode.
 .Nm
 stays in the foreground and logs more detail.
+.El
+.Sh PLUGINS
+The
+.Nm
+daemon utilizes plugins to manage PIV token PINs, recovery tokens, and
+recovery configurations.
+Upon startup,
+.Nm
+will set its plugin path by examining (in order):
+.Bl -bullet -offset indent
+.It
+The environment variable
+.Ev KBM_PLUGIN_DIR .
+.It
+The
+.Xr smf 5
+property
+.Sy kbmd/kbmd-plugin-dir
+when
+.Nm
+is started via
+.Xr smf 5 .
+.It
+The path
+.Pa /usr/lib/kbm/plugins
+if neither of the previous methods are defined.
+.El
+.Pp
+.Nm
+will then scan the plugin directory for a supported plugin.
+The first supported plugin found will be utilized by
+.Nm .
+.Pp
+The plugin interface specification can be viewed at
+.Lk https://github.com/joyent/kbmd/blob/master/plugins/README.md
+.Sh ENVIRONMENT
+.Bl -tag -width Ev
+.It Ev KBM_PLUGIN_DIR
+The directory to search for plugins.
+If set, this overrides the default path as well as any path in
+.Xr smf 5 .
+.El
+.Sh FILES
+.Bl -tag -width Pa
+.It Pa /usr/lib/kbm/plugins
+The default plugin path.
+This can be overridden via the
+.Sy kbmd/kbmd-plugin-dir
+.Xr smf 5
+property or by setting
+.Ev KBM_PLUGIN_DIR
+to a different value.
 .El
 .Sh INTERFACE STABILITY
 Private
