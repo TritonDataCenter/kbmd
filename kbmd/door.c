@@ -41,7 +41,6 @@ static size_t door_ret_max = 16384;
  */
 typedef struct tdata {
 	ucred_t		*td_ucred;
-	boolean_t	td_ucred_set;
 	int		td_errfd;
 	char		td_tty[_POSIX_PATH_MAX];
 	bunyan_logger_t *td_log;
@@ -75,7 +74,6 @@ tdata_init(tdata_t *td, door_desc_t *dp, uint_t n_desc)
 	bzero(td->td_buf, td->td_buflen);
 	bzero(td->td_tty, sizeof (td->td_tty));
 	td->td_errfd = -1;
-	td->td_ucred_set = B_FALSE;
 
 	for (size_t i = 0; i < ARRAY_SIZE(rem_keys); i++) {
 		(void) bunyan_key_remove(tlog, rem_keys[i]);
@@ -94,7 +92,6 @@ tdata_init(tdata_t *td, door_desc_t *dp, uint_t n_desc)
 		return (B_FALSE);
 	}
 	uc = td->td_ucred;
-	td->td_ucred_set = B_TRUE;
 
 	pw = getpwuid(ucred_getruid(uc));
 	if (pw != NULL) {
@@ -190,6 +187,8 @@ tdata_free(void *p)
 
 	bunyan_fini(td->td_log);
 	tlog = NULL;
+
+	ucred_free(td->td_ucred);
 
 	tdlen = sizeof (*td) + td->td_buflen;
 	bzero(td, tdlen);
@@ -299,14 +298,6 @@ kbmd_ret_nvlist(nvlist_t *resp)
 		}
 	}
 
-#ifdef DEBUG
-	flockfile(stderr);
-	fprintf(stderr, "Response:\n");
-	nvlist_print(stderr, resp);
-	fputc('\n', stderr);
-	funlockfile(stderr);
-#endif
-
 	VERIFY0(nvlist_size(resp, &nvlen, NV_ENCODE_NATIVE));
 	if (nvlen > td->td_buflen) {
 		(void) bunyan_error(tlog,
@@ -403,7 +394,7 @@ kbmd_door_server(void *cookie, char *argp, size_t arg_size, door_desc_t *dp,
 
 	/*
 	 * If we make the kbmd door server use a private thread pool,
-	 * each thread should gets it's own preallocated tdata_t and
+	 * each thread should gets its own preallocated tdata_t and
 	 * we can remove this check.
 	 *
 	 * If these fail, we can't assume we have a bunyan logger to use.

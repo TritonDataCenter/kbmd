@@ -44,9 +44,11 @@ typedef struct cmd {
 	errf_t *(*cmd)(int, char **);
 } cmd_t;
 
+static boolean_t show_door_nvlist;
 static int door_fd = -1;
 libzfs_handle_t *g_zfs;
 
+static errf_t *parse_log_level(const char *, bunyan_level_t *);
 static errf_t *parse_guid(const char *, uint8_t guid[GUID_LEN]);
 static errf_t *read_template_file(const char *, char **);
 static errf_t *read_template_stdin(char **);
@@ -107,21 +109,33 @@ int
 main(int argc, char *argv[])
 {
 	errf_t *ret = ERRF_OK;
+	bunyan_level_t log_level = BUNYAN_L_INFO;
 	size_t i;
+	int c;
+
+	if (getenv("KBMADM_DOOR_DEBUG") != NULL)
+		show_door_nvlist = B_TRUE;
 
 	alloc_init();
 
-	/*
-	 * TODO: Add a flag that will control the log level output.  For
-	 * most normal operation, we shouldn't expect to see much if any
-	 * bunyan logging in kbmadm.  For development, testing, we'll be
-	 * more verbose.
-	 */
-	if ((ret = init_log(BUNYAN_L_DEBUG)) != ERRF_OK) {
-		errx(EXIT_FAILURE, "%s: %s in %s() at %s:%d",
-		    errf_name(ret), errf_message(ret), errf_function(ret),
-		    errf_file(ret), errf_line(ret));
+	while ((c = getopt(argc, argv, "l:")) != -1) {
+		switch (c) {
+		case 'l':
+			if ((ret = parse_log_level(optarg,
+			    &log_level)) != ERRF_OK) {
+				errfx(EXIT_FAILURE, ret, "Invalid log level");
+			}
+			break;
+		}
 	}
+
+	if ((ret = init_log(log_level)) != ERRF_OK) {
+		errfx(EXIT_FAILURE, ret, "Failed to set log level");
+	}
+
+	argc += optind - 1;
+	argv += optind - 1;
+	optind = 1;
 
 	/*
 	 * We only have one thread, but some things (e.g. the spawning code)
@@ -1039,23 +1053,46 @@ errf_t *
 nv_door_call(int fd, nvlist_t *in, nvlist_t **out)
 {
 	door_arg_t da = { 0 };
+	door_desc_t ddesc = { 0 };
 	char *buf = NULL;
 	size_t buflen = 0;
 	errf_t *ret = ERRF_OK;
 
+	if (show_door_nvlist) {
+		(void) fprintf(stderr, "REQUEST:\n");
+		nvlist_print(stderr, in);
+	}
+
 	if ((ret = envlist_pack(in, &buf, &buflen)) != ERRF_OK)
 		return (ret);
 
+	ddesc.d_attributes = DOOR_DESCRIPTOR;
+	ddesc.d_data.d_desc.d_descriptor = fileno(stdout);
+
 	da.data_ptr = buf;
 	da.data_size = buflen;
+	da.desc_ptr = &ddesc;
+	da.desc_num = 1;
 
 	if ((ret = edoor_call(fd, &da)) != ERRF_OK)
 		goto done;
 
 	if (da.data_ptr != NULL) {
-		ret = envlist_unpack(da.data_ptr, da.data_size, out);
+		if ((ret = envlist_unpack(da.data_ptr, da.data_size,
+		    out)) != ERRF_OK) {
+			goto done;
+		}
 	} else {
 		*out = NULL;
+	}
+
+	if (show_door_nvlist) {
+		if (*out != NULL) {
+			(void) fprintf(stderr, "RESPONSE:\n");
+			nvlist_print(stderr, *out);
+		} else {
+			(void) fprintf(stderr, "<NO RESPONSE>\n");
+		}
 	}
 
 done:
@@ -1135,4 +1172,29 @@ assert_libzfs(void)
 	}
 
 	return (errfno("libzfs_init", errno, "cannot initialize libzfs"));
+}
+
+static struct {
+	const char *str;
+	bunyan_level_t lvl;
+} levels[] = {
+	{ "trace", BUNYAN_L_TRACE },
+	{ "debug", BUNYAN_L_DEBUG },
+	{ "info", BUNYAN_L_INFO },
+	{ "warn", BUNYAN_L_WARN },
+	{ "error", BUNYAN_L_ERROR },
+	{ "fatal", BUNYAN_L_FATAL }
+};
+
+errf_t *
+parse_log_level(const char *lvl, bunyan_level_t *levelp)
+{
+	for (size_t i = 0; i < ARRAY_SIZE(levels); i++) {
+		if (strcasecmp(lvl, levels[i].str) == 0) {
+			*levelp = levels[i].lvl;
+			return (ERRF_OK);
+		}
+	}
+
+	return (errf("ParseError", NULL, "'%s' is not a valid log level", lvl));
 }

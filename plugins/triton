@@ -10,17 +10,16 @@
 # http://www.illumos.org/license/CDDL.
 
 #
-# Copyright 2019, Joyent, Inc.
+# Copyright 2020 Joyent, Inc.
 #
+
+set -euo pipefail
 
 VERSION="1"
 
-PIVYTOOL=/usr/sbin/pivy-tool
-CURL=/usr/bin/curl
-# For base64 encoding/decoding in the GZ
-OPENSSL=/usr/bin/openssl
-SED=/usr/xpg4/bin/sed
-OD=/usr/xpg4/bin/od
+# Use xpg4 for sed and od
+PATH=/usr/sbin:/usr/xpg4/bin:/usr/bin
+export PATH
 
 # The type of system we are on.  One of:
 #    headnode    Triton head node
@@ -30,7 +29,7 @@ function sys_type {
     local smartos=0
     local headnode=0
 
-    /usr/bin/bootparams | while IFS="=" read var value; do
+    bootparams | while IFS="=" read var value; do
         if [[ "$var" == "smartos" && "$value" == "true" ]]; then
             smartos=1
         elif [[ "$var" == "headnode" && "$value" == "true" ]]; then
@@ -58,7 +57,7 @@ function get_kbmapi_host {
     # using sed
     suffix=$(/usr/bin/json -f /system/boot/networking.json \
         datacenter_name dns_domain | \
-        $SED 'N;s/\n/./')
+        sed 'N;s/\n/./')
     printf "kbmapi.%s" "$suffix"
 }
 
@@ -68,7 +67,7 @@ function http_date {
 
 function piv_sign {
     local data="$1"
-    printf "%s" "$data" | $PIVYTOOL sign 9e | $OPENSSL enc -base64 -A
+    printf "%s" "$data" | pivy-tool sign 9e | openssl enc -base64 -A
 }
 
 function hmac_sign {
@@ -76,10 +75,10 @@ function hmac_sign {
     local key="$2"
     local key_hex
 
-    key_hex=$(printf "%s" "$key" | $OPENSSL enc -base64 -d | $OD -An -tx1 | \
-        $SED -e 'N;s/\n//' -e 's/ //g')
+    key_hex=$(printf "%s" "$key" | openssl enc -base64 -d | od -An -tx1 | \
+        sed -e 'N;s/\n//' -e 's/ //g')
 
-    printf "%s" "$data" | $OPENSSL dgst -sha512 -hmac -macopt hexkey:"$key_hex"
+    printf "%s" "$data" | openssl dgst -sha512 -hmac -macopt hexkey:"$key_hex"
 }
 
 function auth_hdr {
@@ -99,7 +98,7 @@ function get_pin {
     local sig=$(piv_sign "date: $date")
     local auth=$(auth_hdr "$sig")
 
-    $CURL -sS \
+    curl -sS \
         -H "Date: $date" \
         -H "Authorization: $auth" \
         "$url" | \
@@ -113,7 +112,7 @@ function register_pivtoken {
     local sig=$(piv_sign "date: $date")
     local auth=$(auth_hdr "$sig")
 
-    /bin/cat - | $CURL -sS \
+    cat - | curl -sS \
         -H "Date: $date" \
         -H "Authorization: $sig" \
 	-H "Content-Type: application/json" \
@@ -132,7 +131,7 @@ function replace_pivtoken {
 
     # We'll want to remove the json call and have kbmd parse
     # the JSON eventually
-    /bin/cat - | $CURL -sS \
+    /bin/cat - | curl -sS \
         -H "Date: $date" \
         -H "Authorization: $sig" \
 	-H "Content-Type: application/json" \
@@ -148,7 +147,7 @@ function new_rtoken {
     local sig=$(piv_sign "date: $date")
     local auth=$(auth_hdr "$sig")
 
-    $CURL -sS \
+    curl -sS \
         -H "Date: $date" \
         -H "Authorization: $auth" \
 	-H "Content-Type: application/json" \
@@ -156,7 +155,7 @@ function new_rtoken {
 }
 
 function post_rcfg_update {
-    /usr/bin/sysinfo -u
+    sysinfo -u
 }
 
 [[ -z "$1" ]] && \
@@ -180,6 +179,16 @@ case "$1" in
         post_rcfg_update;;
     *)
         echo "Unknown subcommand $1" >&2
-        # XXX: Usage
+
+	# Operators shouldn't be invoking this script directly, but we
+	# provide basic usage information just to keep things from being
+	# opaque.
+
+	echo "Usage: $0 version" >&2
+	echo "\t$0 get-pin GUID" >&2
+	echo "\t$0 register-pivtoken" >&2
+	echo "\t$0 replace-pivtoken" >&2
+	echo "\t$0 new-rtoken GUID" >&2
+	echo "\t$0 post-rcfg-update" >&2
         exit 1;;
 esac

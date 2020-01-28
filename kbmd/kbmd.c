@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2019, Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #include <sys/corectl.h>
@@ -26,7 +26,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <libnvpair.h>
-#include <libscf.h>
 #include <libzfs.h>
 #include <paths.h>
 #include <port.h>
@@ -43,13 +42,16 @@
 #include <unistd.h>
 #include "kbmd.h"
 
-#define	KBMD_DEFAULT_PLUGIN_DIR		"/usr/lib/kbmd/plugins"
 #define	DEFAULT_SYSPOOL	"zones"
 
 bunyan_logger_t *blog;
 
 char *sys_pool;
 
+/*
+ * g_zfs_lock protects the use of g_zfs, and piv_lock protects the use of
+ * piv_ctx. piv_lock should be taken prior to g_zfs_lock when both are needed.
+ */
 mutex_t g_zfs_lock = ERRORCHECKMUTEX;
 libzfs_handle_t *g_zfs;
 
@@ -64,7 +66,6 @@ static void kbmd_fd_setup(void);
 static int kbmd_dir_setup(void);
 static void kbmd_log_setup(int, bunyan_level_t);
 static void kbmd_cleanup(void);
-static void kbmd_load_smf(int);
 static int kbmd_sys_uuid(uuid_t);
 
 int
@@ -96,10 +97,16 @@ main(int argc, char *argv[])
 	}
 
 	/*
+	 * Initialize a sentinel errf_t to allow iterator callbacks to
+	 * signal iteration should (non-fatally) stop iterating.
+	 */
+	foreach_stop = errf("StopIteration", NULL, "iteration stopped");
+	VERIFY3P(foreach_stop, !=, ERRF_NOMEM);
+
+	/*
 	 * Now in the child (non -d)
 	 */
 
-	kbmd_load_smf(dfd);
 	if (sigfillset(&set) != 0)
 		kbmd_dfatal(dfd, "failed to fill a signal set...");
 
@@ -218,13 +225,11 @@ kbmd_daemonize(int dirfd)
 	sigset_t set, oset;
 	int estatus, pfds[2];
 	pid_t child;
-#if notyet
 	priv_set_t *pset;
-#endif
 
 	/*
-	 * Set a per-process core path to be inside of /var/run/kbmd. Make sure
-	 * that we aren't limited in our dump size.
+	 * Set a per-process core path to be inside of /etc/svc/volatile/kbmd.
+	 * Make sure that we aren't limited in our dump size.
 	 */
 	VERIFY3S(snprintf(path, sizeof (path),
 	    "%s/core.%s.%%p", KBMD_RUNDIR, getprogname()), >, 0);
@@ -284,40 +289,38 @@ kbmd_daemonize(int dirfd)
 	}
 
 	/*
-	 * Drop privileges here.
-	 *
-	 * TODO: Determine what things are needed/can be dropped
+	 * Drop privileges here. For now we only utilize the basic set.
 	 */
 	if (setgroups(0, NULL) != 0)
 		abort();
 	if (setgid(GID_KBMD) == -1 || seteuid(UID_KBMD) == -1)
 		abort();
-#if notyet
+
 	if ((pset = priv_allocset()) == NULL)
 		abort();
+
 	priv_basicset(pset);
-	if (priv_delset(pset, PRIV_PROC_EXEC) == -1 ||
-	    priv_delset(pset, PRIV_PROC_INFO) == -1 ||
-	    priv_delset(pset, PRIV_PROC_FORK) == -1 ||
-	    priv_delset(pset, PRIV_PROC_SESSION) == -1 ||
-	    priv_delset(pset, PRIV_FILE_LINK_ANY) == -1 ||
-	    priv_addset(pset, PRIV_SYS_DL_CONFIG) == -1 ||
-	    priv_addset(pset, PRIV_NET_PRIVADDR) == -1) {
-		abort();
-	}
+
 	/*
-	 * Remove privs from the permitted set. That will cause them to be
-	 * removed from the effective set. We want to make sure that in the case
-	 * of a vulnerability, something can't get back in here and wreak more
-	 * havoc. But if we want non-basic privs in the effective set, we have
-	 * to request them explicitly.
+	 * We need the sys_devices privilege in order to talk to the ccid
+	 * driver.
 	 */
-	if (setppriv(PRIV_SET, PRIV_PERMITTED, pset) == -1)
-		abort();
-	if (setppriv(PRIV_SET, PRIV_EFFECTIVE, pset) == -1)
-		abort();
+	VERIFY0(priv_addset(pset, PRIV_SYS_DEVICES));
+
+	/*
+	 * We also need sys_mount for lzc_load_key() (regardless if we mount
+	 * anything).
+	 */
+	VERIFY0(priv_addset(pset, PRIV_SYS_MOUNT));
+
+	/*
+	 * We must leave the inheritable set to the default (unfortunately)
+	 * since things like sysinfo may be run via the plugins.
+	 */
+	VERIFY0(setppriv(PRIV_SET, PRIV_PERMITTED, pset));
+	VERIFY0(setppriv(PRIV_SET, PRIV_EFFECTIVE, pset));
 	priv_freeset(pset);
-#endif
+
 	if (close(pfds[0]) != 0)
 		abort();
 	if (setsid() == -1)
@@ -362,37 +365,10 @@ kbmd_dir_setup(void)
 	if (fchown(fd, UID_KBMD, GID_KBMD) != 0)
 		err(EXIT_FAILURE, "failed to chown %s", KBMD_RUNDIR);
 
+	if (fchmod(fd, 0700) != 0)
+		err(EXIT_FAILURE, "failed to chmod %s", KBMD_RUNDIR);
+
 	return (fd);
-}
-
-static void
-kbmd_load_smf(int dfd)
-{
-	char *fmri, *inc;
-	scf_simple_prop_t *prop;
-
-	if ((fmri = getenv("SMF_FMRI")) == NULL)
-		return;
-
-	if ((prop = scf_simple_prop_get(NULL, fmri, KBMD_PG,
-	    KBMD_PROP_INC)) == NULL)
-		goto done;
-
-	if ((inc = scf_simple_prop_next_astring(prop)) == NULL) {
-
-	}
-	while ((inc = scf_simple_prop_next_astring(prop)) != NULL) {
-#if 0
-		int err = plugin_load(XXX, inc);
-		if (err != 0) {
-			kbmd_dfatal(dfd, "failed to load from %s: %s\n",
-			    inc, strerror(err));
-		}
-#endif
-	}
-
-done:
-	scf_simple_prop_free(prop);
 }
 
 static void

@@ -27,6 +27,8 @@
 
 #define	EBOX_KEY_LEN 32
 
+errf_t *foreach_stop;
+
 extern const char activate_prog_start;
 extern const char add_prog_start;
 
@@ -359,9 +361,16 @@ done:
 }
 
 /*
- * These allow for iterating ebox configs and config parts, while allowing
- * for removal of the given config or part during iteration without
- * invalidating the iteration.
+ * For each template part in tcfg, call cb with the template part and
+ * a cookie (arg). The callback can return ERRF_OK to continue iteration,
+ * FOREACH_STOP to stop iteration (not an error), or return an appropriate
+ * errf_t if an error is encountered. ebox_tpl_foreach_part returns ERRF_OK
+ * if no errors (including FOREACH_STOP) were encountered during iteration,
+ * or the error returned from the callback.
+ *
+ * The iteration is such that the template part passed into the callback
+ * can be deleted or modified by the callback without invalidating the
+ * iteration.
  */
 errf_t *
 ebox_tpl_foreach_part(struct ebox_tpl_config *tcfg, ebox_tpl_part_cb_t cb,
@@ -381,6 +390,17 @@ ebox_tpl_foreach_part(struct ebox_tpl_config *tcfg, ebox_tpl_part_cb_t cb,
 	return (ERRF_OK);
 }
 
+/*
+ * Iterate through each template config in the ebox template 'tpl'.calling
+ * the given callback with the ebox template config and 'arg' as arguments.
+ * Like ebox_tpl_foreach_part(), the callback can return ERRF_OK (continue
+ * iteration), FOREACH_STOP (stop iteration without error), or return
+ * an error to stop iteration. ebox_tpl_foreach_cfg() will return ERRF_OK
+ * or the error returned from the callback.
+ *
+ * Like ebox_tpl_foreach_part(), the callback can modify or remove the
+ * template config without invalidating the iteration.
+ */
 errf_t *
 ebox_tpl_foreach_cfg(struct ebox_tpl *tpl, ebox_tpl_cb_t cb, void *arg)
 {
@@ -1064,12 +1084,13 @@ remove_recovery(const char *dataset)
 
 	mutex_exit(&piv_lock);
 
+	/*
+	 * Inheriting a non-existent user property (such as ebox values)
+	 * does not return an error, so if we do get an error here, something
+	 * else has happened we want to report.
+	 */
 	if ((ret = ezfs_prop_inherit(zhp, STAGEBOX_PROP)) != ERRF_OK) {
 		goto done;
-		/*
-		 * XXX: figure out what is returned when it doesn't exist, and
-		 * convert to non error
-		 */
 	}
 
 	ret = post_recovery_config_update();

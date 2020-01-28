@@ -214,6 +214,7 @@ spawn(const char *restrict cmd, char *const argv[restrict],
 	posix_spawn_file_actions_t fact = { 0 };
 	posix_spawnattr_t attr = { 0 };
 	pid_t pid;
+	size_t i;
 	int pipe_fds[SPAWN_NFDS][2] = { { -1, -1 }, { -1, -1 }, { -1, -1 } };
 
 	*pidp = (pid_t)-1;
@@ -228,7 +229,7 @@ spawn(const char *restrict cmd, char *const argv[restrict],
 	 * values in an acceptable format for posix_spawn()
 	 */
 
-	for (size_t i = 0; argv[i] != NULL; i++) {
+	for (i = 0; argv[i] != NULL; i++) {
 		if (i > 0 && (ret = ecustr_appendc(cmdline, ' ')) != ERRF_OK) {
 			custr_free(cmdline);
 			return (ret);
@@ -255,7 +256,7 @@ spawn(const char *restrict cmd, char *const argv[restrict],
 	VERIFY0(posix_spawnattr_setflags(&attr,
 	    POSIX_SPAWN_NOSIGCHLD_NP | POSIX_SPAWN_WAITPID_NP));
 
-	for (size_t i = 0; i < SPAWN_NFDS; i++) {
+	for (i = 0; i < SPAWN_NFDS; i++) {
 		if (fds[i] == i)
 			continue;
 
@@ -289,7 +290,7 @@ spawn(const char *restrict cmd, char *const argv[restrict],
 	VERIFY0(posix_spawn_file_actions_destroy(&fact));
 	VERIFY0(posix_spawnattr_destroy(&attr));
 
-	for (size_t i = 0; i < SPAWN_NFDS; i++) {
+	for (i = 0; i < SPAWN_NFDS; i++) {
 		if (pipe_fds[i][1] < 0) {
 			VERIFY3S(fds[i], >=, 0);
 			continue;
@@ -303,7 +304,7 @@ spawn(const char *restrict cmd, char *const argv[restrict],
 	return (ret);
 
 fail:
-	for (size_t i = 0; i < SPAWN_NFDS; i++) {
+	for (i = 0; i < SPAWN_NFDS; i++) {
 		if (pipe_fds[i][0] >= 0)
 			(void) close(pipe_fds[i][0]);
 		if (pipe_fds[i][1] >= 0)

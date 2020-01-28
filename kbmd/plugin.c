@@ -314,10 +314,17 @@ kbmd_get_pin(const uint8_t guid[restrict], custr_t **restrict pinp)
 	}
 
 	/*
-	 * XXX: What do with any stderr output?  We can append it to
-	 * errf, but there's limited buffer space and likely would be
-	 * truncated.
+	 * errf_ts have limited buffer space for an error, so just
+	 * log plugin failures to the kbmd log and require the operator
+	 * to examine them.
 	 */
+	if (custr_len(data[1]) > 0) {
+		(void) bunyan_warn(tlog, "Get pin plugin had error output",
+		    BUNYAN_T_STRING, "plugin", args.sar_strs[0],
+		    BUNYAN_T_STRING, "stderr", custr_cstr(data[1]),
+		    BUNYAN_T_END);
+	}
+
 	if (exitval != 0) {
 		(void) bunyan_warn(tlog, "Get pin plugin returned an error",
 		    BUNYAN_T_STRING, "plugin", args.sar_strs[0],

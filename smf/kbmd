@@ -5,15 +5,13 @@ set -o xtrace
 . /lib/svc/share/smf_include.sh
 . /lib/sdc/config.sh
 
-PATH=/usr/sbin:/usr/bin; export PATH
-
 # We are running early enough in the boot process, that
 # the /dev entries for any ccid entries (including /dev/ccid
 # itself) don't show up.  Running devfsadm first seems
 # to solve this, though perhaps there's a better
-# method?
+# method? Depending on milestone/devices doesn't seem to be sufficient.
 devfsadm
 
-/usr/lib/kbm/kbmd 2>&1
+/usr/lib/kbm/kbmd || exit $SMF_ERR_FATAL
 
 exit $SMF_EXIT_OK

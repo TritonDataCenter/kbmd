@@ -25,15 +25,7 @@
 static errf_t *get_dataset(nvlist_t *, const char **);
 static const char *kbm_cmd_str(kbm_cmd_t);
 
-/*
- * As a general note, all of the cmd_xxx functions defer freeing their
- * request nvlist_t until immediately before they return, even though
- * in many cases, it could be done sooner in the functions. This is deliberate
- * so that the contents of the original nvlist are available for debugging
- * purposes through the (almost) entire life of the function.
- */
-
-errf_t *
+static errf_t *
 set_systoken(const uint8_t *guid, size_t guidlen)
 {
 	errf_t *ret = ERRF_OK;

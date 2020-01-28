@@ -1,5 +1,24 @@
 <?xml version="1.0"?>
 <!DOCTYPE service_bundle SYSTEM "/usr/share/lib/xml/dtd/service_bundle.dtd.1">
+<!---
+
+  Copyright 2020 Joyent, Inc.
+
+  CDDL HEADER START
+
+  This file and its contents are supplied under the terms of the
+  Common Development and Distribution License ("CDDL"), version 1.0.
+  You may only use this file in accordance with the terms version
+  1.0 of the CDDL.
+
+  A full copy of the text of the CDDL should have accompanied this
+  source.  A copy of the CDDL is also available via the Internet at
+  http://www.illumos.org/license/CDDL.
+
+  CDDL HEADER END
+
+-->
+
 <service_bundle type="manifest" name="kbmd">
     <service
         name="system/kbmd"
@@ -36,7 +55,7 @@
             <exec_method
                 type='method'
                 name='stop'
-                exec=':kill -9'
+                exec=':kill'
                 timeout_seconds='60' />
 
             <property_group name="startd" type="framework">

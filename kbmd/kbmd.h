@@ -101,6 +101,8 @@ extern struct ebox *sys_box;
 
 extern char *plugin_dir;
 
+extern struct errf *foreach_stop;
+
 void kbmd_dfatal(int, const char *, ...) __NORETURN;
 int kbmd_door_setup(const char *);
 
@@ -166,7 +168,7 @@ errf_t *kbmd_unlock_ebox(struct ebox *restrict, struct kbmd_token **restrict);
 errf_t *kbmd_create_ebox(kbmd_token_t *restrict, const struct ebox_tpl *,
     const char *, uint8_t **restrict, size_t *restrict, struct ebox **restrict);
 
-#define	FOREACH_STOP ((errf_t *)(uintptr_t)-1)
+#define	FOREACH_STOP foreach_stop
 
 typedef errf_t *(ebox_tpl_cb_t)(struct ebox_tpl_config *, void *);
 typedef errf_t *(ebox_tpl_part_cb_t)(struct ebox_tpl_part *, void *);
