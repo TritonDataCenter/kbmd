@@ -95,11 +95,8 @@ extern mutex_t piv_lock;
 extern SCARDCONTEXT piv_ctx;
 extern kbmd_token_t *sys_piv;
 extern char *sys_pool;
-#define	IS_SYSTEM_TOKEN(_tok) ((sys_piv != NULL) && ((_tok) == sys_piv->kt_piv))
 
 extern struct ebox *sys_box;
-
-extern char *plugin_dir;
 
 extern struct errf *foreach_stop;
 
@@ -107,7 +104,6 @@ void kbmd_dfatal(int, const char *, ...) __NORETURN;
 int kbmd_door_setup(const char *);
 
 void kbmd_return(errf_t *restrict, struct nvlist *restrict) __NORETURN;
-uid_t req_uid(void);
 pid_t req_pid(void);
 
 void dispatch_request(struct nvlist *);
@@ -116,7 +112,6 @@ errf_t *kbmd_zpool_create(const char *, const uint8_t *,
 void kbmd_recover_init(int);
 void kbmd_recover_start(struct nvlist *);
 void kbmd_recover_resp(struct nvlist *);
-void kbmd_update_recovery(struct nvlist *);
 void kbmd_list_recovery(struct nvlist *);
 
 errf_t *
@@ -126,7 +121,6 @@ errf_t *ezfs_open(struct libzfs_handle *, const char *, int,
     struct zfs_handle **);
 
 errf_t *get_dataset_status(const char *, boolean_t *, boolean_t *);
-errf_t *get_template(kbmd_token_t *, struct ebox_tpl **);
 errf_t *create_template(kbmd_token_t *restrict, const struct ebox_tpl *,
     struct ebox_tpl **restrict);
 
@@ -184,7 +178,6 @@ errf_t *remove_recovery(const char *);
 
 /* zfs_unlock.c */
 errf_t *load_key(const char *, const uint8_t *, size_t);
-void kbmd_mount_zpool(const char *, const char *);
 
 #ifdef __cplusplus
 }

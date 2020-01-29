@@ -218,14 +218,6 @@ tdata_get(void)
 	return (td);
 }
 
-uid_t
-req_uid(void)
-{
-	tdata_t *td = tdata_get();
-
-	return (ucred_getruid(td->td_ucred));
-}
-
 pid_t
 req_pid(void)
 {

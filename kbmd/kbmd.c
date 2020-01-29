@@ -88,7 +88,7 @@ main(int argc, char *argv[])
 	kbmd_fd_setup();
 	dirfd = kbmd_dir_setup();
 	if (opt_d) {
-		dfd = open("/dev/null", O_RDONLY);
+		dfd = open(_PATH_DEVNULL, O_RDONLY);
 		if (dfd == -1)
 			err(EXIT_FAILURE, "/dev/null");
 	} else {
