@@ -18,6 +18,7 @@
 #include <stddef.h>
 #include <strings.h>
 #include <libzfs.h>
+#include <sys/fs/zfs.h>
 #include "kbmd.h"
 #include "pivy/ebox.h"
 #include "pivy/libssh/sshbuf.h"
@@ -29,6 +30,12 @@
 
 errf_t *foreach_stop;
 
+/*
+ * The activate_prog_start and add_prog_start symbols are created using
+ * elfwrap(1). elfwrap(1) turns the lua scripts in /lua into ELF objects
+ * that are then linked into kbmd to provide the symbols. The build process
+ * should guarantee the generated objects contain a terminating NUL.
+ */
 extern const char activate_prog_start;
 extern const char add_prog_start;
 
@@ -209,21 +216,20 @@ set_box_name(struct ebox *restrict ebox, const char *name)
 	return (ERRF_OK);
 }
 
-/*
- * With libzfs, each property is stored as its own nvlist, with the 'value'
- * name containing the value of the property.
- */
 static errf_t *
 get_property_str(nvlist_t *restrict proplist, const char *propname,
-    char **restrict sp)
+    char **restrict valptr, char **srcptr)
 {
 	errf_t *ret = ERRF_OK;
-	nvlist_t *val = NULL;
+	nvlist_t *nvl = NULL;
 
-	if ((ret = envlist_lookup_nvlist(proplist, propname, &val)) != ERRF_OK)
+	if ((ret = envlist_lookup_nvlist(proplist, propname, &nvl)) != ERRF_OK)
 		return (ret);
 
-	return (envlist_lookup_string(val, "value", sp));
+	if ((ret = envlist_lookup_string(nvl, ZPROP_SOURCE, srcptr)) != ERRF_OK)
+		return (ret);
+
+	return (envlist_lookup_string(nvl, ZPROP_VALUE, valptr));
 }
 
 static errf_t *
@@ -233,15 +239,31 @@ get_ebox_string(zfs_handle_t *restrict zhp, boolean_t staged,
 	errf_t *ret = ERRF_OK;
 	nvlist_t *uprops = NULL;
 	const char *propstr = staged ? STAGEBOX_PROP : BOX_PROP;
+	char *src = NULL;
 
 	uprops = zfs_get_user_props(zhp);
 
-	if ((ret = get_property_str(uprops, propstr, sp)) == ERRF_OK ||
-	    !errf_caused_by(ret, "ENOENT"))
+	if ((ret = get_property_str(uprops, propstr, sp, &src)) != ERRF_OK) {
+		if (errf_caused_by(ret, "ENOENT")) {
+			return (errf("NotFoundError", ret,
+			    "dataset %s does not contain an ebox",
+			    zfs_get_name(zhp)));
+		}
 		return (ret);
+	}
 
-	return (errf("NotFoundError", ret,
-	    "dataset %s does not contain an ebox", zfs_get_name(zhp)));
+	/*
+	 * Only accept a locally set ebox property. If not, instead of
+	 * returning 'not found', try to return a more precise reason to
+	 * the user.
+	 */
+	if (strcmp(src, zfs_get_name(zhp)) != 0) {
+		return (errf("InvalidDataset", NULL,
+		    "dataset %s contains an inherited ebox property",
+		    zfs_get_name(zhp)));
+	}
+
+	return (ret);
 }
 
 static errf_t *
@@ -552,7 +574,7 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 				(void) bunyan_debug(tlog,
 				    "PIV token not present for part; trying "
 				    "next config",
-		    		    BUNYAN_T_UINT32, "cfgnum", cfgnum,
+				    BUNYAN_T_UINT32, "cfgnum", cfgnum,
 				    BUNYAN_T_STRING, "partname", tname,
 				    BUNYAN_T_END);
 				continue;

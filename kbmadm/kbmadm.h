@@ -18,11 +18,14 @@
 
 #include <inttypes.h>
 #include <sys/debug.h>
+#include <libnvpair.h>
+#include <libzfs.h>
 #include "kbm.h"
 #include "common.h"
 #include "ecustr.h"
 #include "envlist.h"
 #include "kspawn.h"
+#include "pivy/errf.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -33,21 +36,17 @@ extern "C" {
  */
 #define	IS_ZPOOL(_name) (strchr(_name, '/') == NULL)
 
-struct errf;
-struct nvlist;
-struct libzfs_handle;
+extern libzfs_handle_t *g_zfs;
 
-extern struct libzfs_handle *g_zfs;
+errf_t *req_new(kbm_cmd_t, nvlist_t **);
+errf_t *assert_door(void);
+errf_t *nv_door_call(int, nvlist_t *, nvlist_t **);
+errf_t *check_error(nvlist_t *);
+errf_t *assert_libzfs(void);
+errf_t *send_request(nvlist_t * restrict, nvlist_t ** restrict);
 
-struct errf *req_new(kbm_cmd_t, struct nvlist **);
-struct errf *assert_door(void);
-struct errf *nv_door_call(int, struct nvlist *, struct nvlist **);
-struct errf *check_error(struct nvlist *);
-struct errf *assert_libzfs(void);
-struct errf *send_request(struct nvlist * restrict, struct nvlist ** restrict);
-
-struct errf *recover(const char *, uint32_t);
-struct errf *show_configs(nvlist_t **, uint_t, boolean_t);
+errf_t *recover(const char *, uint32_t);
+errf_t *show_configs(nvlist_t **, uint_t, boolean_t);
 
 void mount_zpool(const char *, const char *);
 

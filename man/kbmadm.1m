@@ -11,7 +11,7 @@
 .\"
 .\" Copyright 2020 Joyent, Inc.
 .\"
-.Dd January 21, 2020
+.Dd January 28, 2020
 .Dt KBMADM 1M
 .Os
 .Sh NAME
@@ -103,7 +103,7 @@ option is also not specified, or the
 .Sy register-pivtoken
 plugin method does not specify a recovery configuration, the
 resulting ebox will not contain a recovery configuration.
-In such a case, loss of a primary token will result in permanent data loss.
+In such a case, loss of the primary token will result in permanent data loss.
 .It Ar zpool-create-args
 Arguments to pass through to the
 .Nm zpool

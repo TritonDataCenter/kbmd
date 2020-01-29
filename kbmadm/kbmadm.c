@@ -787,8 +787,7 @@ do_cancel_recovery(int argc, char **argv)
 	if ((ret = req_new(KBM_CMD_CANCEL_RECOVERY, &req)) != ERRF_OK)
 		goto done;
 
-	if (dataset != NULL &&
-	    (ret = envlist_add_string(req, KBM_NV_DATASET, dataset)) != ERRF_OK)
+	if ((ret = envlist_add_string(req, KBM_NV_DATASET, dataset)) != ERRF_OK)
 		goto done;
 
 	ret = send_request(req, &resp);

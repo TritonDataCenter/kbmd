@@ -186,7 +186,7 @@ set_syspool(const char *zpool)
 
 	if ((zhp = zpool_open_canfail(g_zfs, zpool)) == NULL) {
 		mutex_exit(&g_zfs_lock);
-		mutex_enter(&piv_lock);
+		mutex_exit(&piv_lock);
 		return (errf("zpool_open_canfail", NULL,
 		    "could not determine existence of '%s'", zpool));
 	}

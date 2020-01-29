@@ -29,7 +29,6 @@
 #include <libzfs.h>
 #include <paths.h>
 #include <port.h>
-#include <priv.h>
 #include <signal.h>
 #include <smbios.h>
 #include <stdarg.h>
@@ -225,7 +224,6 @@ kbmd_daemonize(int dirfd)
 	sigset_t set, oset;
 	int estatus, pfds[2];
 	pid_t child;
-	priv_set_t *pset;
 
 	/*
 	 * Set a per-process core path to be inside of /etc/svc/volatile/kbmd.
@@ -249,7 +247,7 @@ kbmd_daemonize(int dirfd)
 	}
 
 	/*
-	 * chdir /var/run/varpd
+	 * chdir /etc/svc/volatile/kbmd
 	 */
 	if (fchdir(dirfd) != 0)
 		err(EXIT_FAILURE, "failed to chdir to %s", KBMD_RUNDIR);
@@ -259,12 +257,9 @@ kbmd_daemonize(int dirfd)
 	 * At this point block all signals going in so we don't have the parent
 	 * mistakingly exit when the child is running, but never block SIGABRT.
 	 */
-	if (sigfillset(&set) != 0)
-		abort();
-	if (sigdelset(&set, SIGABRT) != 0)
-		abort();
-	if (sigprocmask(SIG_BLOCK, &set, &oset) != 0)
-		abort();
+	VERIFY0(sigfillset(&set));
+	VERIFY0(sigdelset(&set, SIGABRT));
+	VERIFY0(sigprocmask(SIG_BLOCK, &set, &oset));
 
 	/*
 	 * Do the fork+setsid dance.
@@ -288,45 +283,14 @@ kbmd_daemonize(int dirfd)
 		_exit(EXIT_FAILURE);
 	}
 
-	/*
-	 * Drop privileges here. For now we only utilize the basic set.
-	 */
-	if (setgroups(0, NULL) != 0)
-		abort();
+	VERIFY0(setgroups(0, NULL));
 	if (setgid(GID_KBMD) == -1 || seteuid(UID_KBMD) == -1)
 		abort();
 
-	if ((pset = priv_allocset()) == NULL)
-		abort();
-
-	priv_basicset(pset);
-
-	/*
-	 * We need the sys_devices privilege in order to talk to the ccid
-	 * driver.
-	 */
-	VERIFY0(priv_addset(pset, PRIV_SYS_DEVICES));
-
-	/*
-	 * We also need sys_mount for lzc_load_key() (regardless if we mount
-	 * anything).
-	 */
-	VERIFY0(priv_addset(pset, PRIV_SYS_MOUNT));
-
-	/*
-	 * We must leave the inheritable set to the default (unfortunately)
-	 * since things like sysinfo may be run via the plugins.
-	 */
-	VERIFY0(setppriv(PRIV_SET, PRIV_PERMITTED, pset));
-	VERIFY0(setppriv(PRIV_SET, PRIV_EFFECTIVE, pset));
-	priv_freeset(pset);
-
-	if (close(pfds[0]) != 0)
-		abort();
+	VERIFY0(close(pfds[0]));
 	if (setsid() == -1)
 		abort();
-	if (sigprocmask(SIG_SETMASK, &oset, NULL) != 0)
-		abort();
+	VERIFY0(sigprocmask(SIG_SETMASK, &oset, NULL));
 	(void) umask(0022);
 
 	return (pfds[1]);
