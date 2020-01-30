@@ -124,15 +124,6 @@ count_parts(struct ebox_tpl_part *tpart __unused, void *arg)
 }
 
 static errf_t *
-count_configs(struct ebox_tpl_config *tcfg __unused, void *arg)
-{
-	size_t *np = arg;
-
-	(*np)++;
-	return (ERRF_OK);
-}
-
-static errf_t *
 count_recovery_configs(struct ebox_tpl_config *tcfg, void *arg)
 {
 	size_t *np = arg;
@@ -253,7 +244,7 @@ template_hash(const struct ebox_tpl *tpl, uint8_t **hashp, size_t *lenp)
 	 * Since we supply our own buffer, we don't need to worry about the
 	 * return value.
 	 */
-	(void) SHA512(b64str, strlen(b64str), *hashp);
+	(void) SHA512((const unsigned char *)b64str, strlen(b64str), *hashp);
 
 done:
 	free(b64str);
@@ -836,8 +827,6 @@ post_recovery(recovery_t *r)
 		return (ret);
 	}
 
-	mutex_enter(&piv_lock);
-
 	if ((ret = kbmd_setup_token(&kt)) != ERRF_OK) {
 		if (errf_caused_by(ret, "NotFoundError")) {
 			/*
@@ -854,7 +843,6 @@ post_recovery(recovery_t *r)
 			    "cannot setup replacement token");
 		}
 
-		mutex_exit(&piv_lock);
 		return (ret);
 	}
 
@@ -884,14 +872,12 @@ post_recovery(recovery_t *r)
 	    (ret = create_template(kt, rcfg, &tpl)) != ERRF_OK) {
 		if (piv_token_in_txn(kt->kt_piv))
 			piv_txn_end(kt->kt_piv);
-		mutex_exit(&piv_lock);
 		kbmd_token_free(kt);
 		ebox_tpl_free(rcfg);
 		return (ret);
 	}
 	ebox_tpl_free(rcfg_newpiv);
 	piv_txn_end(kt->kt_piv);
-	mutex_exit(&piv_lock);
 
 	/*
 	 * The new/replacement ebox needs to use the new/replacement
@@ -984,8 +970,7 @@ challenge(nvlist_t *restrict req, nvlist_t *restrict resp,
 		return (ret);
 	}
 
-	if ((nvls = calloc(r->r_m, sizeof (nvlist_t *))) == NULL) {
-		ret = errfno("calloc", errno, "");
+	if ((ret = ecalloc(r->r_m, sizeof (nvlist_t *), &nvls)) != ERRF_OK) {
 		goto done;
 	}
 
@@ -1078,15 +1063,12 @@ recover_common(nvlist_t *restrict req, recovery_t *restrict r)
 		goto done;
 	}
 
-	if ((nvlist_lookup_boolean_value(req, KBM_NV_RESP_QUIT, &quit)) == 0 ||
+	if ((nvlist_lookup_boolean_value(req, KBM_NV_RESP_QUIT, &quit)) == 0 &&
 	    quit) {
 		(void) bunyan_info(tlog, "User terminated recovery",
 		    BUNYAN_T_END);
 
-		if ((ret = envlist_add_boolean_value(resp,
-		    KBM_NV_RESP_QUIT, B_TRUE)) != ERRF_OK) {
-			goto done;
-		}
+		ret = envlist_add_boolean_value(resp, KBM_NV_RESP_QUIT, B_TRUE);
 		goto done;
 	}
 
@@ -1138,8 +1120,6 @@ kbmd_recover_start(nvlist_t *req)
 	(void) bunyan_info(tlog, "Request to start recovery",
 	    BUNYAN_T_END);
 
-	mutex_enter(&piv_lock);
-
 	if ((ret = kbmd_get_ebox(sys_pool, B_FALSE, &ebox)) != ERRF_OK)
 		goto fail;
 
@@ -1147,7 +1127,6 @@ kbmd_recover_start(nvlist_t *req)
 
 	if ((ret = recovery_alloc(pid, ebox, &r)) != ERRF_OK) {
 		ASSERT3P(r, ==, NULL);
-		mutex_exit(&recovery_lock);
 		goto fail;
 	}
 
@@ -1210,7 +1189,6 @@ fail:
 	}
 	nvlist_free(req);
 	mutex_exit(&recovery_lock);
-	mutex_exit(&piv_lock);
 	kbmd_return(ret, NULL);
 }
 
@@ -1324,8 +1302,6 @@ add_template(nvlist_t *restrict nvl, boolean_t staged)
 	nvlist_t *tpl_nvl = NULL;
 	const char *name = staged ? "staged" : "active";
 
-	VERIFY(MUTEX_HELD(&piv_lock));
-
 	if ((ret = kbmd_get_ebox(sys_pool, staged, &ebox)) != ERRF_OK) {
 		if (errf_caused_by(ret, "NotFoundError")) {
 			errf_free(ret);
@@ -1351,9 +1327,7 @@ add_template(nvlist_t *restrict nvl, boolean_t staged)
 
 done:
 	nvlist_free(tpl_nvl);
-	if (ebox != sys_box) {
-		ebox_free(ebox);
-	}
+	ebox_free(ebox);
 
 	return (ret);
 }
@@ -1372,8 +1346,6 @@ kbmd_list_recovery(nvlist_t *req)
 		kbmd_return(ret, NULL);
 	}
 
-	mutex_enter(&piv_lock);
-
 	if ((ret = add_template(cfgs, B_FALSE)) != ERRF_OK ||
 	    (ret = add_template(cfgs, B_TRUE)) != ERRF_OK) {
 		goto done;
@@ -1382,8 +1354,6 @@ kbmd_list_recovery(nvlist_t *req)
 	ret = envlist_add_nvlist(resp, KBM_NV_CONFIGS, cfgs);
 
 done:
-	mutex_exit(&piv_lock);
-
 	nvlist_free(cfgs);
 	kbmd_return(ret, resp);
 }

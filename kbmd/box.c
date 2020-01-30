@@ -42,15 +42,12 @@ extern const char add_prog_start;
 static const char *add_prog = &add_prog_start;
 static const char *activate_prog = &activate_prog_start;
 
-struct ebox *sys_box;
-
 static errf_t *set_box_name(struct ebox *restrict, const char *);
 
 errf_t *
-ezfs_open(libzfs_handle_t *hdl, const char *path, int types,
-    zfs_handle_t **zhpp)
+ezfs_open(const char *path, int types, zfs_handle_t **zhpp)
 {
-	VERIFY(MUTEX_HELD(&g_zfs_lock));
+	libzfs_handle_t *hdl = get_libzfs();
 
 	if ((*zhpp = zfs_open(hdl, path, types)) != NULL)
 		return (ERRF_OK);
@@ -62,21 +59,16 @@ ezfs_open(libzfs_handle_t *hdl, const char *path, int types,
 static errf_t *
 ezfs_prop_set_list(zfs_handle_t *zhp, nvlist_t *prop)
 {
-	VERIFY(MUTEX_HELD(&g_zfs_lock));
-
 	if (zfs_prop_set_list(zhp, prop) == 0)
 		return (ERRF_OK);
 
 	return (errf("ZFSError", NULL, "zfs_prop_set_list on %s failed: %s",
-	    zfs_get_name(zhp),
-	    libzfs_error_description(zfs_get_handle(zhp))));
+	    zfs_get_name(zhp), libzfs_error_description(zfs_get_handle(zhp))));
 }
 
 static errf_t *
 ezfs_prop_inherit(zfs_handle_t *zhp, const char *propname)
 {
-	VERIFY(MUTEX_HELD(&g_zfs_lock));
-
 	if (zfs_prop_inherit(zhp, propname, B_FALSE) == 0)
 		return (ERRF_OK);
 
@@ -275,8 +267,6 @@ get_ebox_common(zfs_handle_t *restrict zhp, boolean_t staged,
 	char *str = NULL;
 	struct ebox *ebox = NULL;
 
-	VERIFY(MUTEX_HELD(&g_zfs_lock));
-
 	if ((ret = get_ebox_string(zhp, staged, &str)) != ERRF_OK ||
 	    (ret = str_to_ebox(dataset, str, &ebox)) != ERRF_OK)
 		return (ret);
@@ -298,21 +288,8 @@ kbmd_get_ebox(const char *dataset, boolean_t stage, struct ebox **eboxp)
 	    BUNYAN_T_STRING, "stage", stage ? "true" : "false",
 	    BUNYAN_T_END);
 
-	VERIFY(MUTEX_HELD(&piv_lock));
-
-	if (!stage && sys_box != NULL &&
-	    strcmp(ebox_private(sys_box), dataset) == 0) {
-		(void) bunyan_trace(tlog, "using system ebox",
-		    BUNYAN_T_END);
-
-		*eboxp = sys_box;
-		return (ERRF_OK);
-	}
-
-	mutex_enter(&g_zfs_lock);
-
-	if ((ret = ezfs_open(g_zfs, dataset,
-	    ZFS_TYPE_FILESYSTEM|ZFS_TYPE_VOLUME, &zhp)) != ERRF_OK) {
+	if ((ret = ezfs_open(dataset, ZFS_TYPE_FILESYSTEM|ZFS_TYPE_VOLUME,
+	    &zhp)) != ERRF_OK) {
 		ret = errf("EBoxError", ret,
 		    "unable to load ebox for %s", dataset);
 		goto done;
@@ -323,7 +300,6 @@ kbmd_get_ebox(const char *dataset, boolean_t stage, struct ebox **eboxp)
 done:
 	if (zhp != NULL)
 		zfs_close(zhp);
-	mutex_exit(&g_zfs_lock);
 	return (ret);
 }
 
@@ -364,10 +340,8 @@ kbmd_put_ebox(struct ebox *ebox, boolean_t stage)
 
 	VERIFY3P(dsname, !=, NULL);
 
-	mutex_enter(&g_zfs_lock);
-
-	if ((ret = ezfs_open(g_zfs, dsname,
-	    ZFS_TYPE_FILESYSTEM|ZFS_TYPE_VOLUME, &zhp)) != ERRF_OK) {
+	if ((ret = ezfs_open(dsname, ZFS_TYPE_FILESYSTEM|ZFS_TYPE_VOLUME,
+	    &zhp)) != ERRF_OK) {
 		ret = errf("EBoxError", ret,
 		    "unable to save ebox for %s", dsname);
 		goto done;
@@ -378,7 +352,6 @@ kbmd_put_ebox(struct ebox *ebox, boolean_t stage)
 done:
 	if (zhp != NULL)
 		zfs_close(zhp);
-	mutex_exit(&g_zfs_lock);
 	return (ret);
 }
 
@@ -449,8 +422,6 @@ find_part_pivtoken(struct ebox_part *part, kbmd_token_t **ktp)
 	struct ebox_tpl_part *tpart = ebox_part_tpl(part);
 	enum piv_slotid slotid = piv_box_slot(box);
 
-	VERIFY(MUTEX_HELD(&piv_lock));
-
 	(void) bunyan_debug(tlog, "Searching for pivtoken for ebox part",
 	    BUNYAN_T_STRING, "box_part_name", ebox_tpl_part_name(tpart),
 	    BUNYAN_T_STRING, "box_guid", piv_box_guid_hex(box),
@@ -459,15 +430,6 @@ find_part_pivtoken(struct ebox_part *part, kbmd_token_t **ktp)
 	if (!piv_box_has_guidslot(box)) {
 		return (errf("NoGUIDSlot", NULL, "box does not have GUID "
 		    "and slot information, can't unlock with local hardware"));
-	}
-
-	/*
-	 * If a system token is set, try that one first
-	 */
-	if (sys_piv != NULL &&
-	    bcmp(piv_token_guid(sys_piv->kt_piv), guid, GUID_LEN) == 0) {
-		*ktp = sys_piv;
-		return (ERRF_OK);
 	}
 
 	if ((ret = kbmd_find_byguid(guid, GUID_LEN, ktp)) != ERRF_OK ||
@@ -488,8 +450,6 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 	kbmd_token_t *kt = NULL;
 	const char *boxname;
 	uint32_t cfgnum;
-
-	VERIFY(MUTEX_HELD(&piv_lock));
 
 	*ktp = NULL;
 	if ((boxname = ebox_private(ebox)) == NULL)
@@ -555,8 +515,7 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 		if (kt != NULL &&
 		    bcmp(piv_token_guid(kt->kt_piv), piv_box_guid(dhbox),
 		    GUID_LEN) != 0) {
-			if (kt != sys_piv)
-				kbmd_token_free(kt);
+			kbmd_token_free(kt);
 			kt = NULL;
 
 			(void) bunyan_key_remove(tlog, "piv_guid");
@@ -564,8 +523,8 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 
 		if (kt == NULL &&
 		    (ret = find_part_pivtoken(part, &kt)) != ERRF_OK) {
-			if (kt != sys_piv)
-				kbmd_token_free(kt);
+			kbmd_token_free(kt);
+			kt = NULL;
 
 			if (errf_caused_by(ret, "NotFoundError")) {
 				errf_free(ret);
@@ -688,9 +647,7 @@ done:
 	ret = errf("RecoveryNeeded", ret,
 	    "Cannot unlock box for %s; recovery is required", boxname);
 
-	if (kt != sys_piv)
-		kbmd_token_free(kt);
-
+	kbmd_token_free(kt);
 	return (ret);
 }
 
@@ -845,7 +802,6 @@ kbmd_create_ebox(kbmd_token_t *restrict kt, const struct ebox_tpl *rcfg,
 	}
 	*keylenp = EBOX_KEY_LEN;
 
-	VERIFY(MUTEX_HELD(&piv_lock));
 	VERIFY3P(kt->kt_rtoken.rt_val, !=, NULL);
 	VERIFY3U(kt->kt_rtoken.rt_len, >=, RECOVERY_TOKEN_MINLEN);
 	VERIFY3U(kt->kt_rtoken.rt_len, <=, RECOVERY_TOKEN_MAXLEN);
@@ -924,6 +880,19 @@ log_tpl(const struct ebox_tpl *rcfg, boolean_t stage)
 	return (ret);
 }
 
+static errf_t *
+check_for_recovery(struct ebox_tpl_config *tcfg, void *arg)
+{
+	boolean_t *has_recoveryp = arg;
+
+	if (ebox_tpl_config_type(tcfg) == EBOX_RECOVERY) {
+		*has_recoveryp = B_TRUE;
+		return (FOREACH_STOP);
+	}
+
+	return (ERRF_OK);
+}
+
 errf_t *
 add_recovery(const char *dataset, const struct ebox_tpl *rcfg, boolean_t stage,
     const recovery_token_t *rtoken)
@@ -931,12 +900,14 @@ add_recovery(const char *dataset, const struct ebox_tpl *rcfg, boolean_t stage,
 	errf_t *ret = ERRF_OK;
 	kbmd_token_t *kt = NULL;
 	struct ebox *ebox = NULL;
+	struct ebox *old_ebox = NULL;
 	const char *propstr = stage ? STAGEBOX_PROP : BOX_PROP;
 	char *eboxstr = NULL;
 	nvlist_t *zcp_args = NULL;
 	nvlist_t *result = NULL;
 	uint8_t *key = NULL;
 	size_t keylen = 0;
+	boolean_t old_has_recovery = B_FALSE;
 
 	if (rcfg == NULL) {
 		return (errf("ArgumentError", NULL,
@@ -955,15 +926,27 @@ add_recovery(const char *dataset, const struct ebox_tpl *rcfg, boolean_t stage,
 		return (ret);
 	}
 
-	mutex_enter(&piv_lock);
-
-	if (sys_piv == NULL) {
-		mutex_exit(&piv_lock);
-		return (errf("UnlockError", NULL,
-		    "system zpool dataset must be set and unlocked before "
-		    "updating its recovery template"));
+	if ((ret = kbmd_get_ebox(dataset, B_FALSE, &old_ebox)) != ERRF_OK) {
+		return (errf("EboxError", ret,
+		    "Unable to load existing ebox for dataset %s", dataset));
 	}
-	kt = sys_piv;
+
+	if ((ret = ebox_tpl_foreach_cfg(ebox_tpl(old_ebox), check_for_recovery,
+	    &old_has_recovery)) != ERRF_OK) {
+		ret = errf("EboxError", ret, "Failed to iterate ebox configs");
+		goto done;
+	}
+
+	/*
+	 * If there is no recovery config in the current ebox, we don't
+	 * bother to stage the new ebox.
+	 */
+	if (stage && !old_has_recovery)
+		stage = B_FALSE;
+
+	if ((ret = kbmd_unlock_ebox(old_ebox, &kt)) != ERRF_OK) {
+		goto done;
+	}
 
 	if (rtoken != NULL) {
 		if ((ret = set_piv_rtoken(kt, rtoken)) != ERRF_OK) {
@@ -1002,7 +985,8 @@ add_recovery(const char *dataset, const struct ebox_tpl *rcfg, boolean_t stage,
 	ret = run_channel_program(dataset, add_prog, zcp_args, &result);
 
 done:
-	mutex_exit(&piv_lock);
+	kbmd_token_free(kt);
+	ebox_free(old_ebox);
 	ebox_free(ebox);
 	free(eboxstr);
 	nvlist_free(zcp_args);
@@ -1027,14 +1011,6 @@ activate_recovery(const char *dataset)
 	const uint8_t *key = NULL;
 	size_t keylen = 0;
 
-	mutex_enter(&piv_lock);
-	if (sys_pool == NULL) {
-		mutex_exit(&piv_lock);
-		return (errf("NotFoundError", NULL,
-		    "system zpool must be set before activating a recovery"
-		    "config"));
-	}
-
 	if ((ret = kbmd_get_ebox(dataset, B_TRUE, &ebox)) != ERRF_OK ||
 	    (ret = kbmd_unlock_ebox(ebox, &kt)) != ERRF_OK)
 		goto done;
@@ -1056,17 +1032,8 @@ activate_recovery(const char *dataset)
 		goto done;
 	}
 
-	if (strcmp(dataset, sys_pool) == 0) {
-		ebox_free(sys_box);
-		sys_box = ebox;
-		ebox = NULL;
-	}
-
 done:
-	if (kt != sys_piv)
-		kbmd_token_free(kt);
-
-	mutex_exit(&piv_lock);
+	kbmd_token_free(kt);
 	ebox_free(ebox);
 	nvlist_free(zcp_args);
 	nvlist_free(result);
@@ -1087,29 +1054,17 @@ remove_recovery(const char *dataset)
 	(void) bunyan_trace(tlog, "remove_recovery: enter",
 	    BUNYAN_T_END);
 
-	mutex_enter(&piv_lock);
-
-	if (sys_pool == NULL) {
-		mutex_exit(&piv_lock);
-		return (errf("NotFound", NULL, "system pool is not set"));
-	}
-
-	mutex_enter(&g_zfs_lock);
-
-	if ((ret = ezfs_open(g_zfs, dataset,
-	    ZFS_TYPE_FILESYSTEM|ZFS_TYPE_VOLUME, &zhp)) != ERRF_OK) {
-		mutex_exit(&piv_lock);
+	if ((ret = ezfs_open(dataset, ZFS_TYPE_FILESYSTEM|ZFS_TYPE_VOLUME,
+	    &zhp)) != ERRF_OK) {
 		ret = errf("EBoxError", ret,
 		    "unable to load ebox for %s", sys_pool);
 		goto done;
 	}
 
-	mutex_exit(&piv_lock);
-
 	/*
 	 * Inheriting a non-existent user property (such as ebox values)
-	 * does not return an error, so if we do get an error here, something
-	 * else has happened we want to report.
+	 * does not return an error, so if we do get an error here, we
+	 * want to report it.
 	 */
 	if ((ret = ezfs_prop_inherit(zhp, STAGEBOX_PROP)) != ERRF_OK) {
 		goto done;
@@ -1120,6 +1075,5 @@ remove_recovery(const char *dataset)
 done:
 	if (zhp != NULL)
 		zfs_close(zhp);
-	mutex_exit(&g_zfs_lock);
 	return (ret);
 }

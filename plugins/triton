@@ -55,14 +55,13 @@ function get_kbmapi_host {
     # Grab the datacenter_name and dns_domain values from
     # networking.json and join the two lines with a '.'
     # using sed
-    suffix=$(/usr/bin/json -f /system/boot/networking.json \
-        datacenter_name dns_domain | \
+    suffix=$(json -f /system/boot/networking.json datacenter_name dns_domain | \
         sed 'N;s/\n/./')
     printf "kbmapi.%s" "$suffix"
 }
 
 function http_date {
-    LC_TIME=C TZ=GMT /usr/bin/date +"%a, %d %b %Y %T %Z"
+    LC_TIME=C TZ=GMT date +"%a, %d %b %Y %T %Z"
 }
 
 function piv_sign {
@@ -131,7 +130,7 @@ function replace_pivtoken {
 
     # We'll want to remove the json call and have kbmd parse
     # the JSON eventually
-    /bin/cat - | curl -sS \
+    cat - | curl -sS \
         -H "Date: $date" \
         -H "Authorization: $sig" \
 	-H "Content-Type: application/json" \

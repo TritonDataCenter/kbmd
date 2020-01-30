@@ -25,11 +25,16 @@
 #include "pivy/libssh/sshbuf.h"
 
 /*
- * If the PIV token registration fails, we cache the otherwise fully setup
- * PIV token, and allow a subsequent zpool create command to just pick up
- * where it left off and retry the registration step. Protected by piv_lock.
+ * If the PIV token registration fails, we cache the guid and pin so a
+ * subsequent zpool_create operation can retry. We only support doing
+ * this for a single PIV token. If multiple PIV tokens are registered on
+ * the same system, and there are multiple failures, only the most
+ * recent one is saved. This does mean some sensitive info is saved in memory,
+ * though in practice the values shouldn't persist for too long.
  */
-static kbmd_token_t *incomplete_tok;
+static boolean_t failed_registration;
+static uint8_t incomplete_guid[GUID_LEN];
+static char incomplete_pin[PIN_MAX_LENGTH + 1];
 
 static errf_t *
 add_opt(nvlist_t **nvl, const char *name, const char *val)
@@ -106,17 +111,43 @@ add_create_data(nvlist_t *restrict resp, struct ebox *restrict ebox,
 
 static errf_t *
 try_guid(const uint8_t *guid, const recovery_token_t *rtoken,
-    kbmd_token_t **restrict ktp)
+    kbmd_token_t **restrict ktp, boolean_t *restrict is_retryp)
 {
 	errf_t *ret = ERRF_OK;
 	kbmd_token_t *kt = NULL;
+	uint8_t local_guid[GUID_LEN] = { 0 };
+	boolean_t is_retry = B_FALSE;
 
-	ASSERT(MUTEX_HELD(&piv_lock));
+	/* Select the PIV token to use. */
+	if (guid == NULL) {
+		if (failed_registration) {
+			/*
+			 * If no GUID was given, but we setup a PIV token and
+			 * failed to register it, use the GUID of the
+			 * previously setup PIV token.
+			 */
+			bcopy(incomplete_guid, local_guid, GUID_LEN);
+			is_retry = B_TRUE;
+		} else {
+			/* Try the system PIV if one has been set */
+			mutex_enter(&guid_lock);
+			bcopy(sys_guid, local_guid, GUID_LEN);
+			mutex_exit(&guid_lock);
 
-	if (guid == NULL)
-		return (ret);
+			/*
+			 * If no system PIV token is set, return and try
+			 * to initialize a new PIV token.
+			 */
+			if (bcmp(zero_guid, local_guid, GUID_LEN) != 0)
+				return (ret);
+		}
+	} else {
+		/* If we were given a GUID to try, use that */
+		bcopy(guid, local_guid, GUID_LEN);
+	}
 
-	if ((ret = kbmd_find_byguid(guid, GUID_LEN, &kt)) != ERRF_OK)
+	/* Make sure whatever GUID we're trying is present */
+	if ((ret = kbmd_find_byguid(local_guid, GUID_LEN, &kt)) != ERRF_OK)
 		return (ret);
 
 	if ((ret = set_piv_rtoken(kt, rtoken)) != ERRF_OK) {
@@ -124,68 +155,22 @@ try_guid(const uint8_t *guid, const recovery_token_t *rtoken,
 		return (ret);
 	}
 
-	(void) bunyan_debug(tlog, "Using supplied PIV token",
-	    BUNYAN_T_STRING, "token", piv_token_guid_hex(kt->kt_piv),
-	    BUNYAN_T_END);
+	if (is_retry) {
+		(void) strlcpy(kt->kt_pin, incomplete_pin, sizeof (kt->kt_pin));
+		(void) bunyan_debug(tlog,
+		    "Using PIV token from previous attempt",
+		    BUNYAN_T_STRING, "token", piv_token_guid_hex(kt->kt_piv),
+		    BUNYAN_T_END);
+	} else {
+		(void) bunyan_debug(tlog, "Using supplied PIV token",
+		    BUNYAN_T_STRING, "token", piv_token_guid_hex(kt->kt_piv),
+		    BUNYAN_T_END);
+	}
 
+	*is_retryp = is_retry;
 	*ktp = kt;
 
 	return (ERRF_OK);
-}
-
-static boolean_t
-try_sys_piv(const uint8_t *guid, const recovery_token_t *rtoken)
-{
-	errf_t *ret = ERRF_OK;
-	const uint8_t *sys_piv_guid = NULL;
-	char gstr[GUID_STR_LEN] = { 0 };
-
-	if (guid != NULL) {
-		guidtohex(guid, gstr, sizeof (gstr));
-	} else {
-		(void) strlcpy(gstr, "(not set)", sizeof (gstr));
-	}
-
-	(void) bunyan_trace(tlog, "try_sys_piv: enter",
-	    BUNYAN_T_STRING, "guid", gstr,
-	    BUNYAN_T_END);
-
-	ASSERT(MUTEX_HELD(&piv_lock));
-
-	if (sys_piv == NULL || guid == NULL) {
-		(void) bunyan_trace(tlog,
-		    "sys piv not set or guid not specified",
-		    BUNYAN_T_END);
-		return (B_FALSE);
-	}
-
-	sys_piv_guid = piv_token_guid(sys_piv->kt_piv);
-
-	if (bcmp(sys_piv_guid, guid, GUID_LEN) != 0) {
-		(void) bunyan_trace(tlog, "specified guid is not sys piv",
-		    BUNYAN_T_STRING, "guid", gstr,
-		    BUNYAN_T_END);
-		return (B_FALSE);
-	}
-
-	if (sys_piv->kt_rtoken.rt_val == NULL && rtoken == NULL) {
-		(void) bunyan_trace(tlog, "System PIV not set",
-		    BUNYAN_T_END);
-		return (B_FALSE);
-	}
-
-	if (sys_piv->kt_rtoken.rt_val != NULL)
-		return (B_TRUE);
-
-	if ((ret = set_piv_rtoken(sys_piv, rtoken)) != ERRF_OK) {
-		/*
-		 * This can only fail due to no memory, so we don't
-		 * care about the exact error message.
-		 */
-		errf_free(ret);
-		return (B_FALSE);
-	}
-	return (B_TRUE);
 }
 
 /*
@@ -198,82 +183,37 @@ kbmd_assert_token(const uint8_t *guid, const recovery_token_t *rtoken,
     kbmd_token_t **restrict ktp, struct ebox_tpl **restrict rcfgp)
 {
 	errf_t *ret = ERRF_OK;
-
-	ASSERT(MUTEX_HELD(&piv_lock));
+	boolean_t is_retry = B_FALSE;
+	boolean_t need_register = B_TRUE;
 
 	*ktp = NULL;
 	*rcfgp = NULL;
 
-	/*
-	 * If the system PIV has been designated, and is usable, we
-	 * use that.
-	 */
-	if (try_sys_piv(guid, rtoken)) {
-		(void) bunyan_debug(tlog, "Using system token",
-		    BUNYAN_T_STRING, "piv_guid",
-		    piv_token_guid_hex(sys_piv->kt_piv),
-		    BUNYAN_T_END);
-
-		*ktp = sys_piv;
-		kbmd_token_free(incomplete_tok);
-		incomplete_tok = NULL;
-		return (ERRF_OK);
-	}
-
-	if ((ret = try_guid(guid, rtoken, ktp)) != ERRF_OK)
+	if ((ret = try_guid(guid, rtoken, ktp, &is_retry)) != ERRF_OK)
 		return (ret);
 
-	if (guid != NULL) {
-		ASSERT3P(*ktp, !=, NULL);
-
-		(void) bunyan_debug(tlog, "Using supplied PIV token",
-		    BUNYAN_T_STRING, "piv_guid",
-		    piv_token_guid_hex((*ktp)->kt_piv),
-		    BUNYAN_T_END);
-
-		kbmd_token_free(incomplete_tok);
-		incomplete_tok = NULL;
-		kbmd_set_token(*ktp);
-		return (ERRF_OK);
-	}
-
-	if (incomplete_tok != NULL) {
-		(void) bunyan_debug(tlog,
-		    "Using token info from previous attempt(s)",
-		    BUNYAN_T_STRING, "piv_guid",
-		    piv_token_guid_hex(incomplete_tok->kt_piv),
-		    BUNYAN_T_END);
-
-		if ((ret = register_pivtoken(incomplete_tok,
-		    rcfgp)) != ERRF_OK ) {
-
-			(void) bunyan_error(tlog,
-			    "Failed to register pivtoken, token data saved for "
-			    "retry", BUNYAN_T_END);
-
+	if (*ktp == NULL) {
+		if ((ret = kbmd_setup_token(ktp)) != ERRF_OK)
 			return (ret);
-		}
-
-		*ktp = incomplete_tok;
-		incomplete_tok = NULL;
-		kbmd_set_token(*ktp);
-		return (ERRF_OK);
+	} else if (!is_retry) {
+		need_register = B_FALSE;
 	}
 
-	if ((ret = kbmd_setup_token(ktp)) != ERRF_OK)
-		return (ret);
-
-	if ((ret = register_pivtoken(*ktp, rcfgp)) != ERRF_OK) {
+	if (need_register &&
+	    (ret = register_pivtoken(*ktp, rcfgp)) != ERRF_OK) {
 		(void) bunyan_error(tlog,
 		    "Failed to register pivtoken; token data saved for retry",
 		    BUNYAN_T_END);
 
-		incomplete_tok = *ktp;
-		*ktp = NULL;
+		failed_registration = B_TRUE;
+		bcopy(piv_token_guid((*ktp)->kt_piv), incomplete_guid,
+		    GUID_LEN);
+		(void) strlcpy(incomplete_pin, (*ktp)->kt_pin,
+		    sizeof (incomplete_pin));
+
 		return (ret);
 	}
 
-	kbmd_set_token(*ktp);
 	return (ERRF_OK);
 }
 
@@ -308,8 +248,6 @@ kbmd_zpool_create(const char *dataset, const uint8_t *guid,
 		    "system zpool not set and no dataset name given"));
 	}
 
-	mutex_enter(&piv_lock);
-
 	if ((ret = kbmd_assert_token(guid, rtoken, &kt,
 	    &rcfg_tok)) != ERRF_OK ||
 	    (ret = kbmd_assert_pin(kt)) != ERRF_OK) {
@@ -326,7 +264,7 @@ kbmd_zpool_create(const char *dataset, const uint8_t *guid,
 	ret = add_create_data(resp, ebox, key, keylen);
 
 done:
-	mutex_exit(&piv_lock);
+	kbmd_token_free(kt);
 	ebox_free(ebox);
 	ebox_tpl_free(rcfg_tok);
 	freezero(key, keylen);

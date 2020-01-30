@@ -30,7 +30,7 @@ SCARDCONTEXT ctx;
 static void
 usage(void)
 {
-	fprintf(stderr,
+	(void) fprintf(stderr,
 	    "Usage: %s [guid]\n"
 	    "  If multiple initialized PIV tokens are present on the system, \n"
 	    "  the guid must be supplied\n",
@@ -141,18 +141,19 @@ get_piv(const char *guidstr, struct piv_token **ptp)
 	return (ERRF_OK);
 }
 
-static char *
+static const char *
 piv_token_shortid(struct piv_token *pk)
 {
-	char *guid = NULL;
+	static char buf[9];
 
 	if (piv_token_has_chuid(pk)) {
-		guid = strdup(piv_token_guid_hex(pk));
+		/* Let strlcpy() truncate the GUID for us */
+		(void) strlcpy(buf, piv_token_guid_hex(pk), sizeof (buf));
 	} else {
-		guid = strdup("0000000000");
+		(void) snprintf(buf, sizeof (buf), "00000000");
 	}
-	guid[8] = '\0';
-	return (guid);
+
+	return (buf);
 }
 	
 static errf_t *
@@ -209,12 +210,12 @@ block_piv(struct piv_token *pt)
 {
 	errf_t *ret = ERRF_OK;
 
-	fprintf(stderr, "Blocking PIN...\n");
+	(void) fprintf(stderr, "Blocking PIN...\n");
 	ret = do_block(pt, piv_token_default_auth(pt));
 	if (ret != ERRF_OK)
 		return (ret);
 
-	fprintf(stderr, "Blocking PUK...\n");
+	(void) fprintf(stderr, "Blocking PUK...\n");
 	return (do_block(pt, PIV_PUK));
 }
 
@@ -263,13 +264,13 @@ main(int argc, char * const * argv)
 		    "PIV token is not a Yubikey");
 	}
 
-	fprintf(stderr, "Resetting Yubikey %s (%s)\n",
+	(void) fprintf(stderr, "Resetting Yubikey %s (%s)\n",
 	    piv_token_shortid(pt), piv_token_rdrname(pt));
 
 	if (ykpiv_token_has_serial(pt))
-		fprintf(stderr, "Serial #%u\n", ykpiv_token_serial(pt));
+		(void) fprintf(stderr, "Serial #%u\n", ykpiv_token_serial(pt));
 
-	fprintf(stderr, "WARNING: this will completely reset the PIV applet "
+	(void) fprintf(stderr, "WARNING: this will completely reset the PIV applet "
 	    "on this Yubikey, erasing all keys and certificates!\n");
 
 	do {
@@ -277,7 +278,7 @@ main(int argc, char * const * argv)
 	} while (resp == NULL && errno == EINTR);
 
 	if (resp == NULL || strcmp(resp, "YES") != 0)
-		return (0);
+		return (EXIT_FAILURE);
 
 	ret = piv_txn_begin(pt);
 	if (ret != ERRF_OK)

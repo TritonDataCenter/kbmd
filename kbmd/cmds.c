@@ -28,8 +28,6 @@ static const char *kbm_cmd_str(kbm_cmd_t);
 static errf_t *
 set_systoken(const uint8_t *guid, size_t guidlen)
 {
-	errf_t *ret = ERRF_OK;
-	kbmd_token_t *kt = NULL;
 	char gstr[GUID_STR_LEN] = { 0 };
 
 	if (guidlen != GUID_LEN) {
@@ -43,27 +41,10 @@ set_systoken(const uint8_t *guid, size_t guidlen)
 	    BUNYAN_T_STRING, "guid", gstr,
 	    BUNYAN_T_END);
 
-	mutex_enter(&piv_lock);
-	if (sys_piv != NULL) {
-		const uint8_t *sys_guid = piv_token_guid(sys_piv->kt_piv);
+	mutex_enter(&guid_lock);
+	bcopy(guid, sys_guid, GUID_LEN);
+	mutex_exit(&guid_lock);
 
-		if (bcmp(sys_guid, guid, GUID_LEN) == 0) {
-			mutex_exit(&piv_lock);
-			return (ERRF_OK);
-		}
-	}
-
-	if ((ret = kbmd_find_byguid(guid, GUID_LEN, &kt)) != ERRF_OK) {
-		mutex_exit(&piv_lock);
-		return (ret);
-	}
-
-	(void) bunyan_info(tlog, "Setting system token",
-	    BUNYAN_T_STRING, "guid", piv_token_guid_hex(kt->kt_piv),
-	    BUNYAN_T_END);
-
-	kbmd_set_token(kt);
-	mutex_exit(&piv_lock);
 	return (ERRF_OK);
 }
 
@@ -106,120 +87,70 @@ set_guid(struct ebox_tpl_config *tcfg, void *arg)
 }
 
 static errf_t *
-do_set_syspool(const char *zpool)
-{
-	char *str = NULL;
-
-	VERIFY(MUTEX_HELD(&piv_lock));
-
-	if (strcmp(zpool, sys_pool) == 0) {
-		(void) bunyan_debug(tlog,
-		    "Tried to set syspool to existing value, no action taken",
-		    BUNYAN_T_STRING, "syspool", sys_pool,
-		    BUNYAN_T_END);
-		return (ERRF_OK);
-	}
-
-	if ((str = strdup(zpool)) == NULL) {
-		return (errfno("strdup", errno, "failed to set syspool"));
-	}
-
-	(void) bunyan_info(tlog, "Setting system zpool",
-	    BUNYAN_T_STRING, "syspool", zpool,
-	    BUNYAN_T_STRING, "oldvalue",
-	    (sys_pool == NULL) ? "(not set)" : sys_pool,
-	    BUNYAN_T_END);
-
-	free(sys_pool);
-	sys_pool = str;
-	return (ERRF_OK);
-}
-
-static errf_t *
-do_set_sysbox(const char *zpool)
-{
-	errf_t *ret = ERRF_OK;
-	struct ebox *ebox = NULL;
-
-	VERIFY(MUTEX_HELD(&piv_lock));
-
-	if (sys_box != NULL) {
-		const char *box_name = ebox_private(sys_box);
-
-		if (strcmp(box_name, zpool) == 0)
-			return (ERRF_OK);
-	}
-
-	if ((ret = kbmd_get_ebox(zpool, B_FALSE, &ebox)) != ERRF_OK) {
-		return (ret);
-	}
-
-	ebox_free(sys_box);
-	sys_box = ebox;
-
-	(void) bunyan_trace(tlog, "Set system ebox",
-	    BUNYAN_T_STRING, "dataset", zpool,
-	    BUNYAN_T_END);
-
-	return (ERRF_OK);
-}
-
-static errf_t *
 set_syspool(const char *zpool)
 {
+	/*
+	 * Since we want this to be set only once, we treat 'sys_pool' as
+	 * a write once variable. To accomplish this, we serialize execution
+	 * of set_syspool() using sys_syspool_lock, so that once set,
+	 * sys_pool cannot be altered.
+	 */
+	static mutex_t set_syspool_lock = ERRORCHECKMUTEX;
+
 	errf_t *ret = ERRF_OK;
 	zpool_handle_t *zhp = NULL;
-	boolean_t exists = B_FALSE;
+	struct ebox *sys_ebox = NULL;
 	uint8_t guid[GUID_LEN] = { 0 };
+
+	mutex_enter(&set_syspool_lock);
 
 	(void) bunyan_info(tlog, "Setting system zpool",
 	    BUNYAN_T_STRING, "syspool", zpool,
 	    BUNYAN_T_END);
 
 	if (!IS_ZPOOL(zpool)) {
-		return (errf("ParameterError", NULL, "'%s' is not a zpool",
-		    zpool));
+		ret = errf("ParameterError", NULL, "'%s' is not a zpool",
+		    zpool);
+		goto done;
 	}
 
-	mutex_enter(&piv_lock);
-	mutex_enter(&g_zfs_lock);
-
-	if ((zhp = zpool_open_canfail(g_zfs, zpool)) == NULL) {
-		mutex_exit(&g_zfs_lock);
-		mutex_exit(&piv_lock);
-		return (errf("zpool_open_canfail", NULL,
-		    "could not determine existence of '%s'", zpool));
+	if ((zhp = zpool_open_canfail(get_libzfs(), zpool)) == NULL) {
+		ret = errf("NotFoundError", NULL, "unable to open zpool %s: %s",
+		    libzfs_error_description(get_libzfs()));
+		goto done;
 	}
 
-	exists = (zhp != NULL) ? B_TRUE : B_FALSE;
 	zpool_close(zhp);
-	mutex_exit(&g_zfs_lock);
 
-	if (exists && (ret = do_set_sysbox(zpool)) != ERRF_OK) {
-		mutex_exit(&piv_lock);
-		return (ret);
+	if (sys_pool != NULL) {
+		ret = errf("AlreadySetError", NULL,
+		    "syspool is already set to '%s'", sys_pool);
+		goto done;
 	}
 
-	if (!exists) {
-		mutex_exit(&piv_lock);
-		return (errf("NotFoundError", NULL, "zpool '%s' not found",
-		    zpool));
+	/*
+	 * Load the ebox for this zpool, and set 'guid' to GUID of the
+	 * template part of the EBOX_PRIMARY template config in 'sys_ebox'.
+	 * In other words, set 'guid' to the GUID of the PIV token that
+	 * unlocks the ebox for the system zpool.
+	 */
+	if ((ret = kbmd_get_ebox(zpool, B_FALSE, &sys_ebox)) != ERRF_OK) {
+		goto done;
 	}
+	ret = ebox_tpl_foreach_cfg(ebox_tpl(sys_ebox), set_guid, guid);
+	/* It should never return an error */
+	VERIFY3P(ret, ==, ERRF_OK);
 
-	if ((ret = do_set_syspool(zpool)) != ERRF_OK) {
-		mutex_exit(&piv_lock);
-		return (ret);
-	}
-
-	ret = ebox_tpl_foreach_cfg(ebox_tpl(sys_box), set_guid, guid);
-	mutex_exit(&piv_lock);
-
-	if (ret != ERRF_OK) {
-		return (ret);
+	if ((sys_pool = strdup(zpool)) == NULL) {
+		ret = errfno("strdup", errno, "failed to set system pool");
+		goto done;
 	}
 
 	ret = set_systoken(guid, sizeof (guid));
 
+done:
+	mutex_exit(&set_syspool_lock);
+	ebox_free(sys_ebox);
 	return (ret);
 }
 
@@ -269,10 +200,8 @@ get_dataset_status(const char *dataset, boolean_t *restrict encryptedp,
 	zfs_handle_t *zhp = NULL;
 	int encryption, keystatus;
 
-	mutex_enter(&g_zfs_lock);
-	if ((ret = ezfs_open(g_zfs, dataset,
-	    ZFS_TYPE_FILESYSTEM|ZFS_TYPE_VOLUME, &zhp)) != ERRF_OK) {
-		mutex_exit(&g_zfs_lock);
+	if ((ret = ezfs_open(dataset, ZFS_TYPE_FILESYSTEM|ZFS_TYPE_VOLUME,
+	    &zhp)) != ERRF_OK) {
 		ret = errf("ZfsError", ret,
 		    "unable to open dataset %s to check encryption status",
 		    dataset);
@@ -314,7 +243,6 @@ get_dataset_status(const char *dataset, boolean_t *restrict encryptedp,
 
 done:
 	zfs_close(zhp);
-	mutex_exit(&g_zfs_lock);
 	return (ret);
 }
 
@@ -331,8 +259,6 @@ unlock_dataset(const char *dataset)
 	(void) bunyan_info(tlog, "Request to unlock dataset",
 	    BUNYAN_T_STRING, "dataset", dataset,
 	    BUNYAN_T_END);
-
-	mutex_enter(&piv_lock);
 
 	if ((ret = get_dataset_status(dataset, &is_encrypted,
 	    &is_locked)) != ERRF_OK) {
@@ -360,9 +286,8 @@ unlock_dataset(const char *dataset)
 	ret = load_key(dataset, key, keylen);
 
 done:
-	mutex_exit(&piv_lock);
-	if (ebox != sys_box)
-		ebox_free(ebox);
+	ebox_free(ebox);
+	kbmd_token_free(kt);
 	return (ret);
 }
 

@@ -25,6 +25,9 @@
 #include <sys/uuid.h>
 #include <wintypes.h>
 #include <winscard.h>
+#include <libnvpair.h>
+#include <libcustr.h>
+#include <libzfs.h>
 
 #include "common/kbm.h"
 #include "pivy/errf.h"
@@ -63,19 +66,20 @@ extern "C" {
  */
 #define	IS_ZPOOL(_name) (strchr(_name, '/') == NULL)
 
-struct custr;
 struct ebox;
 struct ebox_tpl;
 struct ebox_tpl_config;
-struct nvlist;
 struct piv_slot;
 struct piv_token;
 struct sshkey;
-struct zfs_handle;
 
 /*
  * The only field of kbmd_token_t that is guaranteed to be non-NULL is
  * kt_piv.  The remaining fields may be NULL depending on the context.
+ * kbmd_token_ts should not be shared across threads -- we do not want
+ * multiple threads attempting operations on the PIV token in the same
+ * transaction, so we want separate instances to allow PIV transactions
+ * to act as a mutual exclusion for PIV operations.
  */
 typedef struct kbmd_token {
 	struct piv_token	*kt_piv;
@@ -85,40 +89,48 @@ typedef struct kbmd_token {
 
 extern uuid_t sys_uuid;
 
-extern mutex_t g_zfs_lock;
-extern struct libzfs_handle *g_zfs;
+/* guid_lock protects access to sys_guid */
+extern mutex_t guid_lock;
+extern uint8_t sys_guid[GUID_LEN];
+
+/* Zero-filled GUID for comparisons */
+extern const uint8_t zero_guid[GUID_LEN];
 
 /*
- * piv_lock protects piv_ctx, sys_piv, and sys_pool
+ * Based on all the documentation, the winscard API does not require
+ * any synchronization around the use of an SCARDCONTEXT (or rather if
+ * any is required, it is internal to the winscard API), so we
+ * create a global context shared by all threads.
  */
-extern mutex_t piv_lock;
 extern SCARDCONTEXT piv_ctx;
-extern kbmd_token_t *sys_piv;
-extern char *sys_pool;
 
-extern struct ebox *sys_box;
+/*
+ * sys_pool is write only -- that is once set, we never allow it to
+ * be changed.
+ */
+extern char *sys_pool;
 
 extern struct errf *foreach_stop;
 
 void kbmd_dfatal(int, const char *, ...) __NORETURN;
 int kbmd_door_setup(const char *);
 
-void kbmd_return(errf_t *restrict, struct nvlist *restrict) __NORETURN;
+void kbmd_return(errf_t *restrict, nvlist_t *restrict) __NORETURN;
 pid_t req_pid(void);
+libzfs_handle_t *get_libzfs(void);
 
-void dispatch_request(struct nvlist *);
+void dispatch_request(nvlist_t *);
 errf_t *kbmd_zpool_create(const char *, const uint8_t *,
     const struct ebox_tpl *, const recovery_token_t *, nvlist_t *);
 void kbmd_recover_init(int);
-void kbmd_recover_start(struct nvlist *);
-void kbmd_recover_resp(struct nvlist *);
-void kbmd_list_recovery(struct nvlist *);
+void kbmd_recover_start(nvlist_t *);
+void kbmd_recover_resp(nvlist_t *);
+void kbmd_list_recovery(nvlist_t *);
 
 errf_t *
 template_hash(const struct ebox_tpl *, uint8_t **, size_t *);
 
-errf_t *ezfs_open(struct libzfs_handle *, const char *, int,
-    struct zfs_handle **);
+errf_t *ezfs_open(const char *, int, zfs_handle_t **);
 
 errf_t *get_dataset_status(const char *, boolean_t *, boolean_t *);
 errf_t *create_template(kbmd_token_t *restrict, const struct ebox_tpl *,
@@ -143,12 +155,11 @@ errf_t *kbmd_assert_pin(kbmd_token_t *);
 errf_t *kbmd_verify_pin(kbmd_token_t *);
 errf_t *kbmd_auth_pivtoken(kbmd_token_t *restrict, struct sshkey *restrict);
 errf_t *kbmd_setup_token(kbmd_token_t **restrict);
-void kbmd_set_token(kbmd_token_t *);
 void kbmd_token_free(kbmd_token_t *);
 errf_t *set_piv_rtoken(kbmd_token_t *, const recovery_token_t *);
 
 /* plugin.c */
-errf_t *kbmd_get_pin(const uint8_t guid[restrict], struct custr **restrict);
+errf_t *kbmd_get_pin(const uint8_t guid[restrict], custr_t **restrict);
 errf_t *register_pivtoken(kbmd_token_t *restrict,
     struct ebox_tpl **restrict);
 errf_t *replace_pivtoken(const uint8_t [], const recovery_token_t *,

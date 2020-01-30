@@ -45,19 +45,17 @@
 
 bunyan_logger_t *blog;
 
+/* sys_pool and sys_uuid are write-only -- once set, they're never changed */
 char *sys_pool;
+uuid_t sys_uuid;
 
-/*
- * g_zfs_lock protects the use of g_zfs, and piv_lock protects the use of
- * piv_ctx. piv_lock should be taken prior to g_zfs_lock when both are needed.
- */
-mutex_t g_zfs_lock = ERRORCHECKMUTEX;
-libzfs_handle_t *g_zfs;
-
-mutex_t piv_lock = ERRORCHECKMUTEX;
 SCARDCONTEXT piv_ctx;
 
-uuid_t sys_uuid;
+mutex_t guid_lock = ERRORCHECKMUTEX;
+uint8_t sys_guid[GUID_LEN];
+
+const uint8_t zero_guid[GUID_LEN];
+
 volatile boolean_t kbmd_quit = B_FALSE;
 
 static int kbmd_daemonize(int);
@@ -141,9 +139,6 @@ main(int argc, char *argv[])
 	if (sigdelset(&set, SIGTERM) != 0)
 		kbmd_dfatal(dfd, "failed to remove TERM from mask");
 
-	if ((g_zfs = libzfs_init()) == NULL)
-		kbmd_dfatal(dfd, "unable to initialize zfs library");
-
 #ifdef DEBUG
 	kbmd_log_setup(dfd, BUNYAN_L_TRACE);
 #else
@@ -160,28 +155,14 @@ main(int argc, char *argv[])
 		    BUNYAN_T_END);
 	}
 
-	/*
-	 * XXX: Should a failure to get the CN UUID be fatal (i.e.
-	 * should we care about the return value?
-	 */
 	(void) kbmd_sys_uuid(sys_uuid);
 
-	(void) bunyan_trace(tlog, "Creating SCard context", BUNYAN_T_END);
-
-	mutex_enter(&piv_lock);
 	errval = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL,
 	    &piv_ctx);
 	if (errval != 0) {
 		kbmd_dfatal(dfd, "could not initialize libpcsc: %s",
 		    pcsc_stringify_error(errval));
 	}
-
-	if ((sys_pool = strdup(DEFAULT_SYSPOOL)) == NULL) {
-		kbmd_dfatal(dfd, "could not set default system pool: %s",
-		    strerror(errno));
-	}
-
-	mutex_exit(&piv_lock);
 
 	kbmd_event_init(dfd);
 	kbmd_recover_init(dfd);

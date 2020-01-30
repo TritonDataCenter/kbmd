@@ -56,15 +56,9 @@ static errf_t *
 create_gl(GetLine **glp)
 {
 	GetLine *gl = NULL;
-	FILE *term = NULL;
 
-	if ((gl = new_GetLine(1024, 1024)) == NULL)
+	if ((gl = new_GetLine(1024, 0)) == NULL)
 		return (errfno("new_GetLine", errno, "cannot setup terminal"));
-
-	if ((term = fopen("/dev/tty", "w+")) == NULL)
-		return (errfno("fopen", errno, ""));
-
-	gl_change_terminal(gl, term, term, getenv("TERM"));
 
 	*glp = gl;
 	return (ERRF_OK);

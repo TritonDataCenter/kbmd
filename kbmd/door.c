@@ -28,6 +28,7 @@
 #include <unistd.h>
 #include <umem.h>
 #include <sys/sysmacros.h>
+#include <libzfs.h>
 #include "kbmd.h"
 
 /*
@@ -44,6 +45,7 @@ typedef struct tdata {
 	int		td_errfd;
 	char		td_tty[_POSIX_PATH_MAX];
 	bunyan_logger_t *td_log;
+	libzfs_handle_t *td_libzfs;
 	size_t		td_buflen;
 	char		td_buf[];
 } tdata_t;
@@ -60,6 +62,8 @@ static thread_key_t tdatakey = THR_ONCE_KEY;
  */
 static char *generr;
 static size_t generr_sz;
+
+static void tdata_free(void *);
 
 static boolean_t
 tdata_init(tdata_t *td, door_desc_t *dp, uint_t n_desc)
@@ -163,17 +167,25 @@ tdata_alloc(size_t buflen)
 	size_t tdlen = sizeof (*td) + buflen;
 
 	if ((td = umem_zalloc(tdlen, UMEM_DEFAULT)) == NULL)
-		return (NULL);
+		goto fail;
 
-	if (bunyan_child(blog, &td->td_log, BUNYAN_T_END) != 0) {
-		umem_free(td, tdlen);
-		return (NULL);
-	}
+	if (bunyan_child(blog, &td->td_log, BUNYAN_T_END) != 0)
+		goto fail;
 	tlog = td->td_log;
+
+	if ((td->td_libzfs = libzfs_init()) == NULL) {
+		(void) bunyan_error(tlog, "Failed to initialize libzfs",
+		    BUNYAN_T_END);
+		goto fail;
+	}
 
 	td->td_buflen = buflen;
 	td->td_errfd = -1;
 	return (td);
+
+fail:
+	tdata_free(td);
+	return (NULL);
 }
 
 static void
@@ -185,10 +197,15 @@ tdata_free(void *p)
 	tdata_t *td = p;
 	size_t tdlen = 0;
 
-	bunyan_fini(td->td_log);
+	if (td->td_log != NULL)
+		bunyan_fini(td->td_log);
+
 	tlog = NULL;
 
 	ucred_free(td->td_ucred);
+
+	if (td->td_libzfs != NULL)
+		libzfs_fini(td->td_libzfs);
 
 	tdlen = sizeof (*td) + td->td_buflen;
 	bzero(td, tdlen);
@@ -224,6 +241,14 @@ req_pid(void)
 	tdata_t *td = tdata_get();
 
 	return (ucred_getpid(td->td_ucred));
+}
+
+libzfs_handle_t *
+get_libzfs(void)
+{
+	tdata_t *td = tdata_get();
+
+	return (td->td_libzfs);
 }
 
 static void __NORETURN
@@ -376,6 +401,21 @@ kbmd_return(errf_t *restrict errval, nvlist_t *restrict resp)
 	kbmd_ret_nvlist(resp);
 }
 
+/*
+ * Close any file descriptors passed to us in a door request.
+ */
+static void
+close_door_desc(door_desc_t *dp, uint_t n_desc)
+{
+	uint_t i;
+
+	for (i = 0; i < n_desc; i++, dp++) {
+		if ((dp->d_attributes & DOOR_DESCRIPTOR) != 0)
+			continue;
+		(void) close(dp->d_data.d_desc.d_descriptor);
+	}
+}
+
 static void
 kbmd_door_server(void *cookie, char *argp, size_t arg_size, door_desc_t *dp,
     uint_t n_desc)
@@ -397,6 +437,7 @@ kbmd_door_server(void *cookie, char *argp, size_t arg_size, door_desc_t *dp,
 		(void) fprintf(stderr,
 		    "%s: %d: Failed to get server thread data\n",
 		    __func__, __LINE__);
+		close_door_desc(dp, n_desc);
 		VERIFY0(door_return(generr, generr_sz, NULL, 0));
 	}
 
@@ -404,8 +445,16 @@ kbmd_door_server(void *cookie, char *argp, size_t arg_size, door_desc_t *dp,
 		(void) fprintf(stderr,
 		    "%s: %d: Failed to init server thread data\n",
 		    __func__, __LINE__);
+		close_door_desc(dp, n_desc);
 		VERIFY0(door_return(generr, generr_sz, NULL, 0));
 	}
+
+	/*
+	 * Currently, the only fd passed in is the stdout of the
+	 * calling process, which is used to setup lggin in tdata_init().
+	 * Once that's done, close them out so they don't linger.
+	 */
+	close_door_desc(dp, n_desc);
 
 	ret = envlist_unpack(argp, arg_size, &req);
 	if (ret != ERRF_OK) {

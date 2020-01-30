@@ -53,7 +53,6 @@
 
 #define	PLUGIN_PREFIX		"kbm-plugin-"
 
-/* XXX: This path should change */
 #define	PLUGIN_PATH		"/usr/lib/kbm/plugins/"
 
 #define	GET_PIN_CMD		"get-pin"
@@ -582,17 +581,17 @@ done:
 
 static errf_t *
 plugin_pivtoken_common(struct piv_token *restrict pt, const char *restrict pin,
-    const char *cmd, char *const *args, custr_t *restrict in,
-    custr_t **restrict outp)
+    const char *cmd, char *const *args, custr_t **restrict outp)
 {
 	errf_t *ret = ERRF_OK;
-	custr_t *data[3] = { in, NULL, NULL };
+	custr_t *data[3] = { 0 };
 	char *json = NULL;
 	int fds[3] = { -1, -1, -1 };
 	int exitval;
 	pid_t pid;
 
-	if ((ret = ecustr_alloc(&data[1])) != ERRF_OK ||
+	if ((ret = ecustr_alloc(&data[0])) != ERRF_OK ||
+	    (ret = ecustr_alloc(&data[1])) != ERRF_OK ||
 	    (ret = ecustr_alloc(&data[2])) != ERRF_OK)
 		goto done;
 
@@ -629,6 +628,7 @@ done:
 	close_fds(fds);
 	if (json != NULL)
 		freezero(json, strlen(json) + 1);
+	custr_free(data[0]);
 	custr_free(data[1]);
 	custr_free(data[2]);
 	return (ret);
@@ -741,7 +741,6 @@ errf_t *
 register_pivtoken(kbmd_token_t *restrict kt, struct ebox_tpl **restrict rcfgp)
 {
 	errf_t *ret = ERRF_OK;
-	custr_t *input = NULL;
 	custr_t *output = NULL;
 	custr_t *rtoken = NULL;
 	struct ebox_tpl *rcfg = NULL;
@@ -751,12 +750,6 @@ register_pivtoken(kbmd_token_t *restrict kt, struct ebox_tpl **restrict rcfgp)
 
 	*rcfgp = NULL;
 
-	if ((ret = ecustr_alloc(&input)) != ERRF_OK) {
-		ret = errf("RegisterError", ret,
-		    "failed to register PIV token");
-		goto done;
-	}
-
 	if ((ret = plugin_create_args(&args, REGISTER_TOK_CMD)) != ERRF_OK) {
 		ret = errf("RegisterError", ret,
 		    "failed to register PIV token");
@@ -764,7 +757,7 @@ register_pivtoken(kbmd_token_t *restrict kt, struct ebox_tpl **restrict rcfgp)
 	}
 
 	if ((ret = plugin_pivtoken_common(kt->kt_piv, kt->kt_pin,
-	    args.sar_strs[0], args.sar_strs, input, &output)) != ERRF_OK) {
+	    args.sar_strs[0], args.sar_strs, &output)) != ERRF_OK) {
 		ret = errf("RegisterError", ret,
 		    "failed to register PIV token");
 		goto done;
@@ -788,7 +781,6 @@ register_pivtoken(kbmd_token_t *restrict kt, struct ebox_tpl **restrict rcfgp)
 done:
 	strarray_fini(&args);
 	custr_free(rtoken);
-	custr_free(input);
 	custr_free(output);
 	ebox_tpl_free(rcfg);
 	return (ret);
@@ -800,15 +792,13 @@ replace_pivtoken(const uint8_t guid[GUID_LEN],
     struct ebox_tpl **restrict rcfgp)
 {
 	errf_t *ret = ERRF_OK;
-	custr_t *input = NULL;
 	custr_t *rtok64 = NULL;
 	custr_t *new_rtoken = NULL;
 	strarray_t args = STRARRAY_INIT;
 
 	VERIFY(!piv_token_in_txn(kt->kt_piv));
 
-	if ((ret = ecustr_alloc(&input)) != ERRF_OK ||
-	    (ret = ecustr_alloc(&rtok64)) != ERRF_OK) {
+	if ((ret = ecustr_alloc(&rtok64)) != ERRF_OK) {
 		goto done;
 	}
 
@@ -829,7 +819,7 @@ replace_pivtoken(const uint8_t guid[GUID_LEN],
 	 *	}
 	 */
 	if ((ret = plugin_pivtoken_common(kt->kt_piv, kt->kt_pin,
-	    args.sar_strs[0], args.sar_strs, input, &new_rtoken)) != ERRF_OK) {
+	    args.sar_strs[0], args.sar_strs, &new_rtoken)) != ERRF_OK) {
 		goto done;
 	}
 
@@ -840,7 +830,6 @@ replace_pivtoken(const uint8_t guid[GUID_LEN],
 
 done:
 	strarray_fini(&args);
-	custr_free(input);
 	custr_free(rtok64);
 	custr_free(new_rtoken);
 	return (ret);
@@ -850,15 +839,10 @@ errf_t *
 new_recovery_token(kbmd_token_t *restrict kt)
 {
 	errf_t *ret = ERRF_OK;
-	custr_t *input = NULL;
 	custr_t *rtoken = NULL;
 	strarray_t args = STRARRAY_INIT;
 
 	VERIFY(!piv_token_in_txn(kt->kt_piv));
-
-	if ((ret = ecustr_alloc(&input)) != ERRF_OK) {
-		goto done;
-	}
 
 	if ((ret = plugin_create_args(&args, NEW_TOK_CMD)) != ERRF_OK ||
 	    (ret = strarray_append_guid(&args,
@@ -869,7 +853,7 @@ new_recovery_token(kbmd_token_t *restrict kt)
 	}
 
 	if ((ret = plugin_pivtoken_common(kt->kt_piv, kt->kt_pin,
-	    args.sar_strs[0], args.sar_strs, input, &rtoken)) != ERRF_OK) {
+	    args.sar_strs[0], args.sar_strs, &rtoken)) != ERRF_OK) {
 		goto done;
 	}
 
@@ -878,7 +862,6 @@ new_recovery_token(kbmd_token_t *restrict kt)
 done:
 	strarray_fini(&args);
 	custr_free(rtoken);
-	custr_free(input);
 	return (ret);
 }
 
@@ -890,14 +873,6 @@ post_recovery_config_update(void)
 	int fds[3] = { -1, -1, -1 };
 	int rc;
 	pid_t pid;
-
-	/*
-	 * The post recovery update script might call back into
-	 * kbmd (e.g. sysinfo -u calling kbmadm recovery list to
-	 * get the latest recovery configurations, so we do not want
-	 * to be holding the piv lock while it runs.
-	 */
-	VERIFY(!MUTEX_HELD(&piv_lock));
 
 	if ((ret = plugin_create_args(&args,
 	    POST_RECOVERY_UPDATE)) != ERRF_OK) {

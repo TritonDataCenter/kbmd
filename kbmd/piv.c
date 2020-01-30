@@ -38,8 +38,6 @@
 uint_t init_timeout = 2000;
 uint_t init_wait = 500;
 
-kbmd_token_t *sys_piv;
-
 /*
  * The default values of a piv token that hasn't been setup.
  */
@@ -654,8 +652,6 @@ init_token(uint8_t guid[restrict])
 	(void) bunyan_trace(tlog, "Initializing new PIV token",
 	    BUNYAN_T_END);
 
-	ASSERT(MUTEX_HELD(&piv_lock));
-
 	/*
 	 * Find a non-initialized piv token.  We assume a piv token with
 	 * a NULL or all-zero GUID is not initialized.  Since we cannot easily
@@ -830,8 +826,6 @@ get_new_piv(uint8_t guid[GUID_LEN], struct piv_token **pkp)
 	struct timespec wait_amt = { .tv_nsec = MSEC2NSEC(init_wait) };
 	hrtime_t deadline = gethrtime() + MSEC2NSEC(init_timeout);
 
-	ASSERT(MUTEX_HELD(&piv_lock));
-
 	while (gethrtime() < deadline) {
 		if ((ret = piv_find(piv_ctx, guid, GUID_LEN, pkp)) == ERRF_OK) {
 			return (ret);
@@ -859,8 +853,6 @@ kbmd_setup_token(kbmd_token_t **restrict ktp)
 	kbmd_token_t *kt = NULL;
 	struct piv_token *pk = NULL;
 	uint8_t guid[GUID_LEN] = { 0 };
-
-	ASSERT(MUTEX_HELD(&piv_lock));
 
 	(void) bunyan_trace(tlog, "kbmd_setup_token: enter",
 	    BUNYAN_T_END);
@@ -933,28 +925,10 @@ kbmd_token_free(kbmd_token_t *kt)
 	if (kt == NULL)
 		return;
 
-	if (kt == sys_piv) {
-		VERIFY(MUTEX_HELD(&piv_lock));
-		if (kt == sys_piv)
-			sys_piv = NULL;
-	}
-
 	piv_release(kt->kt_piv);
 	explicit_bzero(kt->kt_pin, sizeof (kt->kt_pin));
 	freezero(kt->kt_rtoken.rt_val, kt->kt_rtoken.rt_len);
 	free(kt);
-}
-
-void
-kbmd_set_token(kbmd_token_t *kt)
-{
-	VERIFY(MUTEX_HELD(&piv_lock));
-
-	if (kt == sys_piv)
-		return;
-
-	kbmd_token_free(sys_piv);
-	sys_piv = kt;
 }
 
 /*
@@ -1098,8 +1072,6 @@ kbmd_find_byguid(const uint8_t *guid, size_t guidlen, kbmd_token_t **ktp)
 	errf_t *ret = ERRF_OK;
 	struct piv_token *pt = NULL;
 
-	VERIFY(MUTEX_HELD(&piv_lock));
-
 	ret = piv_find(piv_ctx, guid, guidlen, &pt);
 
 	if (ret != ERRF_OK)
@@ -1119,8 +1091,6 @@ kbmd_find_byslot(enum piv_slotid slotid, const struct sshkey *key,
 {
 	errf_t *ret = ERRF_OK;
 	struct piv_token *pt = NULL, *tokens = NULL;
-
-	VERIFY(MUTEX_HELD(&piv_lock));
 
 	if ((ret = piv_enumerate(piv_ctx, &tokens)) != ERRF_OK) {
 		return (ret);
