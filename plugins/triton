@@ -114,10 +114,10 @@ function register_pivtoken {
     cat - | curl -sS \
         -H "Date: $date" \
         -H "Authorization: $sig" \
-	-H "Content-Type: application/json" \
+        -H "Content-Type: application/json" \
         -H "Authorization: $auth" \
-	-d "@-" "$url" | \
-	json 'recovery_tokens[0].token' 'recovery_tokens[0].template' || exit 1
+        -d "@-" "$url" | \
+    json 'recovery_tokens[0].token' 'recovery_tokens[0].template' || exit 1
 }
 
 function replace_pivtoken {
@@ -133,7 +133,7 @@ function replace_pivtoken {
     cat - | curl -sS \
         -H "Date: $date" \
         -H "Authorization: $sig" \
-	-H "Content-Type: application/json" \
+        -H "Content-Type: application/json" \
         "$url" | \
         json 'recovery_tokens[0].token' 'recovery_tokens[0].template' || exit 1
 }
@@ -149,7 +149,7 @@ function new_rtoken {
     curl -sS \
         -H "Date: $date" \
         -H "Authorization: $auth" \
-	-H "Content-Type: application/json" \
+        -H "Content-Type: application/json" \
         "$url" || exit 1
 }
 
@@ -179,15 +179,15 @@ case "$1" in
     *)
         echo "Unknown subcommand $1" >&2
 
-	# Operators shouldn't be invoking this script directly, but we
-	# provide basic usage information just to keep things from being
-	# opaque.
+    # Operators shouldn't be invoking this script directly, but we
+    # provide basic usage information just to keep things from being
+    # opaque.
 
-	echo "Usage: $0 version" >&2
-	echo "\t$0 get-pin GUID" >&2
-	echo "\t$0 register-pivtoken" >&2
-	echo "\t$0 replace-pivtoken" >&2
-	echo "\t$0 new-rtoken GUID" >&2
-	echo "\t$0 post-rcfg-update" >&2
+    echo "Usage: $0 version" >&2
+    echo "\t$0 get-pin GUID" >&2
+    echo "\t$0 register-pivtoken" >&2
+    echo "\t$0 replace-pivtoken" >&2
+    echo "\t$0 new-rtoken GUID" >&2
+    echo "\t$0 post-rcfg-update" >&2
         exit 1;;
 esac

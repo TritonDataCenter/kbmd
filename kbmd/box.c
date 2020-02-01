@@ -258,28 +258,13 @@ get_ebox_string(zfs_handle_t *restrict zhp, boolean_t staged,
 	return (ret);
 }
 
-static errf_t *
-get_ebox_common(zfs_handle_t *restrict zhp, boolean_t staged,
-    struct ebox **restrict eboxp)
-{
-	errf_t *ret = ERRF_OK;
-	const char *dataset = zfs_get_name(zhp);
-	char *str = NULL;
-	struct ebox *ebox = NULL;
-
-	if ((ret = get_ebox_string(zhp, staged, &str)) != ERRF_OK ||
-	    (ret = str_to_ebox(dataset, str, &ebox)) != ERRF_OK)
-		return (ret);
-
-	*eboxp = ebox;
-	return (ERRF_OK);
-}
-
 errf_t *
 kbmd_get_ebox(const char *dataset, boolean_t stage, struct ebox **eboxp)
 {
 	zfs_handle_t *zhp = NULL;
 	errf_t *ret = ERRF_OK;
+	char *str = NULL;
+	struct ebox *ebox = NULL;
 
 	*eboxp = NULL;
 
@@ -295,7 +280,11 @@ kbmd_get_ebox(const char *dataset, boolean_t stage, struct ebox **eboxp)
 		goto done;
 	}
 
-	ret = get_ebox_common(zhp, stage, eboxp);
+	if ((ret = get_ebox_string(zhp, stage, &str)) != ERRF_OK ||
+	    (ret = str_to_ebox(dataset, str, &ebox)) != ERRF_OK)
+		goto done;
+
+	*eboxp = ebox;
 
 done:
 	if (zhp != NULL)
@@ -303,14 +292,24 @@ done:
 	return (ret);
 }
 
-static errf_t *
-put_ebox_common(zfs_handle_t *restrict zhp, boolean_t stage,
-    struct ebox *restrict ebox)
+errf_t *
+kbmd_put_ebox(struct ebox *ebox, boolean_t stage)
 {
 	errf_t *ret = ERRF_OK;
+	const char *dsname = ebox_private(ebox);
+	zfs_handle_t *zhp = NULL;
 	char *str = NULL;
 	nvlist_t *prop = NULL;
 	const char *propname = stage ? STAGEBOX_PROP : BOX_PROP;
+
+	VERIFY3P(dsname, !=, NULL);
+
+	if ((ret = ezfs_open(dsname, ZFS_TYPE_FILESYSTEM|ZFS_TYPE_VOLUME,
+	    &zhp)) != ERRF_OK) {
+		ret = errf("EBoxError", ret,
+		    "unable to save ebox for %s", dsname);
+		goto done;
+	}
 
 	if ((ret = envlist_alloc(&prop)) != ERRF_OK ||
 	    (ret = ebox_to_str(ebox, &str)) != ERRF_OK ||
@@ -328,28 +327,6 @@ put_ebox_common(zfs_handle_t *restrict zhp, boolean_t stage,
 done:
 	nvlist_free(prop);
 	free(str);
-	return (ret);
-}
-
-errf_t *
-kbmd_put_ebox(struct ebox *ebox, boolean_t stage)
-{
-	errf_t *ret = ERRF_OK;
-	const char *dsname = ebox_private(ebox);
-	zfs_handle_t *zhp = NULL;
-
-	VERIFY3P(dsname, !=, NULL);
-
-	if ((ret = ezfs_open(dsname, ZFS_TYPE_FILESYSTEM|ZFS_TYPE_VOLUME,
-	    &zhp)) != ERRF_OK) {
-		ret = errf("EBoxError", ret,
-		    "unable to save ebox for %s", dsname);
-		goto done;
-	}
-
-	ret = put_ebox_common(zhp, stage, ebox);
-
-done:
 	if (zhp != NULL)
 		zfs_close(zhp);
 	return (ret);
@@ -556,7 +533,7 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 		    piv_token_guid_hex(kt->kt_piv));
 
 		(void) bunyan_debug(tlog, "Found PIV token for part",
-	   	    BUNYAN_T_UINT32, "cfgnum", cfgnum,
+		    BUNYAN_T_UINT32, "cfgnum", cfgnum,
 		    BUNYAN_T_STRING, "partname", tname,
 		    BUNYAN_T_END);
 

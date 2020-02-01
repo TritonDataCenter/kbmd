@@ -108,6 +108,12 @@ set_syspool(const char *zpool)
 	    BUNYAN_T_STRING, "syspool", zpool,
 	    BUNYAN_T_END);
 
+	if (sys_pool != NULL) {
+		ret = errf("AlreadySetError", NULL,
+		    "syspool is already set to '%s'", sys_pool);
+		goto done;
+	}
+
 	if (!IS_ZPOOL(zpool)) {
 		ret = errf("ParameterError", NULL, "'%s' is not a zpool",
 		    zpool);
@@ -121,12 +127,6 @@ set_syspool(const char *zpool)
 	}
 
 	zpool_close(zhp);
-
-	if (sys_pool != NULL) {
-		ret = errf("AlreadySetError", NULL,
-		    "syspool is already set to '%s'", sys_pool);
-		goto done;
-	}
 
 	/*
 	 * Load the ebox for this zpool, and set 'guid' to GUID of the
@@ -283,6 +283,12 @@ unlock_dataset(const char *dataset)
 	}
 
 	key = ebox_key(ebox, &keylen);
+	if (key == NULL) {
+		ret = errf("EboxError", NULL,
+		    "ebox for %s does not contain a key!", dataset);
+		goto done;
+	}
+
 	ret = load_key(dataset, key, keylen);
 
 done:
