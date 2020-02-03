@@ -57,7 +57,13 @@ add_create_options(nvlist_t *nvl, struct ebox *ebox)
 		const char *option;
 		const char *val;
 	} encrypt_opts[] = {
-		{ "encryption", "on" },
+		/*
+		 * Regardless of the default we want to use aes-gcm-256 for
+		 * pools. If a newer/better algorithm does come out, we
+		 * can't 'upgrade' existing pools, so we'll just update
+		 * this default for new pools.
+		 */
+		{ "encryption", "aes-gcm-256" },
 		{ "keyformat", "raw" },
 		{ "keylocation", "prompt" }
 	};
