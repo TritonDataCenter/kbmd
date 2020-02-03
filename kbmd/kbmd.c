@@ -41,8 +41,6 @@
 #include <unistd.h>
 #include "kbmd.h"
 
-#define	DEFAULT_SYSPOOL	"zones"
-
 bunyan_logger_t *blog;
 
 /* sys_pool and sys_uuid are write-only -- once set, they're never changed */
