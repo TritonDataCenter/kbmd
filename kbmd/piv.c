@@ -426,7 +426,7 @@ generate_cert(struct piv_token *restrict pk, struct piv_slot *restrict slot)
 	    BUNYAN_T_STRING, "guid", piv_token_guid_hex(pk),
 	    BUNYAN_T_STRING, "slot", slotstr,
 	    BUNYAN_T_END);
-		
+
 	switch (piv_slot_id(slot)) {
 	case 0x9A:
 		name = "piv-auth";
@@ -496,7 +496,7 @@ generate_cert(struct piv_token *restrict pk, struct piv_slot *restrict slot)
 		ASN1_TYPE **cert_param = &cert->sig_alg->parameter;
 		ASN1_TYPE **cert_info_param =
 		    &cert->cert_info->signature->parameter;
-	
+
 		if ((ret = null_param(cert_param)) != ERRF_OK ||
 		    (ret = null_param(cert_info_param)) != ERRF_OK) {
 			goto done;
@@ -810,7 +810,7 @@ done:
 	(void) bunyan_info(tlog, "Initialized new PIV token",
 	    BUNYAN_T_STRING, "guid", gstr,
 	    BUNYAN_T_END);
-	    
+
 	return (ERRF_OK);
 }
 

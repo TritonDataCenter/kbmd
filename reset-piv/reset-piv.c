@@ -155,7 +155,7 @@ piv_token_shortid(struct piv_token *pk)
 
 	return (buf);
 }
-	
+
 static errf_t *
 do_block(struct piv_token *pt, enum piv_pin type)
 {

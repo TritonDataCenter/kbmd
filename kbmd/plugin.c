@@ -1010,7 +1010,7 @@ check_plugin_version(custr_t *restrict plugin,
 	/*
 	 * Currently, we only support 'version=1'
 	 */
-	
+
 done:
 	custr_free(data[0]);
 	custr_free(data[1]);

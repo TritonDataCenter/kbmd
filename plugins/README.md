@@ -51,7 +51,7 @@ name=My Plugin
 version=1
 $
 ```
- 
+
 ### get-pin
 
 Usage: `$plugin get-pin GUID`

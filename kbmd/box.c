@@ -460,7 +460,7 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 			    BUNYAN_T_END);
 			continue;
 		}
-			
+
 		part = ebox_config_next_part(config, NULL);
 		tpart = ebox_part_tpl(part);
 		if (tpart != NULL) {
@@ -974,7 +974,7 @@ done:
 		ret = post_recovery_config_update();
 	}
 
-	return (ret); 
+	return (ret);
 }
 
 errf_t *
