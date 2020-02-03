@@ -918,8 +918,10 @@ add_recovery(const char *dataset, const struct ebox_tpl *rcfg, boolean_t stage,
 	 * If there is no recovery config in the current ebox, we don't
 	 * bother to stage the new ebox.
 	 */
-	if (stage && !old_has_recovery)
+	if (stage && !old_has_recovery) {
 		stage = B_FALSE;
+		propstr = BOX_PROP;
+	}
 
 	if ((ret = kbmd_unlock_ebox(old_ebox, &kt)) != ERRF_OK) {
 		goto done;
