@@ -192,6 +192,7 @@ recovery_exit_cb(pid_t pid, void *arg)
 
 	mutex_enter(&recovery_lock);
 	refhash_remove(recovery_hash, r);
+	recovery_count--;
 	mutex_exit(&recovery_lock);
 }
 
@@ -490,6 +491,7 @@ recovery_alloc(pid_t pid, struct ebox *ebox, recovery_t **rp)
 
 	refhash_hold(recovery_hash, r);
 	if ((ret = kbmd_watch_pid(pid, recovery_exit_cb, r)) != ERRF_OK) {
+		recovery_count--;
 		refhash_remove(recovery_hash, r);
 		refhash_rele(recovery_hash, r);
 		return (ret);
