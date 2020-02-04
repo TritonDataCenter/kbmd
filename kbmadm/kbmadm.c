@@ -64,13 +64,11 @@ static errf_t *do_activate_recovery(int, char **);
 static errf_t *do_cancel_recovery(int, char **);
 static errf_t *do_set_syspool(int, char **);
 static errf_t *do_set_systoken(int, char **);
-static errf_t *do_replace_pivtoken(int, char **);
 
 static cmd_t cmd_tbl[] = {
 	{ "create-zpool", do_create_zpool },
 	{ "recover", do_recover },
 	{ "recovery", do_recovery },
-	{ "replace-pivtoken", do_replace_pivtoken },
 	{ "set-syspool", do_set_syspool },
 	{ "set-systoken", do_set_systoken },
 	{ "unlock", do_unlock },
@@ -97,8 +95,7 @@ usage(void)
 	    "       %1$s recovery add [-f] [-t template] [-r recovery_token] dataset\n"
 	    "       %1$s recovery list [-p]\n"
             "       %1$s recovery activate dataset\n"
-	    "       %1$s recovery cancel dataset\n"
-	    "       %1$s replace-pivtoken\n",
+	    "       %1$s recovery cancel dataset\n",
 	    name);
 /*END CSTYLED*/
 
@@ -844,25 +841,6 @@ do_set_systoken(int argc, char **argv)
 	if ((ret = req_new(KBM_CMD_SET_SYSTOKEN, &req)) != ERRF_OK ||
 	    (ret = envlist_add_uint8_array(req, KBM_NV_GUID, guid,
 	    GUID_LEN)) != ERRF_OK) {
-		goto done;
-	}
-
-	ret = send_request(req, &resp);
-
-done:
-	nvlist_free(req);
-	nvlist_free(resp);
-	return (ret);
-}
-
-static errf_t *
-do_replace_pivtoken(int argc, char **argv)
-{
-	errf_t *ret = ERRF_OK;
-	nvlist_t *req = NULL;
-	nvlist_t *resp = NULL;
-
-	if ((ret = req_new(KBM_CMD_REPLACE_PIVTOKEN, &req)) != ERRF_OK) {
 		goto done;
 	}
 

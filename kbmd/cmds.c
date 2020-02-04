@@ -472,13 +472,6 @@ done:
 	kbmd_return(ret, NULL);
 }
 
-static void
-cmd_replace_pivtoken(nvlist_t *req)
-{
-	nvlist_free(req);
-	kbmd_return(ERRF_OK, NULL);
-}
-
 void
 dispatch_request(nvlist_t *req)
 {
@@ -534,9 +527,6 @@ dispatch_request(nvlist_t *req)
 		break;
 	case KBM_CMD_SET_SYSPOOL:
 		kbmd_set_syspool(req);
-		break;
-	case KBM_CMD_REPLACE_PIVTOKEN:
-		cmd_replace_pivtoken(req);
 		break;
 	default:
 		(void) bunyan_info(tlog, "Unknown command value in request",
@@ -595,7 +585,6 @@ kbm_cmd_str(kbm_cmd_t cmd)
 	STR(KBM_CMD_CANCEL_RECOVERY);
 	STR(KBM_CMD_SET_SYSTOKEN);
 	STR(KBM_CMD_SET_SYSPOOL);
-	STR(KBM_CMD_REPLACE_PIVTOKEN);
 	default:
 		return ("<unknown>");
 	}
