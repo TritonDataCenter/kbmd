@@ -33,26 +33,23 @@ hasold = false
 hasnew = false
 oldebox = nil
 
-for prop, source in zfs.list.properties(args.dataset) do
-    if prop == args.ebox then
-        hasold = true
-    end
+-- zfs.get_prop returns nil for non-existent _user_ properties, but
+-- also treat an inherited property as not set
 
-    if prop == args.stagedebox then
-        hasnew = true
-    end
+oldebox, source = zfs.get_prop(args.dataset, args.ebox)
+if (oldebox ~= nil and source == args.dataset) then
+    hasold = true
+    zfs.debug("Old ebox is '" .. oldebox .. "'")
 end
 
-if not hasnew then
-    -- not staged, error
-    return
+newebox, source = zfs.get_prop(args.dataset, args.stagedebox)
+if (newebox ~= nil and source == args.dataset) then
+    hasnew = true
 end
 
-if hasold then
-    oldebox = zfs.get_prop(args.dataset, args.ebox)
+if (not hasnew) then
+    return "No ebox has been staged"
 end
-
-newebox = zfs.get_prop(args.dataset, args.stagedebox)
 
 err = zfs.check.change_key(args.dataset, key)
 if err ~= 0 then

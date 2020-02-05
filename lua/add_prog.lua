@@ -34,11 +34,18 @@ if args.keyhex then
     end)
 end
 
-for prop, source in zfs.list.properties(args.dataset) do
-    if prop == args.prop then
-        oldbox = zfs.get_prop(args.dataset, args.prop)
-    end
+-- Nonexistent _user_ properties don't return an error, instead they
+-- just return nil for their value
+oldbox, source = zfs.get_prop(args.dataset, args.prop)
+
+-- If the property is inherited, treat it like it's not set
+if (source ~= args.dataset) then
+    oldbox = nil
 end
+
+zfs.debug("Adding ebox as " .. args.prop ..
+    " to " .. args.dataset ..
+    ": " ..  args.ebox)
 
 -- Try to make sure everything will work before we try it
 err = zfs.check.set_prop(args.dataset, args.prop, args.ebox)
