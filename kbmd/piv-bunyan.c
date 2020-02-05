@@ -10,54 +10,36 @@
  */
 
 /*
- * Copyright 2019 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdlib.h>
-#include "ecustr.h"
-#include "pivy/bunyan.h"
-#include "pivy/errf.h"
-
-void panic(const char *, ...) __NORETURN;
 
 /*
- * This is a temporary shim to allow the pivy code to use the illumos
- * bunyan library.  Eventually we'll adapt both to use the same API, but
- * for now, we just translate.
+ * The _BUNYAN_H preprocessor guards conflict between the system bunyan.h
+ * and pivy/bunyan.h, so we #undef after inclusion to allow both to be used.
  */
+#include <bunyan.h>
+#undef _BUNYAN_H
 
-typedef enum bunyan_type {
-        BUNYAN_T_END    = 0x0,
-        BUNYAN_T_STRING,
-        BUNYAN_T_POINTER,
-        BUNYAN_T_IP,
-        BUNYAN_T_IP6,
-        BUNYAN_T_BOOLEAN,
-        BUNYAN_T_INT32,
-        BUNYAN_T_INT64,
-        BUNYAN_T_UINT32,
-        BUNYAN_T_UINT64,
-        BUNYAN_T_DOUBLE,
-        BUNYAN_T_INT64STR,
-        BUNYAN_T_UINT64STR
-} bunyan_type_t;
+/*
+ * The pivy bunyan also defines it's own 'bunyan_init' with a different
+ * function signature than the system bunyan library. We do not link in
+ * the pivy bunyan.o file (this file acts as a shim between the pivy
+ * bunyan API and the system bunyan API to allow the pivy objects we do
+ * link in to logg).  We define the pivy bunyan_init to a non-conflicting
+ * name to prevent compilation errors. None of the pivy objects linked call
+ * the pivy bunyan_init(), so while gross, it works out in the end.
+ */
+#define	bunyan_init pivy_bunyan_init
+#include "pivy/bunyan.h"
+#undef bunyan_init
 
-typedef struct bunyan_logger bunyan_logger_t;
-
-extern __thread bunyan_logger_t *tlog;
-
-extern int bunyan_trace(bunyan_logger_t *, const char *msg, ...);
-extern int bunyan_debug(bunyan_logger_t *, const char *msg, ...);
-extern int bunyan_info(bunyan_logger_t *, const char *msg, ...);
-extern int bunyan_warn(bunyan_logger_t *, const char *msg, ...);
-extern int bunyan_error(bunyan_logger_t *, const char *msg, ...);
-extern int bunyan_fatal(bunyan_logger_t *, const char *msg, ...);
-
-extern int bunyan_key_add(bunyan_logger_t *, ...);
-extern int bunyan_child(const bunyan_logger_t *, bunyan_logger_t **, ...);
-extern void bunyan_fini(bunyan_logger_t *);
+#include "pivy/errf.h"
+#include "ecustr.h"
+#include "common.h"
 
 typedef int (*bunyan_log_f)(bunyan_logger_t *, const char *, ...);
 
