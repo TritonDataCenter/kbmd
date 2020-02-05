@@ -594,6 +594,40 @@ generate_certs(struct piv_token *pk)
 	 * be the most universal method that works.
 	 */
 	for (size_t i = 0; i < ARRAY_SIZE(slotids); i++) {
+		/*
+		 * The NIST 800-78-4 standard dictates which algorithms
+		 * can be used for each slot. ECDSA w/ curve P-256 is
+		 * supported for all slots we initialize. It also results
+		 * in smaller keys which maximizes the number of keys
+		 * that can be stored in an ebox that fits into a zfs
+		 * property (which is useful for maximizing the number of
+		 * recovery keys that can be stored). As such, it is the
+		 * algorithm we currently utilize.
+		 *
+		 * The one exception to this is the signature (9C) key.
+		 * The 9C key is not used by an ebox, but may be used in
+		 * future chain of trust applications. As such, the larger
+		 * key size is not a concern, and being broadly compatible
+		 * with any other code implementing X509 chain of trust
+		 * validation is a larger concern.
+		 *
+		 * Since the PIV token is effectively sealed after
+		 * initialization (we discard the admin certificate after all
+		 * the certificates are created), we cannot add or alter
+		 * any keys or certificates once created. As a result, the
+		 * keys and certificates are expected to last the lifetime of
+		 * the PIV token (or at least until the PIV token is erased
+		 * and factory reset). Since we can always query the
+		 * algorithm used for a particular slot, this doesn't
+		 * present any compatability issues -- if the preferred
+		 * algorithm changes in the future, we will still be able to
+		 * operate on PIV tokens initialized using the older
+		 * algorithm. However, we will just be unable to 'upgrade'
+		 * the keys on the PIV token without performing a factory
+		 * reset first. In practice this shouldn't be a huge
+		 * burden since even a change of the default algorithm won't
+		 * mandate replacing or re-initializing existing PIV tokens.
+		 */
 		enum piv_slotid slotid  = slotids[i];
 		enum piv_alg alg = PIV_ALG_ECCP256;
 
