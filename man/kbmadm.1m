@@ -11,7 +11,7 @@
 .\"
 .\" Copyright 2020 Joyent, Inc.
 .\"
-.Dd January 28, 2020
+.Dd February  6, 2020
 .Dt KBMADM 1M
 .Os
 .Sh NAME
@@ -34,7 +34,7 @@
 .Ar dataset
 .Nm
 .Cm recovery add
-.Op Fl f
+.Op Fl a
 .Op Fl r Ar recovery_token
 .Fl t Ar template
 .Ar dataset
@@ -177,7 +177,7 @@ normally runs.
 .It Xo
 .Nm
 .Cm recovery add
-.Op Fl f
+.Op Fl a
 .Op Fl r Ar recovery_token
 .Fl t Ar template
 .Ar dataset
@@ -190,11 +190,11 @@ with a recovery token
 to the dataset.
 .Pp
 If the
-.Fl f
+.Fl a
 option is given, or no active recovery template is present, the given recovery
 template is immediately made the active recovery configuration.
 If the
-.Fl f
+.Fl a
 option is not present, the given recovery template is added as the staged
 recovery configuration.
 .\"

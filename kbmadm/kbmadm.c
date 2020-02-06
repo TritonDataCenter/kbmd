@@ -92,7 +92,7 @@ usage(void)
 	    "<zpool create args>...\n"
 	    "       %1$s recover [-c cfgnum] dataset\n"
 	    "       %1$s unlock [-r] dataset...\n"
-	    "       %1$s recovery add [-f] [-t template] [-r recovery_token] dataset\n"
+	    "       %1$s recovery add [-a] [-t template] [-r recovery_token] dataset\n"
 	    "       %1$s recovery list [-p]\n"
             "       %1$s recovery activate dataset\n"
 	    "       %1$s recovery cancel dataset\n",
@@ -608,12 +608,12 @@ do_add_recovery(int argc, char **argv)
 	nvlist_t *req = NULL;
 	nvlist_t *resp = NULL;
 	int c;
-	boolean_t force = B_FALSE;
+	boolean_t activate_now = B_FALSE;
 
 	while ((c = getopt(argc, argv, "ft:r:")) != -1) {
 		switch (c) {
-		case 'f':
-			force = B_TRUE;
+		case 'a':
+			activate_now = B_TRUE;
 			break;
 		case 'r':
 			rtoken_str = optarg;
@@ -640,7 +640,7 @@ do_add_recovery(int argc, char **argv)
 		goto done;
 
 	if ((ret = envlist_add_boolean_value(req, KBM_NV_STAGE,
-	    !force)) != ERRF_OK)
+	    !activate_now)) != ERRF_OK)
 		goto done;
 
 	if ((ret = add_template_file(req, KBM_NV_TEMPLATE,
