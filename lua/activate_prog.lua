@@ -7,7 +7,7 @@
 -- source.  A copy of the CDDL is also available via the Internet at
 -- http://www.illumos.org/license/CDDL.
 
--- Copyright 2019 Joyent, Inc.
+-- Copyright 2020 Joyent, Inc.
 
 -- This will replace the current ebox with the staged ebox value, and
 -- update the dataset wrapping key
@@ -66,16 +66,22 @@ if err ~= 0 then
     return err
 end
 
-err = zfs.sync.change_key(args.dataset, key)
-if err ~= 0 then
-    return err
-end
-
 err = zfs.sync.set_prop(args.dataset, args.ebox, newebox)
 if err ~= 0 then
     return err
 end
 
+err = zfs.sync.change_key(args.dataset, key)
+if err ~= 0 and hasold then
+    zfs.sync.set_prop(args.dataset, args.ebox, oldebox)
+    return err
+end
+
+-- This this fails (it really shouldn't since we did the check first,
+-- but just in case), there's not much to do here -- it means both
+-- the staged and active ebox properties will have the same value and
+-- an operator would just need to manually delete the staged one after
+-- fixing the failure.
 err = zfs.sync.inherit(args.dataset, args.stagedebox)
 if err ~= 0 then
     return err
