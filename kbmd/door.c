@@ -20,6 +20,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <pwd.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <strings.h>
@@ -483,9 +484,19 @@ create_generr(void)
 int
 kbmd_door_setup(const char *path)
 {
+	sigset_t set, oset;
 	int ret, fd;
 
 	create_generr();
+
+	/*
+	 * We want all the door threads to have all signals (but SIGABRT)
+	 * block. The simplest way to do that is to let them inherit from
+	 * door_create().
+	 */
+	VERIFY0(sigfillset(&set));
+	VERIFY0(sigdelset(&set, SIGABRT));
+	VERIFY0(sigprocmask(SIG_BLOCK, &set, &oset));
 
 	/*
 	 * XXX: We might want to manually control door server thread creation
@@ -495,6 +506,8 @@ kbmd_door_setup(const char *path)
 	door_fd = door_create(kbmd_door_server, NULL, 0);
 	if (door_fd == -1)
 		return (errno);
+
+	VERIFY0(sigprocmask(SIG_SETMASK, &oset, NULL));
 
 	if ((fd = open(path, O_CREAT|O_RDWR, 0600)) == -1) {
 		ret = errno;

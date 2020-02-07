@@ -89,6 +89,9 @@ main(int argc, char *argv[])
 			err(EXIT_FAILURE, "/dev/null");
 	} else {
 		dfd = kbmd_daemonize(dirfd);
+		/*
+		 * Now in the child (non -d)
+		 */
 	}
 
 	/*
@@ -97,19 +100,6 @@ main(int argc, char *argv[])
 	 */
 	foreach_stop = errf("StopIteration", NULL, "iteration stopped");
 	VERIFY3P(foreach_stop, !=, ERRF_NOMEM);
-
-	/*
-	 * Now in the child (non -d)
-	 */
-
-	if (sigfillset(&set) != 0)
-		kbmd_dfatal(dfd, "failed to fill a signal set...");
-
-	if (sigdelset(&set, SIGABRT) != 0)
-		kbmd_dfatal(dfd, "failed to unmask SIGABRT");
-
-	if (sigprocmask(SIG_BLOCK, &set, NULL) != 0)
-		kbmd_dfatal(dfd, "failed to set our door signal mask");
 
 	/*
 	 * At this point, finish up signal intialization and finally go ahead,
