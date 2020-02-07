@@ -49,8 +49,6 @@
  * will be unable to use the PIV token if we keep it locked in a transaction.
  */
 
-#define	PLUGIN_VERSION		"1"
-
 #define	PLUGIN_PREFIX		"kbm-plugin-"
 
 #define	PLUGIN_PATH		"/usr/lib/kbm/plugins/"
@@ -180,68 +178,6 @@ trim_whitespace(custr_t *cu)
 		VERIFY0(custr_rtrunc(cu, amt - 1));
 	}
 }
-
-#if 0
-static errf_t *
-check_plugin_version(const char *cmd)
-{
-	errf_t *ret = ERRF_OK;
-	strarray_t args = STRARRAY_INIT;
-	int fds[3] = { -1, -1, -1 };
-	pid_t pid;
-
-	if ((ret = strarray_append(&args, "%s", cmd)) != ERRF_OK ||
-	    (ret = strarray_append(&args, "-v")) != ERRF_OK) {
-		return (errf("PluginError", ret, ""));
-	}
-
-	(void) bunyan_debug(tlog, "Checking plugin version",
-	    BUNYAN_T_STRING, "plugin", cmd,
-	    BUNYAN_T_END);
-
-	ret = spawn(cmd, args.sar_strs, _environ, &pid, fds);
-	strarray_fini(&args);
-	if (ret != ERRF_OK) {
-		return (errf("PluginError", ret, ""));
-	}
-
-	custr_t *data[2] = { 0 };
-	int exitval;
-
-	if ((ret = ecustr_alloc(&data[0])) != ERRF_OK ||
-	    (ret = ecustr_alloc(&data[1])) != ERRF_OK ||
-	    (ret = interact(pid, fds, NULL, 0, data, &exitval,
-	    B_FALSE)) != ERRF_OK) {
-		custr_free(data[0]);
-		custr_free(data[1]);
-		return (errf("PluginError", ret, ""));
-	}
-
-	if (exitval != 0) {
-		(void) bunyan_warn(tlog, "Error checking plugin version",
-		    BUNYAN_T_STRING, "plugin", cmd,
-		    BUNYAN_T_INT32, "retval", exitval,
-		    BUNYAN_T_END);
-
-		ret = errf("PluginError", NULL,
-		    "Unexpected return value %d from version check on %s",
-		    exitval, cmd);
-	} else {
-		trim_whitespace(data[0]);
-
-		if (strcmp(custr_cstr(data[0]), PLUGIN_VERSION) != 0) {
-			ret = errf("PluginVersionError", NULL,
-			    "plugin version '%s' is incompatible",
-			    custr_cstr(data[0]));
-		}
-	}
-
-	custr_free(data[0]);
-	custr_free(data[1]);
-
-	return (ret);
-}
-#endif
 
 static errf_t *
 plugin_create_args(strarray_t *args, const char *subcmd)
@@ -910,114 +846,6 @@ done:
 	return (ret);
 }
 
-#if 0
-static boolean_t
-parse_info_line(custr_t *restrict line, size_t *restrict offp,
-   custr_t *restrict key, custr_t *restrict val)
-{
-	const char *p = custr_cstr(line) + *offp;
-	const char *end = strchrnul(p, '\n');
-	const char *keyp = NULL, *valp = NULL;
-	const char *eq = strchr(p, '=');
-	size_t keylen = 0, vallen = 0;
-
-	if (*offp == custr_len(line))
-		return (B_FALSE);
-
-	custr_reset(key);
-	custr_reset(val);
-
-	if (eq != NULL)
-		keylen = (size_t)(uintptr_t)(eq - p);
-	else
-		keylen = (size_t)(uintptr_t)(end - p);
-
-	if (keylen > INT_MAX)
-		return (B_FALSE);
-
-	if (custr_append_printf(key, "%.*s", (int)keylen, p) != 0)
-		return (B_FALSE);
-
-	eq++;
-	if (*eq == '\0')
-		goto done;
-
-	vallen = (size_t)(uintptr_t)(end - eq);
-	if (vallen > INT_MAX)
-		return (B_FALSE);
-
-	if (custr_append_printf(val, "%.*s", (int)vallen, eq) != 0)
-		return (B_FALSE);
-
-done:
-	trim_whitespace(key);
-	trim_whitespace(val);
-	*offp += (uintptr_t)(end - p);
-	return (B_TRUE);
-}
-
-static errf_t *
-check_plugin_version(custr_t *restrict plugin,
-    unsigned long *restrict plugin_versionp)
-{
-	errf_t *ret = ERRF_OK;
-	strarray_t args = STRARRAY_INIT;
-	int fds[3] = { -1, -1, -1 };
-	pid_t pid;
-
-	if ((ret = strarray_append(&args, "%s",
-	    custr_cstr(plugin))) != ERRF_OK ||
-	    (ret = strarray_append(&args, "info")) != ERRF_OK)
-		goto done;
-
-	(void) bunyan_debug(tlog, "Checking plugin version",
-	    BUNYAN_T_STRING, "plugin", custr_cstr(plugin),
-	    BUNYAN_T_END);
-
-	ret = spawn(custr_cstr(plugin), args.sar.strs, _environ, &pid, fds);
-	strarray_fini(&args);
-	if (ret != ERRF_OK) {
-		(void) bunyan_debug(tlog, "Failed to run plugin",
-		    BUNYAN_T_STRING, "errmsg", errf_message(ret),
-		    BUNYAN_T_END);
-		return (ret);
-	}
-
-	custr_t *data[2] = { 0 };
-	int exitval;
-
-	if ((ret = ecustr_alloc(&data[0])) != ERRF_OK ||
-	    (ret = ecustr_alloc(&data[1])) != ERRF_OK ||
-	    (ret = interact(pid, fds, NULL, 0, data, &exitval,
-	    B_FALSE)) != ERRF_OK) {
-		ret = errf("PluginError", ret, "");
-		goto done;
-	}
-
-	if (exitval != 0) {
-		(void) bunyan_warn(tlog,
-		    "Plugin returned error querying version",
-		    BUNYAN_T_STRING, "plugin", custr_cstr(plugin),
-		    BUNYAN_T_INT32, "exitval", exitval,
-		    BUNYAN_T_END);
-		ret = errf("PluginError", NULL,
-		    "plugin returned non-zero exit value %d", exitval);
-		goto done;
-	}
-
-	trim_whitespace(data[0]);
-
-	/*
-	 * Currently, we only support 'version=1'
-	 */
-
-done:
-	custr_free(data[0]);
-	custr_free(data[1]);
-	return (ret);
-}
-#endif
-
 static errf_t *
 get_plugin_path(custr_t *prefix)
 {
@@ -1127,7 +955,6 @@ load_plugin(void)
 
 	while ((de = readdir(dir)) != NULL) {
 		unsigned long version;
-		unsigned long plugin_version;
 
 		(void) bunyan_trace(tlog, "Found entry",
 		     BUNYAN_T_STRING, "filename", de->d_name,
@@ -1164,30 +991,6 @@ load_plugin(void)
 
 		if ((ret = ecustr_append(path, de->d_name)) != ERRF_OK)
 			goto done;
-
-#if 0
-		if ((ret = check_plugin_version(path,
-		    &plugin_version)) != ERRF_OK) {
-			(void) bunyan_info(tlog,
-			    "Couldn't verify plugin version; skipping",
-			    BUNYAN_T_STRING, "plugin", custr_cstr(path),
-			    BUNYAN_T_END);
-
-			errf_free(ret);
-			continue;
-		}
-
-		if (plugin_version != version) {
-			(void) bunyan_info(tlog,
-			    "Plugin version mismatch; skippping",
-			    BUNYAN_T_UINT32, "expected version",
-			    (uint32_t)version,
-			    BUNYAN_T_UINT32, "reported version",
-			    (uint32_t)plugin_version,
-			    BUNYAN_T_END);
-			continue;
-		}
-#endif
 
 		maxversion = version;
 		custr_reset(plugin);
