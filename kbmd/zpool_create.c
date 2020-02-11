@@ -24,6 +24,17 @@
 #include "pivy/ebox.h"
 #include "pivy/libssh/sshbuf.h"
 
+
+/*
+ * Regardless of the default encryption algorithm used by zfs, we want
+ * to use aes-256-gcm for zpools. We can't modify the encryption algorithm
+ * of existing encrypted pools, so we pick the best currently available.
+ * If a better or newer algorithm is supported in the future, we can
+ * change the value for new pools. It won't break existing pools since
+ * zfs itself will still need to support any 'older' algorithms.
+ */
+#define	ENCR_ALG "aes-256-gcm"
+
 /*
  * If the PIV token registration fails, we cache the guid and pin so a
  * subsequent zpool_create operation can retry. We only support doing
@@ -57,13 +68,7 @@ add_create_options(nvlist_t *nvl, struct ebox *ebox)
 		const char *option;
 		const char *val;
 	} encrypt_opts[] = {
-		/*
-		 * Regardless of the default we want to use aes-gcm-256 for
-		 * pools. If a newer/better algorithm does come out, we
-		 * can't 'upgrade' existing pools, so we'll just update
-		 * this default for new pools.
-		 */
-		{ "encryption", "aes-gcm-256" },
+		{ "encryption", ENCR_ALG },
 		{ "keyformat", "raw" },
 		{ "keylocation", "prompt" }
 	};
@@ -144,7 +149,7 @@ try_guid(const uint8_t *guid, const recovery_token_t *rtoken,
 			 * If no system PIV token is set, return and try
 			 * to initialize a new PIV token.
 			 */
-			if (bcmp(zero_guid, local_guid, GUID_LEN) != 0)
+			if (bcmp(zero_guid, local_guid, GUID_LEN) == 0)
 				return (ret);
 		}
 	} else {

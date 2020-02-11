@@ -93,7 +93,7 @@ usage(void)
 	    "       %1$s recover [-c cfgnum] dataset\n"
 	    "       %1$s unlock [-r] dataset...\n"
 	    "       %1$s recovery add [-a] [-t template] [-r recovery_token] dataset\n"
-	    "       %1$s recovery list [-p]\n"
+	    "       %1$s recovery list [-p] dataset\n"
             "       %1$s recovery activate dataset\n"
 	    "       %1$s recovery cancel dataset\n",
 	    name);
@@ -572,7 +572,7 @@ do_recover(int argc, char **argv)
 		}
 	}
 
-	if ((dataset = argv[optind - 1]) == NULL) {
+	if ((dataset = argv[optind]) == NULL) {
 		return (errf("ArgumentError", NULL, "dataset name is missing"));
 	}
 
@@ -669,6 +669,7 @@ do_show_recovery(int argc, char **argv)
 	nvlist_t *resp = NULL;
 	nvlist_t *cfgs = NULL;
 	nvpair_t *pair = NULL;
+	const char *dataset = NULL;
 	int c;
 	boolean_t opt_p = B_FALSE;
 	boolean_t opt_v = B_FALSE;
@@ -687,8 +688,16 @@ do_show_recovery(int argc, char **argv)
 		}
 	}
 
+	if ((dataset = argv[optind]) == NULL) {
+		return (errf("ArgumentError", NULL, "dataset name is missing"));
+	}
+
 	if ((ret = req_new(KBM_CMD_LIST_RECOVERY, &req)) != ERRF_OK)
 		return (ret);
+
+	if (dataset != NULL &&
+	    (ret = envlist_add_string(req, KBM_NV_DATASET, dataset)) != ERRF_OK)
+		goto done;
 
 	if ((ret = send_request(req, &resp)) != ERRF_OK)
 		goto done;
@@ -1030,7 +1039,6 @@ errf_t *
 nv_door_call(int fd, nvlist_t *in, nvlist_t **out)
 {
 	door_arg_t da = { 0 };
-	door_desc_t ddesc = { 0 };
 	char *buf = NULL;
 	size_t buflen = 0;
 	errf_t *ret = ERRF_OK;
@@ -1043,13 +1051,8 @@ nv_door_call(int fd, nvlist_t *in, nvlist_t **out)
 	if ((ret = envlist_pack(in, &buf, &buflen)) != ERRF_OK)
 		return (ret);
 
-	ddesc.d_attributes = DOOR_DESCRIPTOR;
-	ddesc.d_data.d_desc.d_descriptor = fileno(stdout);
-
 	da.data_ptr = buf;
 	da.data_size = buflen;
-	da.desc_ptr = &ddesc;
-	da.desc_num = 1;
 
 	if ((ret = edoor_call(fd, &da)) != ERRF_OK)
 		goto done;

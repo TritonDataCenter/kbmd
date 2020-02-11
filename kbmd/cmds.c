@@ -22,7 +22,6 @@
 #include "pivy/libssh/sshbuf.h"
 #include "kbmd.h"
 
-static errf_t *get_dataset(nvlist_t *, const char **);
 static const char *kbm_cmd_str(kbm_cmd_t);
 
 static errf_t *
@@ -492,9 +491,8 @@ dispatch_request(nvlist_t *req)
 		goto fail;
 	}
 
-	(void) bunyan_info(tlog, "Received request",
+	(void) bunyan_key_add(tlog,
 	    BUNYAN_T_STRING, "request", kbm_cmd_str(cmdval),
-	    BUNYAN_T_INT32, "reqval", cmdval,
 	    BUNYAN_T_END);
 
 	switch ((kbm_cmd_t)cmdval) {
@@ -529,7 +527,7 @@ dispatch_request(nvlist_t *req)
 		kbmd_set_syspool(req);
 		break;
 	default:
-		(void) bunyan_info(tlog, "Unknown command value in request",
+		(void) bunyan_error(tlog, "Unknown command value in request",
 		    BUNYAN_T_INT32, "cmdval", cmdval,
 		    BUNYAN_T_END);
 
@@ -543,31 +541,40 @@ fail:
 	kbmd_return(ret, NULL);
 }
 
-static errf_t *
+errf_t *
 get_dataset(nvlist_t *req, const char **dsp)
 {
 	errf_t *ret = ERRF_OK;
 	char *dataset = NULL;
 
+	*dsp = NULL;
+
 	ret = envlist_lookup_string(req, KBM_NV_ZFS_DATASET, &dataset);
-	if (ret != ERRF_OK) {
-		int cmdval;
-
-		/*
-		 * If we get here, we should have already verified we have
-		 * a valid command.
-		 */
-		VERIFY0(nvlist_lookup_int32(req, KBM_NV_CMD, &cmdval));
-
-		(void) bunyan_warn(tlog,
-		    "Failed to lookup dataset name for command",
-		    BUNYAN_T_STRING, "cmd", kbm_cmd_str((kbm_cmd_t)cmdval),
-		    BUNYAN_T_END);
-		return (errf("ArgumentError", ret, "dataset name is missing"));
+	if (ret == ERRF_OK) {
+		*dsp = dataset;
+		return (ERRF_OK);
 	}
 
-	*dsp = dataset;
-	return (ERRF_OK);
+	if (errf_caused_by(ret, "ENOENT")) {
+		if (sys_pool != NULL) {
+			*dsp = sys_pool;
+			errf_free(ret);
+			return (ERRF_OK);
+		}
+
+		return (errf("ParameterError", ret,
+		    "No dataset given and system pool not set")); 
+	}
+
+	/*
+	 * dispatch_cmd() already sets the request as part of tlog,
+	 * so we don't need to include it again.
+	 */
+	(void) bunyan_warn(tlog,
+	    "Failed to lookup dataset name for request",
+	    BUNYAN_T_END);
+
+	return (ret);
 }
 
 static const char *

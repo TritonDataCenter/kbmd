@@ -126,6 +126,7 @@ void kbmd_recover_init(int);
 void kbmd_recover_start(nvlist_t *);
 void kbmd_recover_resp(nvlist_t *);
 void kbmd_list_recovery(nvlist_t *);
+errf_t *get_dataset(nvlist_t *, const char **);
 
 errf_t *
 template_hash(const struct ebox_tpl *, uint8_t **, size_t *);
@@ -172,6 +173,8 @@ void load_plugin(void);
 errf_t *kbmd_unlock_ebox(struct ebox *restrict, struct kbmd_token **restrict);
 errf_t *kbmd_create_ebox(kbmd_token_t *restrict, const struct ebox_tpl *,
     const char *, uint8_t **restrict, size_t *restrict, struct ebox **restrict);
+errf_t *set_box_name(struct ebox *restrict, const char *);
+
 
 #define	FOREACH_STOP foreach_stop
 

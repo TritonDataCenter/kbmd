@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2019, Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #ifndef _KSPAWN_H
@@ -48,8 +48,6 @@ struct errf *spawn(const char *restrict, char *const[restrict],
 struct errf *interact(pid_t, int [restrict], const void *, size_t,
     struct custr *[restrict], int *restrict, boolean_t);
 struct errf *exitval(pid_t, int *);
-
-void close_fds(int []);
 
 #ifdef __cplusplus
 }

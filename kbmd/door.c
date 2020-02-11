@@ -44,7 +44,6 @@ static size_t door_ret_max = 16384;
 typedef struct tdata {
 	ucred_t		*td_ucred;
 	int		td_errfd;
-	char		td_tty[_POSIX_PATH_MAX];
 	bunyan_logger_t *td_log;
 	libzfs_handle_t *td_libzfs;
 	size_t		td_buflen;
@@ -67,17 +66,16 @@ static size_t generr_sz;
 static void tdata_free(void *);
 
 static boolean_t
-tdata_init(tdata_t *td, door_desc_t *dp, uint_t n_desc)
+tdata_init(tdata_t *td)
 {
 	static const char *rem_keys[] = {
-		"req_pid", "req_uid", "req_tty", "user",
+		"req_pid", "req_uid", "req_tty", "user", "request",
 	};
 
 	struct passwd *pw = NULL;
 	ucred_t *uc = NULL;
 
 	bzero(td->td_buf, td->td_buflen);
-	bzero(td->td_tty, sizeof (td->td_tty));
 	td->td_errfd = -1;
 
 	for (size_t i = 0; i < ARRAY_SIZE(rem_keys); i++) {
@@ -113,47 +111,6 @@ tdata_init(tdata_t *td, door_desc_t *dp, uint_t n_desc)
 	if (bunyan_key_add(tlog,
 	    BUNYAN_T_UINT32, "req_pid", (uint32_t)ucred_getpid(uc),
 	    BUNYAN_T_UINT32, "req_uid", (uint32_t)ucred_getruid(uc),
-	    BUNYAN_T_END) != 0) {
-		return (B_FALSE);
-	}
-
-	if (n_desc > 1) {
-		pid_t pid = ucred_getpid(td->td_ucred);
-		uid_t uid = ucred_getruid(td->td_ucred);
-
-		(void) bunyan_error(tlog,
-		    "Unexpected number of descrptors passed",
-		    BUNYAN_T_UINT32, "n_desc", n_desc,
-		    BUNYAN_T_UINT32, "req_pid", (uint32_t)pid,
-		    BUNYAN_T_UINT32, "req_uid", (uint32_t)uid,
-		    BUNYAN_T_END);
-
-		return (B_FALSE);
-	}
-
-	if (n_desc == 0) {
-		(void) strlcpy(td->td_tty, "<none>", sizeof (td->td_tty));
-	} else {
-		int rc;
-
-		if ((dp->d_attributes & DOOR_DESCRIPTOR) == 0) {
-			(void) bunyan_error(tlog,
-			    "Passed unknown attribute in door_desc_t",
-			    BUNYAN_T_INT32, "attr", dp->d_attributes,
-			    BUNYAN_T_END);
-			return (B_FALSE);
-		}
-
-		td->td_errfd = dp->d_data.d_desc.d_descriptor;
-		rc = ttyname_r(td->td_errfd, td->td_tty, sizeof (td->td_tty));
-		if (rc == 0) {
-			(void) strlcpy(td->td_tty, "<none>",
-			    sizeof (td->td_tty));
-		}
-	}
-
-	if (bunyan_key_add(tlog,
-	    BUNYAN_T_STRING, "req_tty", td->td_tty,
 	    BUNYAN_T_END) != 0) {
 		return (B_FALSE);
 	}
@@ -426,6 +383,12 @@ kbmd_door_server(void *cookie, char *argp, size_t arg_size, door_desc_t *dp,
 	tdata_t *td = tdata_get();
 
 	/*
+	 * If any file descriptors were passed to us, we want to close
+	 * them or else they will hang out in kbmd until it exits.
+	 */
+	close_door_desc(dp, n_desc);
+
+	/*
 	 * If we make the kbmd door server use a private thread pool,
 	 * each thread should gets its own preallocated tdata_t and
 	 * we can remove this check.
@@ -438,24 +401,24 @@ kbmd_door_server(void *cookie, char *argp, size_t arg_size, door_desc_t *dp,
 		(void) fprintf(stderr,
 		    "%s: %d: Failed to get server thread data\n",
 		    __func__, __LINE__);
-		close_door_desc(dp, n_desc);
 		VERIFY0(door_return(generr, generr_sz, NULL, 0));
 	}
 
-	if (!tdata_init(td, dp, n_desc)) {
+	if (!tdata_init(td)) {
 		(void) fprintf(stderr,
 		    "%s: %d: Failed to init server thread data\n",
 		    __func__, __LINE__);
-		close_door_desc(dp, n_desc);
 		VERIFY0(door_return(generr, generr_sz, NULL, 0));
 	}
 
-	/*
-	 * Currently, the only fd passed in is the stdout of the
-	 * calling process, which is used to setup lggin in tdata_init().
-	 * Once that's done, close them out so they don't linger.
-	 */
-	close_door_desc(dp, n_desc);
+	if (n_desc > 0) {
+		(void) bunyan_error(tlog,
+		    "Unexpected number of descriptors passed",
+		    BUNYAN_T_UINT32, "n_desc", n_desc,
+		    BUNYAN_T_END);
+		kbmd_ret_error(errf("ParameterError", NULL,
+		    "%u descriptors passed, expected 0", n_desc));
+	}
 
 	ret = envlist_unpack(argp, arg_size, &req);
 	if (ret != ERRF_OK) {

@@ -561,7 +561,6 @@ plugin_pivtoken_common(struct piv_token *restrict pt, const char *restrict pin,
 	data[1] = NULL;
 
 done:
-	close_fds(fds);
 	if (json != NULL)
 		freezero(json, strlen(json) + 1);
 	custr_free(data[0]);

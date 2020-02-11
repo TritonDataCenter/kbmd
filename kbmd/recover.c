@@ -96,8 +96,46 @@ recovery_free(void *a)
 	if (r == NULL)
 		return;
 
+	/*
+	 * r_cfg points to a config within r_ebox, so ebox_free() will
+	 * free it when freeing r_ebox.
+	 */
 	ebox_free(r->r_ebox);
 	free(r);
+}
+
+static void
+recovery_add(recovery_t *r)
+{
+	VERIFY(MUTEX_HELD(&recovery_lock));
+
+	refhash_insert(recovery_hash, r);
+	recovery_count++;
+}
+
+static void
+recovery_remove(recovery_t *r)
+{
+	VERIFY(MUTEX_HELD(&recovery_lock));
+
+	recovery_count--;
+	refhash_remove(recovery_hash, r);
+}
+
+static void
+recovery_hold(recovery_t *r)
+{
+	VERIFY(MUTEX_HELD(&recovery_lock));
+
+	refhash_hold(recovery_hash, r);
+}
+
+static void
+recovery_rele(recovery_t *r)
+{
+	VERIFY(MUTEX_HELD(&recovery_lock));
+
+	refhash_rele(recovery_hash, r);
 }
 
 void
@@ -142,6 +180,7 @@ strip_primary_cb(struct ebox_tpl_config *tcfg, void *arg)
 	struct ebox_tpl *tpl = arg;
 	if (ebox_tpl_config_type(tcfg) == EBOX_PRIMARY) {
 		ebox_tpl_remove_config(tpl, tcfg);
+		ebox_tpl_config_free(tcfg);
 	}
 	return (ERRF_OK);
 }
@@ -170,7 +209,7 @@ recovery_get(uint32_t id, pid_t pid)
 {
 	recovery_t *r;
 
-	ASSERT(MUTEX_HELD(&recovery_lock));
+	VERIFY(MUTEX_HELD(&recovery_lock));
 
 	r = refhash_lookup(recovery_hash, &id);
 	/*
@@ -191,8 +230,8 @@ recovery_exit_cb(pid_t pid, void *arg)
 	recovery_t *r = arg;
 
 	mutex_enter(&recovery_lock);
-	refhash_remove(recovery_hash, r);
-	recovery_count--;
+	recovery_remove(r);
+	recovery_rele(r);
 	mutex_exit(&recovery_lock);
 }
 
@@ -486,14 +525,11 @@ recovery_alloc(pid_t pid, struct ebox *ebox, recovery_t **rp)
 	}
 	VERIFY3U(ncfg, ==, r->r_ncfg);
 
-	refhash_insert(recovery_hash, r);
-	recovery_count++;
-
-	refhash_hold(recovery_hash, r);
+	recovery_add(r);
+	recovery_hold(r);
 	if ((ret = kbmd_watch_pid(pid, recovery_exit_cb, r)) != ERRF_OK) {
-		recovery_count--;
-		refhash_remove(recovery_hash, r);
-		refhash_rele(recovery_hash, r);
+		recovery_remove(r);
+		recovery_rele(r);
 		return (ret);
 	}
 
@@ -875,7 +911,7 @@ post_recovery(recovery_t *r)
 		if (piv_token_in_txn(kt->kt_piv))
 			piv_txn_end(kt->kt_piv);
 		kbmd_token_free(kt);
-		ebox_tpl_free(rcfg);
+		ebox_tpl_free(rcfg_newpiv);
 		return (ret);
 	}
 	ebox_tpl_free(rcfg_newpiv);
@@ -890,6 +926,7 @@ post_recovery(recovery_t *r)
 	 */
 	if ((ret = ebox_create(tpl, key, keylen, kt->kt_rtoken.rt_val,
 	    kt->kt_rtoken.rt_len, &new_ebox)) != ERRF_OK ||
+	    (ret = set_box_name(new_ebox, dataset)) != ERRF_OK ||
 	    (ret = kbmd_put_ebox(new_ebox, B_FALSE)) != ERRF_OK) {
 		ebox_free(new_ebox);
 		return (ret);
@@ -967,8 +1004,8 @@ challenge(nvlist_t *restrict req, nvlist_t *restrict resp,
 		    B_TRUE);
 
 		kbmd_unwatch_pid(r->r_pid);
-		refhash_remove(recovery_hash, r);
-		refhash_rele(recovery_hash, r);
+		recovery_remove(r);
+		recovery_rele(r);
 		return (ret);
 	}
 
@@ -1116,14 +1153,18 @@ kbmd_recover_start(nvlist_t *req)
 	errf_t *ret = ERRF_OK;
 	struct ebox *ebox = NULL;
 	recovery_t *r = NULL;
+	const char *dataset = NULL;
 	uint32_t cfgnum = 0;
 	pid_t pid = req_pid();
 
 	(void) bunyan_info(tlog, "Request to start recovery",
 	    BUNYAN_T_END);
 
-	if ((ret = kbmd_get_ebox(sys_pool, B_FALSE, &ebox)) != ERRF_OK)
-		goto fail;
+	if ((ret = get_dataset(req, &dataset)) != ERRF_OK)
+		goto fail_nolock;
+
+	if ((ret = kbmd_get_ebox(dataset, B_FALSE, &ebox)) != ERRF_OK)
+		goto fail_nolock;
 
 	mutex_enter(&recovery_lock);
 
@@ -1179,8 +1220,8 @@ kbmd_recover_start(nvlist_t *req)
 fail:
 	if (r != NULL) {
 		kbmd_unwatch_pid(pid);
-		refhash_remove(recovery_hash, r);
-		refhash_rele(recovery_hash, r);
+		recovery_remove(r);
+		recovery_rele(r);
 	} else {
 		/*
 		 * The recovery_t instance takes ownership of the ebox we
@@ -1189,8 +1230,10 @@ fail:
 		 */
 		ebox_free(ebox);
 	}
-	nvlist_free(req);
 	mutex_exit(&recovery_lock);
+
+fail_nolock:
+	nvlist_free(req);
 	kbmd_return(ret, NULL);
 }
 
@@ -1296,7 +1339,7 @@ done:
 }
 
 static errf_t *
-add_template(nvlist_t *restrict nvl, boolean_t staged)
+add_template(const char *dataset, nvlist_t *restrict nvl, boolean_t staged)
 {
 	errf_t *ret = ERRF_OK;
 	struct ebox *ebox = NULL;
@@ -1304,7 +1347,7 @@ add_template(nvlist_t *restrict nvl, boolean_t staged)
 	nvlist_t *tpl_nvl = NULL;
 	const char *name = staged ? "staged" : "active";
 
-	if ((ret = kbmd_get_ebox(sys_pool, staged, &ebox)) != ERRF_OK) {
+	if ((ret = kbmd_get_ebox(dataset, staged, &ebox)) != ERRF_OK) {
 		if (errf_caused_by(ret, "NotFoundError")) {
 			errf_free(ret);
 			return (ERRF_OK);
@@ -1340,16 +1383,21 @@ kbmd_list_recovery(nvlist_t *req)
 	errf_t *ret = ERRF_OK;
 	nvlist_t *resp = NULL;
 	nvlist_t *cfgs = NULL;
+	const char *dataset = NULL;
 
 	(void) bunyan_info(tlog, "List recovery config request", BUNYAN_T_END);
+
+	if (get_dataset(req, &dataset) != ERRF_OK) {
+		goto done;
+	}
 
 	if ((ret = envlist_alloc(&resp)) != ERRF_OK ||
 	    (ret = envlist_alloc(&cfgs)) != ERRF_OK) {
 		kbmd_return(ret, NULL);
 	}
 
-	if ((ret = add_template(cfgs, B_FALSE)) != ERRF_OK ||
-	    (ret = add_template(cfgs, B_TRUE)) != ERRF_OK) {
+	if ((ret = add_template(dataset, cfgs, B_FALSE)) != ERRF_OK ||
+	    (ret = add_template(dataset, cfgs, B_TRUE)) != ERRF_OK) {
 		goto done;
 	}
 

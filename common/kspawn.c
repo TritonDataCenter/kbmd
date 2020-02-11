@@ -44,6 +44,8 @@
  */
 #define	SPAWN_NFDS 3
 
+static void close_fds(int fds[]);
+
 static errf_t *
 strarray_cklen(strarray_t *sar)
 {
@@ -407,10 +409,28 @@ write_fd(int fd, const void *data, size_t datalen, size_t offset,
 	return (ERRF_OK);
 }
 
+/*
+ * kspawn attempts to write 'inputlen' bytes from 'input' to stdin of
+ * the process (using the pipes in 'fd' setup by kspawn(). It captures
+ * stdout into output[0] and stderr into output[1] and sets *exitvalp to
+ * the exit value (when interact returns ERRF_OK). If esc_stderr is set,
+ * the contents of stderr are escaped before being written to output[1].
+ *
+ * A return value other than ERRF_OK indicates some problem while interacting
+ * with the process. This function doesn't attempt to infer any higher
+ * level notions of 'success' or 'failure' of the interacting process -- if
+ * ERRF_OK is returned, that means interact was able to sucessfully write all
+ * of the contents on stdin, and collect an exit value from the interacting
+ * process. The caller should use the exit value and any contents of stdout
+ * and stderr for such purposes.
+ *
+ * All fds in 'fds' are closed upon return from interact().
+ */
 errf_t *
 interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
     custr_t *output[restrict], int *restrict exitvalp, boolean_t esc_stderr)
 {
+	errf_t *ret = ERRF_OK;
 	bunyan_logger_t *ilog = NULL;
 	struct pollfd pfds[SPAWN_NFDS]= { 0 };
 	nfds_t nfds = ARRAY_SIZE(pfds);
@@ -435,8 +455,9 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
 
 	if (bunyan_child(tlog, &ilog,
 	    BUNYAN_T_INT32, "pid", (int32_t)pid, BUNYAN_T_END) != 0) {
-		return (errfno("bunyan_child", errno,
-		    "creating interact() logger"));
+		ret = errfno("bunyan_child", errno,
+		    "creating interact() logger");
+		goto done;
 	}
 
 	(void) bunyan_trace(ilog, "Interacting with process", BUNYAN_T_END);
@@ -450,7 +471,8 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
 			if (errno == EINTR || errno == EAGAIN)
 				continue;
 
-			return (errf("IOError", errfno("poll", errno, ""), ""));
+			ret = errf("IOError", errfno("poll", errno, ""), "");
+			goto done;
 		}
 
 		if (rc == 0)
@@ -494,8 +516,10 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
 				pfds[0].events = 0;
 				pfds[0].revents = 0;
 				fds[0] = -1;
-				if (ret != ERRF_OK)
-					return (errf("IOError", ret, ""));
+				if (ret != ERRF_OK) {
+					ret = errf("IOError", ret, "");
+					goto done;
+				}
 			}
 
 			(void) bunyan_trace(ilog, "wrote data",
@@ -517,7 +541,8 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
 
 			if ((ret = read_fd(pfds[i].fd, output[i - 1], &n,
 			    esc_nl)) != ERRF_OK) {
-				return (errf("IOError", ret, ""));
+				ret = errf("IOError", ret, "");
+				goto done;
 			}
 
 			(void) bunyan_trace(ilog, "read data",
@@ -548,15 +573,18 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
 		}
 	}
 
-	bunyan_fini(ilog);
+done:
+	if (ilog != NULL)
+		bunyan_fini(ilog);
+	close_fds(fds);
 
-	return (exitval(pid, exitvalp));
+	return ((ret == ERRF_OK) ? exitval(pid, exitvalp) : ret);
 }
 
 /*
  * If any fds are left open by spawn, close them
  */
-void
+static void
 close_fds(int fds[SPAWN_NFDS])
 {
 	for (size_t i = 0; i < SPAWN_NFDS; i++) {

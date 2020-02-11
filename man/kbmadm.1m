@@ -41,6 +41,7 @@
 .Nm
 .Cm recovery list
 .Op Fl p
+.Ar dataset
 .Nm
 .Cm recovery activate
 .Ar dataset
@@ -217,9 +218,10 @@ command, this command has no effect.
 .Nm
 .Cm recovery list
 .Op Fl p
+.Ar dataset.
 .Xc
 List the recovery template configuration (active and staged if present) on the
-system.
+system for the given dataset.
 If the
 .Fl p
 option is given, the output is presented in a machine parseable format.

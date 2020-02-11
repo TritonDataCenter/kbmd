@@ -42,8 +42,6 @@ extern const char add_prog_start;
 static const char *add_prog = &add_prog_start;
 static const char *activate_prog = &activate_prog_start;
 
-static errf_t *set_box_name(struct ebox *restrict, const char *);
-
 errf_t *
 ezfs_open(const char *path, int types, zfs_handle_t **zhpp)
 {
@@ -193,7 +191,7 @@ done:
 	return (ret);
 }
 
-static errf_t *
+errf_t *
 set_box_name(struct ebox *restrict ebox, const char *name)
 {
 	size_t len = strlen(name) + 1;
@@ -692,8 +690,10 @@ strip_non_recovery(struct ebox_tpl_config *tcfg, void *arg)
 {
 	struct ebox_tpl *tpl = arg;
 
-	if (ebox_tpl_config_type(tcfg) != EBOX_RECOVERY)
+	if (ebox_tpl_config_type(tcfg) != EBOX_RECOVERY) {
 		ebox_tpl_remove_config(tpl, tcfg);
+		ebox_tpl_config_free(tcfg);
+	}
 	return (ERRF_OK);
 }
 
@@ -804,8 +804,7 @@ done:
 
 	explicit_bzero(key, sizeof (key));
 	freezero(rtoken, rtokenlen);
-
-	*eboxp = ebox;
+	ebox_tpl_free(tpl);
 
 	if (ret != ERRF_OK) {
 		freezero(*keyp, *keylenp);
@@ -813,7 +812,8 @@ done:
 		*keylenp =  0;
 	}
 
-	return (ERRF_OK);
+	*eboxp = ebox;
+	return (ret);
 }
 
 static errf_t *
