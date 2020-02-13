@@ -1,0 +1,22 @@
+#!/bin/bash
+
+# This file and its contents are supplied under the terms of the
+# Common Development and Distribution License ("CDDL"), version 1.0.
+# You may only use this file in accordance with the terms of version
+# 1.0 of the CDDL.
+#
+# A full copy of the text of the CDDL should have accompanied this
+# source.  A copy of the CDDL is also available via the Internet at
+# http://www.illumos.org/license/CDDL.
+
+#
+# Copyright 2020 Joyent, Inc.
+#
+
+# Quick and dirty script to unlock a pool
+# You must first unlock the PIV token
+# or supply the PIN when prompted.
+zfs get -p -H -o value com.joyent.kbm:ebox zones | \
+   pivy-box key unlock | \
+   openssl enc -base64 -d | \
+   zfs load-key zones
