@@ -453,21 +453,40 @@ run_zpool_cmd(char **argv, const uint8_t *key, size_t keylen)
 {
 	errf_t *ret = ERRF_OK;
 	custr_t *out[2] = { 0 };
-	int fds[3] = { -1, STDOUT_FILENO, STDERR_FILENO };
+	int fds[3];
 	int status;
 	pid_t pid;
+
+	/*
+	 * Allow spawn to setup a pipe for stdin of the zpool create command
+	 * so we can feed in the key, but let stdout and stderr of the
+	 * zpool command be our stdout/stderr so any output from it is
+	 * sent to the same place. This means we will need to close
+	 * fd[0] when we finish.
+	 */
+	fds[0] = -1;
+	fds[1] = STDOUT_FILENO;
+	fds[2] = STDERR_FILENO;
 
 	if ((ret = spawn(ZPOOL_CMD, argv, _environ, &pid, fds)) != ERRF_OK ||
 	    (ret = interact(pid, fds, key, keylen, out, &status,
 	    B_FALSE)) != ERRF_OK)
-		return (ret);
+		goto done;
 
 	if (status != 0) {
 		return (errf("CommandError", NULL, "zpool create returned %d",
 		    status));
 	}
 
-	return (ERRF_OK);
+done:
+	/*
+	 * If spawn() failed, fds[0] will still be -1, so only close if
+	 * spawn() actually created a pipe.
+	 */
+	if (fds[0] >= 0)
+		VERIFY0(close(fds[0]));
+
+	return (ret);
 }
 
 static errf_t *
@@ -695,8 +714,7 @@ do_show_recovery(int argc, char **argv)
 	if ((ret = req_new(KBM_CMD_LIST_RECOVERY, &req)) != ERRF_OK)
 		return (ret);
 
-	if (dataset != NULL &&
-	    (ret = envlist_add_string(req, KBM_NV_DATASET, dataset)) != ERRF_OK)
+	if ((ret = envlist_add_string(req, KBM_NV_DATASET, dataset)) != ERRF_OK)
 		goto done;
 
 	if ((ret = send_request(req, &resp)) != ERRF_OK)

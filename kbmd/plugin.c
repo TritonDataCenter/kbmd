@@ -242,11 +242,14 @@ kbmd_get_pin(const uint8_t guid[restrict], custr_t **restrict pinp)
 	    (ret = ecustr_alloc(&data[1])) != ERRF_OK ||
 	    (ret = interact(pid, fds, NULL, 0, data, &exitval,
 	    B_FALSE)) != ERRF_OK) {
+		close_fds(fds);
 		strarray_fini(&args);
 		custr_free(data[0]);
 		custr_free(data[1]);
 		return (errf("PluginError", ret, ""));
 	}
+
+	close_fds(fds);
 
 	/*
 	 * errf_ts have limited buffer space for an error, so just
@@ -561,6 +564,8 @@ plugin_pivtoken_common(struct piv_token *restrict pt, const char *restrict pin,
 	data[1] = NULL;
 
 done:
+	close_fds(fds);
+
 	if (json != NULL)
 		freezero(json, strlen(json) + 1);
 	custr_free(data[0]);
@@ -825,9 +830,7 @@ post_recovery_config_update(void)
 		goto done;
 	}
 
-	(void) close(fds[0]);
-	(void) close(fds[1]);
-	(void) close(fds[2]);
+	close_fds(fds);
 
 	if ((ret = exitval(pid, &rc)) != ERRF_OK) {
 		ret = errf("PluginError", ret,

@@ -44,8 +44,6 @@
  */
 #define	SPAWN_NFDS 3
 
-static void close_fds(int fds[]);
-
 static errf_t *
 strarray_cklen(strarray_t *sar)
 {
@@ -424,7 +422,8 @@ write_fd(int fd, const void *data, size_t datalen, size_t offset,
  * process. The caller should use the exit value and any contents of stdout
  * and stderr for such purposes.
  *
- * All fds in 'fds' are closed upon return from interact().
+ * Caller is responsible for closing the file descriptor in fds[]
+ * upon return.
  */
 errf_t *
 interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
@@ -491,11 +490,9 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
 			    BUNYAN_T_INT32, "fd", pfds[0].fd,
 			    BUNYAN_T_END);
 
-			(void) close(pfds[0].fd);
 			pfds[0].fd = -1;
 			pfds[0].events = 0;
 			pfds[0].revents = 0;
-			fds[0] = -1;
 		}
 
 		if (pfds[0].revents & POLLOUT) {
@@ -511,11 +508,9 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
 					    BUNYAN_T_END);
 				}
 
-				(void) close(pfds[0].fd);
 				pfds[0].fd = -1;
 				pfds[0].events = 0;
 				pfds[0].revents = 0;
-				fds[0] = -1;
 				if (ret != ERRF_OK) {
 					ret = errf("IOError", ret, "");
 					goto done;
@@ -564,11 +559,9 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
 				    BUNYAN_T_INT32, "fd", pfds[i].fd,
 				    BUNYAN_T_END);
 
-				(void) close(pfds[i].fd);
 				pfds[i].fd = -1;
 				pfds[i].events = 0;
 				pfds[i].revents = 0;
-				fds[i] = -1;
 			}
 		}
 	}
@@ -576,7 +569,6 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
 done:
 	if (ilog != NULL)
 		bunyan_fini(ilog);
-	close_fds(fds);
 
 	return ((ret == ERRF_OK) ? exitval(pid, exitvalp) : ret);
 }
@@ -584,12 +576,13 @@ done:
 /*
  * If any fds are left open by spawn, close them
  */
-static void
+void
 close_fds(int fds[SPAWN_NFDS])
 {
 	for (size_t i = 0; i < SPAWN_NFDS; i++) {
 		if (fds[i] == -1)
 			continue;
 		VERIFY0(close(fds[i]));
+		fds[i] = -1;
 	}
 }
