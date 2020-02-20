@@ -76,13 +76,6 @@ ezfs_prop_inherit(zfs_handle_t *zhp, const char *propname)
 	    libzfs_error_description(zfs_get_handle(zhp))));
 }
 
-/*
- * These match the ZCP default values from sys/zfs.h, and should be
- * sufficient for our purposes.
- */
-#define	INSTRLIMIT (10 * 1000 * 1000)
-#define	MEMLIMIT (10 * 1024 * 1024)
-
 static errf_t *
 run_channel_program(const char *pool, const char *prog, nvlist_t *args,
     nvlist_t **result)
@@ -94,8 +87,12 @@ run_channel_program(const char *pool, const char *prog, nvlist_t *args,
 	    BUNYAN_T_STRING, "pool", pool,
 	    BUNYAN_T_END);
 
-	if ((rc = lzc_channel_program(pool, prog, INSTRLIMIT, MEMLIMIT, args,
-	    result)) != 0) {
+	/*
+	 * The zcp default limits should be fine for any channel programs
+	 * we run.
+	 */
+	if ((rc = lzc_channel_program(pool, prog, ZCP_DEFAULT_INSTRLIMIT,
+	    ZCP_DEFAULT_MEMLIMIT, args, result)) != 0) {
 		char *errmsg = NULL;
 
 		ret = errfno("lzc_channel_program", rc,
@@ -881,6 +878,7 @@ add_recovery(const char *dataset, const struct ebox_tpl *rcfg, boolean_t stage,
 	const char *propstr = stage ? STAGEBOX_PROP : BOX_PROP;
 	char *eboxstr = NULL;
 	nvlist_t *zcp_args = NULL;
+	nvlist_t *hidden_args = NULL;
 	nvlist_t *result = NULL;
 	uint8_t *key = NULL;
 	size_t keylen = 0;
@@ -949,10 +947,12 @@ add_recovery(const char *dataset, const struct ebox_tpl *rcfg, boolean_t stage,
 		goto done;
 
 	if (!stage) {
-		if ((ret = add_hexkey(zcp_args, "keyhex", key,
-		    keylen)) != ERRF_OK) {
+		if ((ret = envlist_alloc(&hidden_args)) != ERRF_OK ||
+		    (ret = add_hexkey(hidden_args, "keyhex", key,
+		    keylen)) != ERRF_OK ||
+		    (ret = envlist_add_nvlist(zcp_args, ZPOOL_HIDDEN_ARGS,
+		    hidden_args)) != ERRF_OK)
 			goto done;
-		}
 	}
 
 	/*
@@ -969,6 +969,7 @@ done:
 	ebox_free(ebox);
 	free(eboxstr);
 	nvlist_free(zcp_args);
+	nvlist_free(hidden_args);
 	nvlist_free(result);
 	freezero(key, keylen);
 
@@ -986,6 +987,7 @@ activate_recovery(const char *dataset)
 	kbmd_token_t *kt = NULL;
 	struct ebox *ebox = NULL;
 	nvlist_t *zcp_args = NULL;
+	nvlist_t *hidden_args = NULL;
 	nvlist_t *result = NULL;
 	const uint8_t *key = NULL;
 	size_t keylen = 0;
@@ -997,12 +999,15 @@ activate_recovery(const char *dataset)
 	key = ebox_key(ebox, &keylen);
 
 	if ((ret = envlist_alloc(&zcp_args)) != ERRF_OK ||
+	    (ret = envlist_alloc(&hidden_args)) != ERRF_OK ||
 	    (ret = envlist_add_string(zcp_args, "dataset",
 	    dataset)) != ERRF_OK ||
 	    (ret = envlist_add_string(zcp_args, "ebox", BOX_PROP)) != ERRF_OK ||
 	    (ret = envlist_add_string(zcp_args, "stagedebox",
 	    STAGEBOX_PROP)) != ERRF_OK ||
-	    (ret = add_hexkey(zcp_args, "keyhex", key, keylen)) != ERRF_OK) {
+	    (ret = add_hexkey(hidden_args, "keyhex", key, keylen)) != ERRF_OK ||
+	    (ret = envlist_add_nvlist(zcp_args, ZPOOL_HIDDEN_ARGS,
+	    hidden_args)) != ERRF_OK) {
 		goto done;
 	}
 
@@ -1015,6 +1020,7 @@ done:
 	kbmd_token_free(kt);
 	ebox_free(ebox);
 	nvlist_free(zcp_args);
+	nvlist_free(hidden_args);
 	nvlist_free(result);
 
 	if (ret == ERRF_OK) {
