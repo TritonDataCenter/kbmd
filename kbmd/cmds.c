@@ -360,6 +360,7 @@ cmd_zpool_create(nvlist_t *req)
 	uint8_t *guid = NULL;
 	uint_t guidlen = 0;
 	recovery_token_t rtoken = { 0 };
+	recovery_token_t *rtokenp = NULL;
 	nvlist_t *resp = NULL;
 
 	if ((ret = get_dataset(req, &dataset)) != ERRF_OK)
@@ -385,7 +386,9 @@ cmd_zpool_create(nvlist_t *req)
 		ret = ERRF_OK;
 	}
 
-	if ((ret = get_nvrtoken(req, KBM_NV_RTOKEN, &rtoken)) != ERRF_OK) {
+	if ((ret = get_nvrtoken(req, KBM_NV_RTOKEN, &rtoken)) == ERRF_OK) {
+		rtokenp = &rtoken;
+	} else {
 		if (!errf_caused_by(ret, "ENOENT"))
 			goto done;
 		errf_free(ret);
@@ -395,7 +398,7 @@ cmd_zpool_create(nvlist_t *req)
 	if ((ret = envlist_alloc(&resp)) != ERRF_OK)
 		goto done;
 
-	ret = kbmd_zpool_create(dataset, guid, rcfg, &rtoken, resp);
+	ret = kbmd_zpool_create(dataset, guid, rcfg, rtokenp, resp);
 
 done:
 	explicit_bzero(rtoken.rt_val, rtoken.rt_len);

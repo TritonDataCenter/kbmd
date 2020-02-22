@@ -122,7 +122,7 @@ add_create_data(nvlist_t *restrict resp, struct ebox *restrict ebox,
 
 static errf_t *
 try_guid(const uint8_t *guid, const recovery_token_t *rtoken,
-    kbmd_token_t **restrict ktp, boolean_t *restrict is_retryp)
+    kbmd_token_t **restrict ktp)
 {
 	errf_t *ret = ERRF_OK;
 	kbmd_token_t *kt = NULL;
@@ -178,7 +178,6 @@ try_guid(const uint8_t *guid, const recovery_token_t *rtoken,
 		    BUNYAN_T_END);
 	}
 
-	*is_retryp = is_retry;
 	*ktp = kt;
 
 	return (ERRF_OK);
@@ -194,24 +193,18 @@ kbmd_assert_token(const uint8_t *guid, const recovery_token_t *rtoken,
     kbmd_token_t **restrict ktp, struct ebox_tpl **restrict rcfgp)
 {
 	errf_t *ret = ERRF_OK;
-	boolean_t is_retry = B_FALSE;
-	boolean_t need_register = B_TRUE;
 
 	*ktp = NULL;
 	*rcfgp = NULL;
 
-	if ((ret = try_guid(guid, rtoken, ktp, &is_retry)) != ERRF_OK)
+	if ((ret = try_guid(guid, rtoken, ktp)) != ERRF_OK)
 		return (ret);
 
-	if (*ktp == NULL) {
-		if ((ret = kbmd_setup_token(ktp)) != ERRF_OK)
-			return (ret);
-	} else if (!is_retry) {
-		need_register = B_FALSE;
+	if (*ktp == NULL && (ret = kbmd_setup_token(ktp)) != ERRF_OK) {
+		return (ret);
 	}
 
-	if (need_register &&
-	    (ret = register_pivtoken(*ktp, rcfgp)) != ERRF_OK) {
+	if ((ret = register_pivtoken(*ktp, rcfgp)) != ERRF_OK) {
 		(void) bunyan_error(tlog,
 		    "Failed to register pivtoken; token data saved for retry",
 		    BUNYAN_T_END);
