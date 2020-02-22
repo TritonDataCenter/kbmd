@@ -414,6 +414,14 @@ write_fd(int fd, const void *data, size_t datalen, size_t offset,
  * the exit value (when interact returns ERRF_OK). If esc_stderr is set,
  * the contents of stderr are escaped before being written to output[1].
  *
+ * If input is not NULL, once the contents of input have been written to the
+ * spawned process, fds[0] will be closed and set to -1 prior to returning.
+ *
+ * The caller is always responsible for closing fds[1] and fds[2] when
+ * appropriate (e.g. when they're pipes and _not_ when they're connected to
+ * the parent's stdout/stderr), as well as fds[0] (if appropriate) when input
+ * was NULL.
+ *
  * A return value other than ERRF_OK indicates some problem while interacting
  * with the process. This function doesn't attempt to infer any higher
  * level notions of 'success' or 'failure' of the interacting process -- if
@@ -422,8 +430,6 @@ write_fd(int fd, const void *data, size_t datalen, size_t offset,
  * process. The caller should use the exit value and any contents of stdout
  * and stderr for such purposes.
  *
- * Caller is responsible for closing the file descriptor in fds[]
- * upon return.
  */
 errf_t *
 interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
@@ -508,13 +514,18 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
 					    BUNYAN_T_END);
 				}
 
+				if (close(pfds[0].fd) != 0) {
+					ret = errf("IOError", ret,
+					    "failed to close pipe to child");
+				}
+
+				fds[0] = -1;
 				pfds[0].fd = -1;
 				pfds[0].events = 0;
 				pfds[0].revents = 0;
-				if (ret != ERRF_OK) {
-					ret = errf("IOError", ret, "");
+
+				if (ret != ERRF_OK)
 					goto done;
-				}
 			}
 
 			(void) bunyan_trace(ilog, "wrote data",
