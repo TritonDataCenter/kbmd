@@ -16,18 +16,11 @@
 --  dataset     (string)    The dataset to act on
 --  ebox        (string)    The zfs property of the current ebox
 --  stagedebox  (string)    The zfs property of the staged ebox
---  keyhex      (string)    The staged ebox key (as a hex encoded string).
+--  hidden_args.keyhex
+--              (string)    The staged ebox key (as a hex encoded string).
 
 args = ...
-
--- Due to limitations to the current zcp API, we cannot pass a raw binary
--- value as an argument. Instead, we pass the key as a hex string and
--- so we can convert it within the channel program
-key = args.keyhex:gsub('..',
-    function (ch)
-        return string.char(tonumber(ch, 16))
-    end
-)
+key = args.hidden_args.keyhex
 
 hasold = false
 hasnew = false
@@ -51,7 +44,7 @@ if (not hasnew) then
     return "No ebox has been staged"
 end
 
-err = zfs.check.change_key(args.dataset, key)
+err = zfs.check.change_key(args.dataset, key, 'hex')
 if err ~= 0 then
     return err
 end
@@ -71,7 +64,7 @@ if err ~= 0 then
     return err
 end
 
-err = zfs.sync.change_key(args.dataset, key)
+err = zfs.sync.change_key(args.dataset, key, 'hex')
 if err ~= 0 and hasold then
     zfs.sync.set_prop(args.dataset, args.ebox, oldebox)
     return err

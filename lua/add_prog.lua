@@ -17,7 +17,8 @@
 --  dataset     (string) The dataset we're updating
 --  prop        (string) The property we're setting
 --  ebox        (string) The ebox (as a base64 string)
---  keyhex      (string) The ebox key (as a hex encoded string). Not present
+--  hidden_args.keyhex
+--              (string) The ebox key (as a hex encoded string). Not present
 --                       when staging an ebox.
 
 args = ...
@@ -25,13 +26,8 @@ args = ...
 oldbox = nil
 key = nil
 
-if args.keyhex then
-    -- Due to limitations to the current zcp API, we cannot pass a raw binary
-    -- value as an argument. Instead, we pass the key as a hex string and
-    -- so we can convert it within the channel program
-    key = args.keyhex:gsub('..', function (ch)
-        return string.char(tonumber(ch, 16))
-    end)
+if args.hidden_args and args.hidden_args.keyhex then
+    key = args.hidden_args.keyhex
 end
 
 -- Nonexistent _user_ properties don't return an error, instead they
@@ -55,7 +51,7 @@ if err ~= 0 then
 end
 
 if key then
-    err = zfs.check.change_key(args.dataset, key)
+    err = zfs.check.change_key(args.dataset, key, 'hex')
     if err ~= 0 then
         return err
     end
@@ -70,8 +66,8 @@ if err ~= 0 and oldbox then
     return err
 end
 
-if args.keyhex then
-    err = zfs.sync.change_key(args.dataset, key)
+if key then
+    err = zfs.sync.change_key(args.dataset, key, 'hex')
     if err ~= 0 and oldbox then
         zfs.sync.set_prop(args.dataset, args.prop, oldbox)
     end

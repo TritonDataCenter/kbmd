@@ -629,7 +629,7 @@ do_add_recovery(int argc, char **argv)
 	int c;
 	boolean_t activate_now = B_FALSE;
 
-	while ((c = getopt(argc, argv, "ft:r:")) != -1) {
+	while ((c = getopt(argc, argv, "aft:r:")) != -1) {
 		switch (c) {
 		case 'a':
 			activate_now = B_TRUE;
