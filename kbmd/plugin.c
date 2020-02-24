@@ -550,11 +550,20 @@ plugin_pivtoken_common(struct piv_token *restrict pt, const char *restrict pin,
 		goto done;
 	}
 
+	/*
+	 * errf_ts have limited buffer space for an error, so just
+	 * log plugin failures to the kbmd log and require the operator
+	 * to examine them.
+	 */
+	if (custr_len(data[2]) > 0) {
+		(void) bunyan_warn(tlog, "Plugin had error output",
+		    BUNYAN_T_STRING, "plugin", cmd,
+		    BUNYAN_T_STRING, "subcmd", args[1],
+		    BUNYAN_T_STRING, "stderr", custr_cstr(data[2]),
+		    BUNYAN_T_END);
+	}
+
 	if (exitval != 0) {
-		/*
-		 * XXX: What to do with any stderr output?  It's very likely
-		 * it'll be too large to fit in an errf_t
-		 */
 		ret = errf("PluginError", NULL, "non-zero plugin exit (%d)",
 		    exitval);
 		goto done;
