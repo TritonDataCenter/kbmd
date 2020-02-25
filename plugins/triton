@@ -123,7 +123,6 @@ function register_pivtoken {
 
     cat - | curl -sS \
         -H "Date: $date" \
-        -H "Authorization: $sig" \
         -H "Content-Type: application/json" \
         -H "Authorization: $auth" \
         -d "@-" "$url" | \
