@@ -70,14 +70,24 @@ function piv_sign {
 }
 
 function hmac_sign {
-    local data="$1"
-    local key="$2"
+    local data="$2"
+    local key="$1"
     local key_hex
 
-    key_hex=$(printf "%s" "$key" | openssl enc -base64 -d | od -An -tx1 | \
-        sed -e 'N;s/\n//' -e 's/ //g')
+    key_hex=$(printf "%s\n" "$key" | openssl enc -base64 -d | od -An -tx1 | \
+        tr -d ' \n')
 
-    printf "%s" "$data" | openssl dgst -sha512 -hmac -macopt hexkey:"$key_hex"
+    printf "%s" "$data" | \
+        openssl dgst -sha256 -mac hmac -macopt hexkey:"$key_hex" | \
+        awk '{ print $2 }' | xxd -r -p | openssl enc -base64 -A
+}
+
+function replace_auth_hdr {
+    local guid="$1"
+    local hmac="$2"
+    local fmt='Signature keyId="%s",algorithm="%s",headers="%s",signature="%s"\n'
+
+    printf "$fmt" "$guid" "hmac-sha256" "date" "$hmac"
 }
 
 function auth_hdr {
@@ -113,7 +123,6 @@ function register_pivtoken {
 
     cat - | curl -sS \
         -H "Date: $date" \
-        -H "Authorization: $sig" \
         -H "Content-Type: application/json" \
         -H "Authorization: $auth" \
         -d "@-" "$url" | \
@@ -124,18 +133,19 @@ function replace_pivtoken {
     local guid="$1"
     local rtoken="$2"
     local host=$(get_kbmapi_host)
-    local url="http://$host/pivtokens/$guid/recover"
+    local url="http://$host/pivtokens/$guid/replace"
     local date=$(http_date)
     local sig=$(hmac_sign "$rtoken" "date: $date")
+    local auth=$(replace_auth_hdr "$guid" "$sig")
 
     # We'll want to remove the json call and have kbmd parse
     # the JSON eventually
     cat - | curl -sS \
         -H "Date: $date" \
-        -H "Authorization: $sig" \
+        -H "Authorization: $auth" \
         -H "Content-Type: application/json" \
-        "$url" | \
-        json 'recovery_tokens[0].token' 'recovery_tokens[0].template' || exit 1
+	-d "@-" "$url" | \
+    json 'recovery_tokens[0].token' 'recovery_tokens[0].template' || exit 1
 }
 
 function new_rtoken {
@@ -171,7 +181,7 @@ case "$1" in
     register-pivtoken)
         register_pivtoken;;
     replace-pivtoken)
-        replace_pivtoken;;
+        replace_pivtoken "$2" "$3";;
     new-rtoken)
         new_rtoken $2;;
     post-rcfg-update)
