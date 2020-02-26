@@ -760,7 +760,6 @@ struct update_data {
 static errf_t *
 piv_replace_cb(struct ebox_tpl_config *tcfg, void *arg)
 {
-	errf_t *ret = ERRF_OK;
 	struct update_data *data = arg;
 	struct ebox_tpl_part *tpart = NULL;
 
@@ -784,13 +783,8 @@ piv_replace_cb(struct ebox_tpl_config *tcfg, void *arg)
 		    "EBOX_PRIMARY has no config parts"));
 	}
 
-	if ((ret = replace_pivtoken(ebox_tpl_part_guid(tpart), data->ud_rtok,
-	    data->ud_tok, &data->ud_rcfg)) != ERRF_OK) {
-		return (FOREACH_STOP);
-	}
-
-	errf_free(ret);
-	return (ERRF_OK);
+	return (replace_pivtoken(ebox_tpl_part_guid(tpart), data->ud_rtok,
+	    data->ud_tok, &data->ud_rcfg));
 }
 
 /*

@@ -553,10 +553,11 @@ plugin_pivtoken_common(struct piv_token *restrict pt, const char *restrict pin,
 	/*
 	 * errf_ts have limited buffer space for an error, so just
 	 * log plugin failures to the kbmd log and require the operator
-	 * to examine them.
+	 * to examine them. Since stderr output can just be informative
+	 * only a non-zero exit value is treated as a failure.
 	 */
 	if (custr_len(data[2]) > 0) {
-		(void) bunyan_warn(tlog, "Plugin had error output",
+		(void) bunyan_warn(tlog, "Plugin had output on standard error",
 		    BUNYAN_T_STRING, "plugin", cmd,
 		    BUNYAN_T_STRING, "subcmd", args[1],
 		    BUNYAN_T_STRING, "stderr", custr_cstr(data[2]),
@@ -564,6 +565,12 @@ plugin_pivtoken_common(struct piv_token *restrict pt, const char *restrict pin,
 	}
 
 	if (exitval != 0) {
+		(void) bunyan_warn(tlog, "Plugin returned an error",
+		    BUNYAN_T_STRING, "plugin", cmd,
+		    BUNYAN_T_STRING, "subcmd", args[1],
+		    BUNYAN_T_INT32, "exitval", exitval,
+		    BUNYAN_T_END);
+
 		ret = errf("PluginError", NULL, "non-zero plugin exit (%d)",
 		    exitval);
 		goto done;
@@ -686,13 +693,48 @@ done:
 	return (ret);
 }
 
-errf_t *
-register_pivtoken(kbmd_token_t *restrict kt, struct ebox_tpl **restrict rcfgp)
+static errf_t *
+register_replace_common(strarray_t *restrict args, kbmd_token_t *restrict kt,
+    struct ebox_tpl **restrict rcfgp, boolean_t is_register)
 {
 	errf_t *ret = ERRF_OK;
 	custr_t *output = NULL;
 	custr_t *rtoken = NULL;
 	struct ebox_tpl *rcfg = NULL;
+
+	const char *failtype = is_register ? "RegisterError" : "ReplaceError";
+	const char *failop = is_register ? "register" : "replace";
+
+	if ((ret = plugin_pivtoken_common(kt->kt_piv, kt->kt_pin,
+	    args->sar_strs[0], args->sar_strs, &output)) != ERRF_OK) {
+		ret = errf(failtype, ret, "failed to %s PIV token", failop);
+		goto done;
+	}
+
+	if ((ret = parse_register_output(output, &rtoken, &rcfg)) != ERRF_OK) {
+		ret = errf(failtype, ret, "failed to %s PIV token", failop);
+		goto done;
+	}
+
+	if ((ret = set_recovery_token(kt, rtoken)) != ERRF_OK) {
+		ret = errf(failtype, ret, "failed to %s PIV token", failop);
+		goto done;
+	}
+
+	*rcfgp = rcfg;
+	rcfg = NULL;
+
+done:
+	custr_free(rtoken);
+	custr_free(output);
+	ebox_tpl_free(rcfg);
+	return (ret);
+}
+
+errf_t *
+register_pivtoken(kbmd_token_t *restrict kt, struct ebox_tpl **restrict rcfgp)
+{
+	errf_t *ret = ERRF_OK;
 	strarray_t args = STRARRAY_INIT;
 
 	VERIFY(!piv_token_in_txn(kt->kt_piv));
@@ -705,33 +747,10 @@ register_pivtoken(kbmd_token_t *restrict kt, struct ebox_tpl **restrict rcfgp)
 		goto done;
 	}
 
-	if ((ret = plugin_pivtoken_common(kt->kt_piv, kt->kt_pin,
-	    args.sar_strs[0], args.sar_strs, &output)) != ERRF_OK) {
-		ret = errf("RegisterError", ret,
-		    "failed to register PIV token");
-		goto done;
-	}
-
-	if ((ret = parse_register_output(output, &rtoken, &rcfg)) != ERRF_OK) {
-		ret = errf("RegisterError", ret,
-		    "failed to register PIV token");
-		goto done;
-	}
-
-	if ((ret = set_recovery_token(kt, rtoken)) != ERRF_OK) {
-		ret = errf("RegisterError", ret,
-		    "failed to register PIV token");
-		goto done;
-	}
-
-	*rcfgp = rcfg;
-	rcfg = NULL;
+	ret = register_replace_common(&args, kt, rcfgp, B_TRUE);
 
 done:
 	strarray_fini(&args);
-	custr_free(rtoken);
-	custr_free(output);
-	ebox_tpl_free(rcfg);
 	return (ret);
 }
 
@@ -742,7 +761,6 @@ replace_pivtoken(const uint8_t guid[GUID_LEN],
 {
 	errf_t *ret = ERRF_OK;
 	custr_t *rtok64 = NULL;
-	custr_t *new_rtoken = NULL;
 	strarray_t args = STRARRAY_INIT;
 
 	VERIFY(!piv_token_in_txn(kt->kt_piv));
@@ -756,31 +774,27 @@ replace_pivtoken(const uint8_t guid[GUID_LEN],
 		goto done;
 	}
 
+	/*
+	 * Pass the GUID if the PIV token we are replacing as well as
+	 * the base64 encoded recovery token from the ebox to the
+	 * replacement method.
+	 */
 	if ((ret = plugin_create_args(&args, REPLACE_TOK_CMD)) != ERRF_OK ||
 	    (ret = strarray_append_guid(&args, guid)) != ERRF_OK ||
 	    (ret = strarray_append(&args, "%s", custr_cstr(rtok64))) != ERRF_OK)
 		goto done;
 
 	/*
-	 * The input to the script is:
+	 * The input to the plugin is:
 	 *	{ <new token JSON...
 	 *	...
 	 *	}
 	 */
-	if ((ret = plugin_pivtoken_common(kt->kt_piv, kt->kt_pin,
-	    args.sar_strs[0], args.sar_strs, &new_rtoken)) != ERRF_OK) {
-		goto done;
-	}
-
-	ret = set_recovery_token(kt, new_rtoken);
-
-	/* TODO: get new recovery config, for now we return NULL */
-	*rcfgp = NULL;
+	ret = register_replace_common(&args, kt, rcfgp, B_FALSE);
 
 done:
 	strarray_fini(&args);
 	custr_free(rtok64);
-	custr_free(new_rtoken);
 	return (ret);
 }
 
