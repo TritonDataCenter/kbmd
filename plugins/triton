@@ -78,7 +78,7 @@ function hmac_sign {
         tr -d ' \n')
 
     printf "%s" "$data" | \
-        openssl dgst -sha512 -mac hmac -macopt hexkey:"$key_hex" | \
+        openssl dgst -sha256 -mac hmac -macopt hexkey:"$key_hex" | \
         awk '{ print $2 }' | xxd -r -p | openssl enc -base64 -A
 }
 
@@ -87,7 +87,7 @@ function replace_auth_hdr {
     local hmac="$2"
     local fmt='Signature keyId="%s",algorithm="%s",headers="%s",signature="%s"\n'
 
-    printf "$fmt" "$guid" "hmac-sha512" "date" "$hmac"
+    printf "$fmt" "$guid" "hmac-sha256" "date" "$hmac"
 }
 
 function auth_hdr {
