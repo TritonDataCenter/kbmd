@@ -97,7 +97,10 @@ KBMD_LIBS =		\
 	-lzfs		\
 	-lzfs_core	\
 	-lpcsc
-KBMD_PLUGINS = triton unlock
+
+KBMD_DIR = /usr/lib/kbm
+KBMD_PLUGIN_DIR = $(KBMD_DIR)/plugins
+KBMD_PLUGINS = triton unlock kbm-plugin-1
 
 out/kbmd:	LDLIBS += $(KBMD_LIBS)
 # For flockfile and funlockfile
@@ -174,6 +177,21 @@ PIVY_A_OBJS =		\
 	$(CHAPOLY_OBJS)	\
 	$(ED25519_OBJS)
 
+_DEST_PROGS =	/usr/sbin/pivy-tool \
+		/usr/sbin/pivy-box \
+		/usr/sbin/kbmadm \
+		/usr/sbin/reset-piv \
+		/usr/lib/kbm/kbmd \
+		/lib/svc/manifest/system/kbmd.xml \
+		/lib/svc/method/kbmd \
+		/usr/share/man/man1m/kbmd.1m \
+		/usr/share/man/man1m/kbmadm.1m
+_DEST_DIRS =	$(KBMD_DIR) $(KBMD_PLUGIN_DIR)
+
+DEST_PROGS = $(_DEST_PROGS:%=$(DESTDIR)%)
+DEST_DIRS = $(_DEST_DIRS:%=$(DESTDIR)%)
+DEST_PLUGINS = $(KBMD_PLUGINS:%=$(DESTDIR)$(KBMD_PLUGIN_DIR)/%)
+
 #
 # Build Targets
 #
@@ -242,27 +260,43 @@ $(ZCP_OBJS): $(ZCP_SRCS_NUL)
 out/reset-piv: $(RESET_PIV_OBJS) out/pivy.a out/kbmd
 	$(CC) -o $@ $(CFLAGS) $(RESET_PIV_OBJS) $(LDFLAGS) $(LDLIBS)
 	$(CTFCONVERT) -m $@
-
+#
 # Install Targets
 #
 .PHONY: install manifest
-install: all
-	-mkdir -m 0755 -p $(DESTDIR)/usr/lib/kbm/plugins
-	$(INSTALL) -m 0555 -f $(DESTDIR)/usr/sbin pivy/pivy-tool
-	$(INSTALL) -m 0555 -f $(DESTDIR)/usr/sbin pivy/pivy-box
-	$(INSTALL) -m 0555 -f $(DESTDIR)/usr/sbin out/kbmadm
-	$(INSTALL) -m 0555 -f $(DESTDIR)/usr/sbin out/reset-piv
-	$(INSTALL) -m 0555 -f $(DESTDIR)/usr/lib/kbm out/kbmd
-	for plugin in $(KBMD_PLUGINS); do				\
-	    $(INSTALL) -m 0555 -f $(DESTDIR)/usr/lib/kbm/plugins	\
-	    plugins/$$plugin;						\
-	done
-	$(RM) -f $(DESTDIR)/usr/lib/kbm/plugins/kbm-plugin-1
-	$(LN) -s triton  $(DESTDIR)/usr/lib/kbm/plugins/kbm-plugin-1
-	$(INSTALL) -m 0644 -f $(DESTDIR)/lib/svc/manifest/system smf/kbmd.xml
-	$(INSTALL) -m 0555 -f $(DESTDIR)/lib/svc/method smf/kbmd
-	$(INSTALL) -m 0444 -f $(DESTDIR)/usr/share/man/man1m man/kbmd.1m
-	$(INSTALL) -m 0444 -f $(DESTDIR)/usr/share/man/man1m man/kbmadm.1m
+
+$(DESTDIR)/usr/sbin/%: pivy/%
+	$(RM) -f $@; $(INSTALL) -m 0555 -f $(DESTDIR)/usr/sbin $<
+
+$(DESTDIR)/usr/sbin/%: out/%
+	$(RM) -f $@; $(INSTALL) -m 0555 -f $(DESTDIR)/usr/sbin $<
+
+$(DESTDIR)/usr/share/man/man1m/%: man/%
+	$(RM) -f $@; $(INSTALL) -m 0444 -f $(DESTDIR)/usr/share/man/man1m $<
+
+$(DESTDIR)/lib/svc/method/%: smf/%
+	$(RM) -f $@; $(INSTALL) -m 0555 -f $(DESTDIR)/lib/svc/method $<
+
+$(DESTDIR)/lib/svc/manifest/system/%: smf/%
+	$(RM) -f $@; $(INSTALL) -m 0644 -f $(DESTDIR)/lib/svc/manifest/system $<
+
+$(DESTDIR)$(KBMD_DIR):
+	-mkdir -m 0755 $@
+
+$(DESTDIR)$(KBMD_PLUGIN_DIR): $(DESTDIR)/$(KBMD_DIR)
+	-mkdir -m 0755 $@
+
+$(DESTDIR)$(KBMD_DIR)/%: out/% $(DESTDIR)$(KBMD_DIR)
+	$(RM) -f $@; $(INSTALL) -m 0555 -f $(DESTDIR)$(KBMD_DIR) $<
+
+$(DESTDIR)$(KBMD_PLUGIN_DIR)/%: plugins/%
+	$(RM) -f $@; $(INSTALL) -m 0555 -f $(DESTDIR)$(KBMD_PLUGIN_DIR) $<
+
+$(DESTDIR)$(KBMD_PLUGIN_DIR)/kbm-plugin-1: $(DESTDIR)$(KBMD_PLUGIN_DIR)/triton
+	$(RM) -f $@; $(LN) -s triton $@
+
+
+install: all $(DEST_PROGS) $(DEST_DIRS) $(DEST_PLUGINS)
 
 manifest:
 	cp manifest $(DESTDIR)/$(DESTNAME)
