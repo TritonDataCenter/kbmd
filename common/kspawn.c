@@ -289,6 +289,7 @@ spawn(const char *restrict cmd, char *const argv[restrict],
 
 	VERIFY0(posix_spawn_file_actions_destroy(&fact));
 	VERIFY0(posix_spawnattr_destroy(&attr));
+	custr_free(cmdline);
 
 	for (i = 0; i < SPAWN_NFDS; i++) {
 		if (pipe_fds[i][1] < 0) {

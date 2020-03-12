@@ -404,13 +404,13 @@ find_part_pivtoken(struct ebox_part *part, kbmd_token_t **ktp)
 		    "and slot information, can't unlock with local hardware"));
 	}
 
-	if ((ret = kbmd_find_byguid(guid, GUID_LEN, ktp)) != ERRF_OK ||
-	    (ret = kbmd_find_byslot(slotid, pubkey, ktp)) != ERRF_OK) {
-		return (errf("NotFoundError", ret,
-		    "Unable to find PIV token for piv box"));
-	}
+	if ((ret = kbmd_find_byguid(guid, GUID_LEN, ktp)) == ERRF_OK ||
+	    !errf_caused_by(ret, "NotFoundError"))
+		return (ret);
 
-	return (ERRF_OK);
+	errf_free(ret);
+
+	return (kbmd_find_byslot(slotid, pubkey, ktp));
 }
 
 errf_t *
@@ -419,7 +419,6 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 	errf_t *ret = ERRF_OK;
 	struct ebox_config *config = NULL;
 	struct ebox_part *part = NULL;
-	kbmd_token_t *kt = NULL;
 	const char *boxname;
 	uint32_t cfgnum;
 
@@ -439,6 +438,7 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 		struct sshkey *cak = NULL;
 		struct piv_slot *slot = NULL;
 		struct piv_ecdh_box *dhbox = NULL;
+		kbmd_token_t *kt = NULL;
 		char gstr[GUID_STR_LEN];
 
 		tconfig = ebox_config_tpl(config);
@@ -484,19 +484,8 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 		    BUNYAN_T_STRING, "guid", gstr,
 		    BUNYAN_T_END);
 
-		if (kt != NULL &&
-		    bcmp(piv_token_guid(kt->kt_piv), piv_box_guid(dhbox),
-		    GUID_LEN) != 0) {
-			kbmd_token_free(kt);
-			kt = NULL;
-
-			(void) bunyan_key_remove(tlog, "piv_guid");
-		}
-
-		if (kt == NULL &&
-		    (ret = find_part_pivtoken(part, &kt)) != ERRF_OK) {
-			kbmd_token_free(kt);
-			kt = NULL;
+		if ((ret = find_part_pivtoken(part, &kt)) != ERRF_OK) {
+			VERIFY3P(kt, ==, NULL);
 
 			if (errf_caused_by(ret, "NotFoundError")) {
 				errf_free(ret);
@@ -549,6 +538,8 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 			    "Failed to obtain PIV token pin",
 			    BUNYAN_T_END);
 
+			kbmd_token_free(kt);
+
 			(void) bunyan_key_remove(tlog, "piv_guid");
 			continue;
 		}
@@ -561,6 +552,8 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 
 			(void) bunyan_debug(tlog, "Unlock failed",
 			    BUNYAN_T_END);
+
+			kbmd_token_free(kt);
 
 			(void) bunyan_key_remove(tlog, "piv_guid");
 			continue;
@@ -577,6 +570,8 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 			    BUNYAN_T_STRING, "slot", slotstr,
 			    BUNYAN_T_END);
 
+			(void) bunyan_key_remove(tlog, "piv_guid");
+			kbmd_token_free(kt);
 			goto done;
 		}
 
@@ -590,7 +585,12 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 			    BUNYAN_T_STRING, "errfunc", errf_function(ret),
 			    BUNYAN_T_END);
 
+			(void) bunyan_key_remove(tlog, "piv_guid");
+
+			kbmd_token_free(kt);
+
 			errf_free(ret);
+			ret = ERRF_OK;
 			continue;
 		}
 
@@ -611,7 +611,10 @@ kbmd_unlock_ebox(struct ebox *restrict ebox, kbmd_token_t **restrict ktp)
 			    BUNYAN_T_END);
 
 			*ktp = kt;
+		} else {
+			kbmd_token_free(kt);
 		}
+
 		return (ret);
 	}
 
@@ -619,7 +622,6 @@ done:
 	ret = errf("RecoveryNeeded", ret,
 	    "Cannot unlock box for %s; recovery is required", boxname);
 
-	kbmd_token_free(kt);
 	return (ret);
 }
 
