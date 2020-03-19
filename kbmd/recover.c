@@ -1273,8 +1273,11 @@ add_template_hash(nvlist_t *restrict nvl, struct ebox_tpl *restrict tpl)
 		return (ret);
 	}
 
-	return (envlist_add_uint8_array(nvl, KBM_NV_CONFIG_HASH, hash,
-	    (uint_t)hashlen));
+	ret = envlist_add_uint8_array(nvl, KBM_NV_CONFIG_HASH, hash,
+	    (uint_t)hashlen);
+	free(hash);
+
+	return (ret);
 }
 
 static errf_t *
@@ -1387,7 +1390,9 @@ kbmd_list_recovery(nvlist_t *req)
 
 	if ((ret = envlist_alloc(&resp)) != ERRF_OK ||
 	    (ret = envlist_alloc(&cfgs)) != ERRF_OK) {
-		kbmd_return(ret, NULL);
+		nvlist_free(resp);
+		resp = NULL;
+		goto done;
 	}
 
 	if ((ret = add_template(dataset, cfgs, B_FALSE)) != ERRF_OK ||
@@ -1398,6 +1403,7 @@ kbmd_list_recovery(nvlist_t *req)
 	ret = envlist_add_nvlist(resp, KBM_NV_CONFIGS, cfgs);
 
 done:
+	nvlist_free(req);
 	nvlist_free(cfgs);
 	kbmd_return(ret, resp);
 }
