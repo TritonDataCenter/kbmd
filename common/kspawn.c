@@ -565,7 +565,26 @@ interact(pid_t pid, int fds[restrict], const void *input, size_t inputlen,
 			 * revents. Therefore, we always process any pending
 			 * reads, then close the fd if required.
 			 */
-			if (pfds[i].revents & POLLHUP) {
+			if (pfds[i].revents & POLLHUP || n == 0) {
+				/*
+				 * read_fd reads a limited window (256b)
+				 * make sure we've read EOF.
+				 */
+				while (n > 0) {
+					if ((ret = read_fd(pfds[i].fd,
+					    output[i - 1], &n, esc_nl))
+					    != ERRF_OK) {
+						ret = errf("IOError", ret,
+						    "");
+						goto done;
+					}
+					(void) bunyan_trace(ilog, "read data",
+					    BUNYAN_T_INT32, "fd", pfds[i].fd,
+					    BUNYAN_T_UINT64, "amt_read",
+					    (uint64_t)n,
+					    BUNYAN_T_END);
+				}
+
 				(void) bunyan_trace(ilog,
 				    "finished reading data on fd",
 				    BUNYAN_T_INT32, "fd", pfds[i].fd,
