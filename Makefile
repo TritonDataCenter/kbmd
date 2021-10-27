@@ -20,7 +20,7 @@ CC =		$(STRAP_AREA)/usr/bin/gcc
 AR =		/usr/bin/ar
 LN =		/bin/ln
 RM =		/bin/rm
-LIBCRYPTO =	$(DESTDIR)/.build/libsunw_crypto.a
+LIBCRYPTO =	$(DESTDIR)/.build/libsunw1x_crypto.a
 PROTOINC =	$(DESTDIR)/usr/include
 INSTALL =	/usr/sbin/install
 ELFWRAP =	/usr/bin/elfwrap
@@ -33,7 +33,8 @@ STATIC_LIBS =	$(_STATIC_LIBS:%=out/%)
 
 PIVY_TARGETS =	pivy-tool pivy-box
 
-CPPFLAGS =	-I$(PROTOINC) -Icommon -I. -D_POSIX_PTHREAD_SEMANTICS
+CPPFLAGS =	-I${DESTDIR}/opt/1x -I$(PROTOINC) -Icommon -I. \
+		-D_POSIX_PTHREAD_SEMANTICS
 CFLAGS =	-g -msave-args -m64 -std=gnu99 -fstack-protector-all \
 		-Wall -Wno-unknown-pragmas
 LDFLAGS =	-L$(DESTDIR)/lib/amd64 -L$(DESTDIR)/usr/lib/amd64
