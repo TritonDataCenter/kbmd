@@ -213,9 +213,9 @@ pivy-stamp:
 	    PROTO_AREA="$(DESTDIR)" \
 	    PCSC_CFLAGS="" \
 	    PCSC_LIBS="-L$(DESTDIR)/usr/lib/amd64 -lpcsc" \
-	    CRYPTO_FLAGS="-I$(DESTDIR)/usr/include" \
+	    CRYPTO_FLAGS="-I$(DESTDIR)/opt/1x" \
 	    CRYPTO_LIBS="$(LIBCRYPTO)" \
-	    LIBRESSL_INC="$(DESTDIR)/usr/include" \
+	    LIBRESSL_INC="$(DESTDIR)/opt/1x" \
 	    LIBCRYPTO="$(LIBCRYPTO)" \
 	    $(PIVY_TARGETS)
 	touch pivy-stamp
