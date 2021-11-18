@@ -41,8 +41,6 @@
 #include <unistd.h>
 #include "kbmd.h"
 
-bunyan_logger_t *blog;
-
 /* sys_pool and sys_uuid are write-only -- once set, they're never changed */
 char *sys_pool;
 uuid_t sys_uuid;
