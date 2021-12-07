@@ -10,7 +10,7 @@
 #
 
 #
-# Copyright 2020 Joyent, Inc.
+# Copyright 2021 Joyent, Inc.
 #
 
 include		$(PWD)/../../../build.env
@@ -20,7 +20,7 @@ CC =		$(STRAP_AREA)/usr/bin/gcc
 AR =		/usr/bin/ar
 LN =		/bin/ln
 RM =		/bin/rm
-LIBCRYPTO =	$(DESTDIR)/.build/libsunw_crypto.a
+LIBCRYPTO =	$(DESTDIR)/.build/libsunw1x_crypto.a
 PROTOINC =	$(DESTDIR)/usr/include
 INSTALL =	/usr/sbin/install
 ELFWRAP =	/usr/bin/elfwrap
@@ -33,7 +33,8 @@ STATIC_LIBS =	$(_STATIC_LIBS:%=out/%)
 
 PIVY_TARGETS =	pivy-tool pivy-box
 
-CPPFLAGS =	-I$(PROTOINC) -Icommon -I. -D_POSIX_PTHREAD_SEMANTICS
+CPPFLAGS =	-I${DESTDIR}/opt/1x -I$(PROTOINC) -Icommon -I. \
+		-D_POSIX_PTHREAD_SEMANTICS
 CFLAGS =	-g -msave-args -m64 -std=gnu99 -fstack-protector-all \
 		-Wall -Wno-unknown-pragmas
 LDFLAGS =	-L$(DESTDIR)/lib/amd64 -L$(DESTDIR)/usr/lib/amd64
@@ -212,9 +213,9 @@ pivy-stamp:
 	    PROTO_AREA="$(DESTDIR)" \
 	    PCSC_CFLAGS="" \
 	    PCSC_LIBS="-L$(DESTDIR)/usr/lib/amd64 -lpcsc" \
-	    CRYPTO_FLAGS="-I$(DESTDIR)/usr/include" \
+	    CRYPTO_FLAGS="-I$(DESTDIR)/opt/1x" \
 	    CRYPTO_LIBS="$(LIBCRYPTO)" \
-	    LIBRESSL_INC="$(DESTDIR)/usr/include" \
+	    LIBRESSL_INC="$(DESTDIR)/opt/1x" \
 	    LIBCRYPTO="$(LIBCRYPTO)" \
 	    $(PIVY_TARGETS)
 	touch pivy-stamp
