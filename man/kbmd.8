@@ -12,7 +12,7 @@
 .\" Copyright 2020 Joyent, Inc.
 .\"
 .Dd January 22, 2020
-.Dt KBMD 1M
+.Dt KBMD 8
 .Os
 .Sh NAME
 .Nm kbmd
@@ -28,12 +28,12 @@ stores the eboxes of encrypted datasets in the
 .Sy com.joyent.kbm:ebox
 and
 .Sy com.joyent.kbm:stagedebox
-.Xr zfs 1M
+.Xr zfs 8
 properties.
 These properties should only be manipulated by
 .Nm
 via the use of the
-.Xr kbmadm 1M
+.Xr kbmadm 8
 utility.
 .Ss OPTIONS
 .Bl -tag -width Fl
@@ -56,13 +56,13 @@ The environment variable
 .Ev KBM_PLUGIN_DIR .
 .It
 The
-.Xr smf 5
+.Xr smf 7
 property
 .Sy kbmd/kbmd-plugin-dir
 when
 .Nm
 is started via
-.Xr smf 5 .
+.Xr smf 7 .
 .It
 The path
 .Pa /usr/lib/kbm/plugins
@@ -81,7 +81,7 @@ The plugin interface specification can be viewed at
 .It Ev KBM_PLUGIN_DIR
 The directory to search for plugins.
 If set, this overrides the default path as well as any path in
-.Xr smf 5 .
+.Xr smf 7 .
 .El
 .Sh FILES
 .Bl -tag -width Pa
@@ -89,7 +89,7 @@ If set, this overrides the default path as well as any path in
 The default plugin path.
 This can be overridden via the
 .Sy kbmd/kbmd-plugin-dir
-.Xr smf 5
+.Xr smf 7
 property or by setting
 .Ev KBM_PLUGIN_DIR
 to a different value.
@@ -97,4 +97,4 @@ to a different value.
 .Sh INTERFACE STABILITY
 Private
 .Sh SEE ALSO
-.Xr kbmadm 1m
+.Xr kbmadm 8
