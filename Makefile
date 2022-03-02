@@ -272,8 +272,8 @@ $(DESTDIR)/usr/sbin/%: pivy/%
 $(DESTDIR)/usr/sbin/%: out/%
 	$(RM) -f $@; $(INSTALL) -m 0555 -f $(DESTDIR)/usr/sbin $<
 
-$(DESTDIR)/usr/share/man/man1m/%: man/%
-	$(RM) -f $@; $(INSTALL) -m 0444 -f $(DESTDIR)/usr/share/man/man1m $<
+$(DESTDIR)/usr/share/man/man8/%: man/%
+	$(RM) -f $@; $(INSTALL) -m 0444 -f $(DESTDIR)/usr/share/man/man8 $<
 
 $(DESTDIR)/lib/svc/method/%: smf/%
 	$(RM) -f $@; $(INSTALL) -m 0555 -f $(DESTDIR)/lib/svc/method $<
