@@ -12,7 +12,7 @@
 .\" Copyright 2020 Joyent, Inc.
 .\"
 .Dd February  7, 2020
-.Dt KBMADM 1M
+.Dt KBMADM 8
 .Os
 .Sh NAME
 .Nm kbmadm
@@ -51,7 +51,7 @@
 .Sh DESCRIPTION
 .Nm
 is used to to manage
-.Xr kbmd 1M .
+.Xr kbmd 8 .
 .Sh SUBCOMMANDS
 .Bl -tag -width ""
 .\"
@@ -123,7 +123,7 @@ Any option listed in the
 .Nm zpool
 .Cm create
 subcommand in
-.Xr zpool
+.Xr zpool 8
 may be passed along.
 .Pp
 Note that stdin of the
@@ -248,7 +248,7 @@ The behavior and cmdline options of
 .Nm
 will almost certainly change in the future.
 .Sh SEE ALSO
-.Xr kbmd 1M ,
-.Xr zpool 1M
+.Xr kbmd 8 ,
+.Xr zpool 8
 .Lk https://github.com/joyent/rfd/blob/master/rfd/0077/README.adoc
 .Lk https://github.com/joyent/rfd/blob/master/rfd/0173/README.adoc
