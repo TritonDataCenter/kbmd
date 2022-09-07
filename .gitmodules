@@ -1,4 +1,3 @@
 [submodule "pivy"]
 	path = pivy
-	url = https://github.com/TritonDataCenter/pivy.git
-	branch = master
+	url = https://github.com/arekinath/pivy.git
