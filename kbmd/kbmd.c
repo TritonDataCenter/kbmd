@@ -11,6 +11,7 @@
 
 /*
  * Copyright 2020 Joyent, Inc.
+ * Copyright 2024 MNX Cloud, Inc.
  */
 
 #include <sys/corectl.h>
@@ -58,7 +59,7 @@ static int kbmd_daemonize(int);
 static void kbmd_fd_setup(void);
 static int kbmd_dir_setup(void);
 static void kbmd_log_setup(int, bunyan_level_t);
-static void kbmd_cleanup(void);
+static void kbmd_cleanup(int);
 static int kbmd_sys_uuid(uuid_t);
 
 int
@@ -335,7 +336,7 @@ kbmd_dfatal(int dfd, const char *fmt, ...)
 }
 
 static void
-kbmd_cleanup(void)
+kbmd_cleanup(int arg __unused)
 {
 	kbmd_quit = B_TRUE;
 }
